@@ -1,0 +1,1 @@
+//! Result cache primitives.

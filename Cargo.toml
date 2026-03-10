@@ -1,0 +1,43 @@
+[workspace]
+members = [
+    ".",
+    "crates/core",
+    "crates/archaeologist",
+    "crates/locator",
+    "crates/context",
+    "crates/evidence",
+    "crates/synthesizer",
+    "crates/scanner",
+    "crates/annotator",
+    "crates/splitter",
+    "crates/mcp",
+    "crates/lsp",
+    "crates/shell",
+    "crates/hooks",
+    "crates/cache",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+authors = ["why contributors"]
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+
+[package]
+name = "why-workspace"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
