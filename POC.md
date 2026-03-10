@@ -17,8 +17,10 @@ Prove that we can:
 
 ## POC Scope
 
-Written in **Node.js** using the `simple-git` library.  
+Written in **Node.js** using the `simple-git` library.
 Production will be Rust with `git2` crate (no git binary dependency).
+
+Important: this Node CLI is a prototype for concept validation only. Its `fn|file` command syntax and `--raw` flag do **not** define the Rust shipping interface. The Rust phase-1 CLI contract is positional line/range targeting (`why <file>:<line>` and `why <file> --lines <start:end>`) plus `--json` for machine-readable output.
 
 ---
 

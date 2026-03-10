@@ -2430,6 +2430,49 @@ const targets = [
 
 **Goal:** Working Rust binary that runs `git blame` and shows commits. No LLM yet.
 
+**Frozen phase-1 contract:**
+- Primary invocation shape is positional target syntax, not subcommands: `why <target> [flags]`
+- Supported target forms in phase 1:
+  - `why src/example.rs:42` → line query
+  - `why src/example.rs --lines 40:45` → explicit line-range query
+- `file:symbol` and `file:qualified` syntax are reserved for phase 2 and should parse only after tree-sitter lands
+- Phase-1 flags are limited to `--no-llm` and `--json`; do not add legacy `fn|file|line` subcommands to the Rust CLI
+- Human output in phase 1 is commit-first, not narrative-first: target header, commit list, then heuristic/no-LLM note
+- `--json` in phase 1 returns machine-readable raw archaeology output rather than a full `WhyReport`
+
+**Phase-1 JSON contract:**
+```json
+{
+  "target": {
+    "path": "src/example.rs",
+    "start_line": 42,
+    "end_line": 42,
+    "query_kind": "line"
+  },
+  "commits": [
+    {
+      "oid": "abc12345def67890",
+      "short_oid": "abc12345",
+      "author": "alice",
+      "date": "2025-11-03",
+      "summary": "hotfix: fix null pointer in example",
+      "diff_excerpt": "optional bounded excerpt"
+    }
+  ],
+  "risk_level": "MEDIUM",
+  "mode": "heuristic",
+  "notes": [
+    "No LLM synthesis in phase 1"
+  ]
+}
+```
+
+Contract notes:
+- `summary`/`why_it_exists`/`confidence`/`unknowns` belong to `WhyReport` and are phase 4 fields, not phase 1 fields
+- `risk_level` is still allowed in phase 1 JSON because heuristic risk lands in phase 3 and tests already expect a risk signal in no-LLM mode
+- `diff_excerpt` is optional and may be omitted when phase 1 only has commit summaries
+- `start_line` and `end_line` are 1-based in external output even if internal code stores zero-based indices
+
 **Checklist:**
 - [ ] Scaffold workspace: all 14 crates with stubbed lib.rs / main.rs
 - [ ] `crates/core`: clap CLI, file:line and --lines START:END parsing

@@ -69,49 +69,52 @@ export ANTHROPIC_API_KEY=sk-ant-...
 
 ## Usage
 
+Current repo state:
+- The checked-in implementation today is a Node.js POC under `poc/`
+- The planned Rust CLI contract is positional target syntax: `why <target> [flags]`
+
+Planned Rust phase-1 CLI examples:
 ```bash
-# Why does this function exist?
-why fn verifyToken
-
-# Why does this file exist?
-why file src/legacy/payment_v1.js
-
 # Why was this specific line written?
-why line src/auth.js:42
+why src/auth.js:42
 
-# Raw mode — show git data without LLM synthesis
-why fn verifyToken --raw
+# Why does this line range exist?
+why src/auth.js --lines 40:45 --no-llm
+
+# Machine-readable raw archaeology output
+why src/auth.js:42 --json
 ```
+
+Phase-1 Rust contract notes:
+- Phase 1 supports only line and explicit range queries.
+- Symbol queries like `why src/auth.js:verifyToken` are reserved for phase 2.
+- The Rust CLI uses positional target syntax (`why <target> [flags]`), not `fn|file|line` subcommands.
+- The Rust CLI uses `--json` for machine-readable output; `--raw` is a Node POC flag, not a Rust phase-1 flag.
+
+Current Node POC examples:
+```bash
+node poc/index.js fn verifyToken src/auth.js
+node poc/index.js file src/legacy/payment_v1.js
+node poc/index.js fn verifyToken src/auth.js --raw
+```
+
+The Node commands above are prototype-only and do not define the Rust shipping interface.
 
 ## Output Example
 
 ```bash
-$ why fn verifyToken
+$ why src/auth.js:42
 
-Analyzing git history for `verifyToken`...
-Found 6 commits touching this function (2021–2024)
+why: src/auth.js (line 42)
 
-────────────────────────────────────────────────
+Commits touching this line:
+  a3f9b2c  alice  2024-01-12  fix: tokens not expiring on logout
+  8d2e1f4  bob    2022-09-04  extend auth flow for refresh token handling
 
-WHY IT EXISTS
-verifyToken was introduced in April 2021 after a security incident
-(commit a3f9b2c) where expired JWT tokens were still being accepted.
-The team added explicit expiry checking after a session hijacking
-report from a penetration test.
-
-HISTORY
-- Apr 2021: Initial implementation after security audit
-- Sep 2022: Extended to support refresh tokens (commit 8d2e1f4)  
-- Jan 2024: Fixed edge case where iat claim was missing (commit cc91a3b)
-
-RISK IF REMOVED: HIGH
-This is the sole validation point for all authenticated routes.
-3 routes call this directly; 12 routes call it transitively.
-
-RELATED
-- Commit a3f9b2c: "fix: tokens not expiring on logout"
-- Issue #234: "Security: session tokens survive password reset"
+No LLM synthesis (--no-llm or no API key). Heuristic risk: MEDIUM.
 ```
+
+A richer narrative explanation for symbol-level queries is planned for later phases after tree-sitter targeting and synthesis land.
 
 ## Integration with Claude Code
 
@@ -120,9 +123,10 @@ Add to your project's `CLAUDE.md`:
 ```markdown
 ## Custom Tools
 
-- `why fn <name>` — explain why a function exists and risk if removed
-- `why file <path>` — explain why a file exists (especially legacy ones)
-- `why line <file>:<line>` — explain why a specific line was written
+- `why <file>:<line>` — explain why a specific line was written
+- `why <file> --lines <start:end>` — explain why a line range exists
+- `why <file>:<line> --json` — return machine-readable raw archaeology output
+- `why <file>:<symbol>` — reserved for a later phase after tree-sitter symbol targeting lands
 
 **Always run `why` before deleting or significantly refactoring any function
 that exists in git history for more than 6 months.**
