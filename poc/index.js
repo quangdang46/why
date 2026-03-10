@@ -5,6 +5,31 @@ import path from 'node:path'
 
 const git = simpleGit(process.cwd())
 
+const EXIT_CODES = {
+  SUCCESS: 0,
+  USER_ERROR: 1,
+  RUNTIME_ERROR: 2,
+  HEALTH_CHECK_FAILURE: 3
+}
+
+class WhyCliError extends Error {
+  constructor(message, { exitCode = EXIT_CODES.RUNTIME_ERROR, hint = '' } = {}) {
+    super(message)
+    this.name = 'WhyCliError'
+    this.exitCode = exitCode
+    this.hint = hint
+  }
+}
+
+function usageText() {
+  return [
+    'Usage: why <fn|file> <name> [filepath] [--raw]',
+    'Examples:',
+    '  why fn verifyToken src/auth.js --raw',
+    '  why file src/legacy/payment.js'
+  ].join('\n')
+}
+
 async function getCommitsForSymbol(symbolName) {
   const log = await git.raw([
     'log',
@@ -81,7 +106,10 @@ Be concise. If history is sparse, say so honestly and avoid unsupported claims.`
 
 async function synthesizeWithClaude(symbolName, commits, fileContext) {
   if (!process.env.ANTHROPIC_API_KEY) {
-    throw new Error('ANTHROPIC_API_KEY is required unless you use --raw')
+    throw new WhyCliError('ANTHROPIC_API_KEY is required unless you use --raw.', {
+      exitCode: EXIT_CODES.USER_ERROR,
+      hint: 'Export ANTHROPIC_API_KEY or rerun with --raw to inspect git evidence without LLM synthesis.'
+    })
   }
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -99,7 +127,10 @@ async function synthesizeWithClaude(symbolName, commits, fileContext) {
   })
 
   if (!response.ok) {
-    throw new Error(`Anthropic API request failed: ${response.status} ${response.statusText}`)
+    throw new WhyCliError(`Anthropic API request failed: ${response.status} ${response.statusText}`, {
+      exitCode: EXIT_CODES.RUNTIME_ERROR,
+      hint: 'Check your API key, network connectivity, and Anthropic API availability. You can also rerun with --raw.'
+    })
   }
 
   const data = await response.json()
@@ -131,6 +162,13 @@ function printRaw(commits, fileContext) {
 }
 
 async function whySymbol(symbolName, filePath) {
+  if (!symbolName?.trim()) {
+    throw new WhyCliError('Missing symbol or file target.', {
+      exitCode: EXIT_CODES.USER_ERROR,
+      hint: usageText()
+    })
+  }
+
   console.log(`\nAnalyzing git history for \`${symbolName}\`...\n`)
 
   const normalizedFilePath = filePath ? path.resolve(process.cwd(), filePath) : null
@@ -156,12 +194,37 @@ async function whySymbol(symbolName, filePath) {
 
 const [, , command, target, filePath] = process.argv
 
-if (command === 'fn' && target) {
-  await whySymbol(target, filePath)
-} else if (command === 'file' && target) {
-  const symbolName = path.basename(target).replace(/\.[^.]+$/, '')
-  await whySymbol(symbolName, target)
-} else {
-  console.log('Usage: why <fn|file> <name> [filepath] [--raw]')
-  process.exitCode = 1
+async function main() {
+  if (command === 'fn' && target) {
+    await whySymbol(target, filePath)
+    return
+  }
+
+  if (command === 'file' && target) {
+    const symbolName = path.basename(target).replace(/\.[^.]+$/, '')
+    await whySymbol(symbolName, target)
+    return
+  }
+
+  throw new WhyCliError('Invalid arguments.', {
+    exitCode: EXIT_CODES.USER_ERROR,
+    hint: usageText()
+  })
+}
+
+try {
+  await main()
+  process.exitCode = EXIT_CODES.SUCCESS
+} catch (error) {
+  if (error instanceof WhyCliError) {
+    console.error(`Error: ${error.message}`)
+    if (error.hint) {
+      console.error(`Hint: ${error.hint}`)
+    }
+    process.exitCode = error.exitCode
+  } else {
+    console.error(`Unexpected runtime error: ${error?.message ?? error}`)
+    console.error('Hint: rerun with --raw to isolate LLM/API failures from git-history collection problems.')
+    process.exitCode = EXIT_CODES.RUNTIME_ERROR
+  }
 }
