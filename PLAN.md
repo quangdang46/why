@@ -2881,10 +2881,99 @@ fn test_split_suggestion() {
 }
 ```
 
-### Snapshot tests
+### Fixture corpus strategy
+
+The fixture corpus should be deliberately small in v1, but each fixture must represent a product-critical archaeology pattern rather than being a generic synthetic repo.
+
+#### First-class fixture scenarios
+
+The initial corpus should include these scenario families:
+
+| Fixture | Primary scenario | Product contract being exercised |
+|---|---|---|
+| `hotfix_repo` | Incident / security hotfix | High-risk explanations must surface operational intent, issue references, and non-routine risk |
+| `workaround_repo` | Temporary workaround / TODO debt | Context extraction must notice explicit temporariness and age-sensitive debt markers |
+| `auth_guard_repo` | Authentication / safety-critical guardrail | Heuristic risk should escalate security-sensitive code even before LLM synthesis |
+| `compat_shim_repo` | Legacy compatibility shim | Output should explain preservation pressure rather than mislabel the code as dead or redundant |
+| `renamed_fn_repo` | Rename / move history | Archaeology should remain useful when symbol history is split across renames or moves |
+| `coupling_repo` | Co-change / implicit coupling | Coupling analysis should identify files or symbols that evolve together |
+| `timebomb_repo` | Dated TODO / latent deadline | Scanner output should flag overdue risk without requiring rich commit history |
+| `ghost_repo` | Dead-but-dangerous code | Ghost analysis should distinguish unreferenced code from safe-to-delete code |
+| `split_repo` | Multi-era function evolution | Split suggestions should reflect historically distinct blocks rather than only current syntax |
+| `sparse_repo` | Weak-signal / noisy history | The system must admit uncertainty when evidence is thin |
+
+#### Why this corpus order matters
+
+These fixtures are not equal. The first wave should prioritize `hotfix_repo`, `compat_shim_repo`, `ghost_repo`, `split_repo`, and `sparse_repo` because together they test the five most important product promises:
+
+1. Do not miss dangerous historical context.
+2. Do not overstate confidence when history is weak.
+3. Do not confuse compatibility code with dead code.
+4. Do not confuse churn with importance.
+5. Do produce stable machine-readable evidence for downstream tools.
+
+#### Fixture design rules
+
+Every fixture should follow these rules:
+
+- Each repo models one dominant archaeology pattern, not three unrelated ones.
+- Commit messages should be realistic but not uniformly perfect; include some noisy commits.
+- At least one commit per fixture should be intentionally low-signal, such as a refactor or rename.
+- File contents should be minimal enough to understand at a glance.
+- The expected result should be explainable by reading the fixture history manually.
+- Fixtures must be deterministic: fixed author names, timestamps, branch shape, and commit order.
+
+### Golden-output strategy
 
 For every fixture repo, capture terminal + JSON output and commit them as golden files.
 CI runs `why` against each fixture and diffs against the golden snapshot.
+
+#### Contract-level vs presentation-level assertions
+
+Not all output should be frozen with the same strictness.
+
+| Output surface | Contract level | What must remain stable |
+|---|---|---|
+| JSON keys and enum values | Strict | Field names, structural nesting, risk enums, evidence array shapes |
+| JSON semantic content | Moderate | Core claims, cited issue refs, confidence category, unknowns presence |
+| Terminal section ordering | Strict | Summary / history / risk / evidence ordering |
+| Terminal prose wording | Flexible | Exact phrasing may evolve if meaning stays equivalent |
+| Diagnostics / timing / cache stats | Ignore or normalize | Volatile metadata should not create snapshot churn |
+
+#### Snapshot organization
+
+Store snapshots by fixture and surface:
+
+- `tests/snapshots/<fixture>__terminal.snap`
+- `tests/snapshots/<fixture>__json.snap`
+- add scanner-specific variants only when the scenario is scanner-owned, e.g. `timebomb_repo__scan_json.snap`
+
+This keeps the fixture name as the primary grouping key and avoids scattering expectations across command-centric names.
+
+#### Normalization policy
+
+Before snapshotting, normalize all volatile values:
+
+- commit OIDs when exact hashes are not the thing under test
+- timestamps and elapsed durations
+- absolute temp paths
+- cache-hit markers and cost estimates if they vary by environment
+- provider-specific wording differences in LLM-backed tests
+
+Golden snapshots should preserve semantic evidence but strip environment noise.
+
+#### Review policy
+
+Snapshot changes should be reviewed with these questions:
+
+1. Did the product contract improve, regress, or merely rephrase?
+2. Did a JSON contract change intentionally? If so, was downstream compatibility updated?
+3. Did the change make the tool more or less honest under sparse evidence?
+4. Did the change remove an important evidence citation or risk explanation?
+
+Use `insta` for snapshot management, but require human review for any changed fixture in the high-risk scenario families (`hotfix`, `auth_guard`, `ghost`, `split`).
+
+### Snapshot tests
 
 ```rust
 #[test]

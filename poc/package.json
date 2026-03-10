@@ -1,0 +1,14 @@
+{
+  "name": "why-poc",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "description": "Proof of concept for git archaeology plus Claude synthesis",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "node-fetch": "^3.3.2",
+    "simple-git": "^3.28.0"
+  }
+}

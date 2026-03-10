@@ -1,2 +1,4 @@
 # bv (beads viewer) local config and caches
 .bv/
+poc/node_modules/
+poc/package-lock.json
