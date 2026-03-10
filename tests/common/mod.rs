@@ -2,7 +2,7 @@
 //!
 //! Provides fixture repo setup, CLI invocation helpers, and snapshot normalization.
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -26,8 +26,12 @@ impl FixtureRepo {
     }
 
     pub fn run_why(&self, args: &[&str]) -> Result<Output> {
-        let why_binary = std::env::var("WHY_BINARY")
-            .unwrap_or_else(|_| "target/debug/why".to_string());
+        let default_binary = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("debug")
+            .join("why");
+        let why_binary =
+            std::env::var("WHY_BINARY").unwrap_or_else(|_| default_binary.display().to_string());
 
         let output = Command::new(&why_binary)
             .args(args)
@@ -78,7 +82,12 @@ pub fn setup_fixture(name: &str) -> Result<FixtureRepo> {
         .arg(&fixture_root)
         .arg(dir.path())
         .output()
-        .with_context(|| format!("failed to run fixture setup script {}", fixture_root.display()))?;
+        .with_context(|| {
+            format!(
+                "failed to run fixture setup script {}",
+                fixture_root.display()
+            )
+        })?;
 
     if !output.status.success() {
         bail!(

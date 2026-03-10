@@ -2,6 +2,13 @@
 //!
 //! These tests codify the expected behaviors from PLAN.md so the future
 //! locator crate can adopt them with minimal reinterpretation.
+//!
+//! Phase boundary note:
+//! - Phase 1 freezes only file:line and file + --lines parsing.
+//! - Symbol and qualified-name parsing/resolution below are phase-2 expectations
+//!   and should not be treated as part of the phase-1 CLI surface.
+//! - Real phase-1 parser behavior is covered in `crates/locator/src/lib.rs` unit tests
+//!   and `tests/integration_cli.rs` end-to-end fixture tests.
 
 #[allow(dead_code)]
 pub const TEST_CASES: &[(&str, &str)] = &[
