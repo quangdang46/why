@@ -105,22 +105,15 @@ Be concise. If history is sparse, say so honestly and avoid unsupported claims.`
 }
 
 async function synthesizeWithClaude(symbolName, commits, fileContext) {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    throw new WhyCliError('ANTHROPIC_API_KEY is required unless you use --raw.', {
-      exitCode: EXIT_CODES.USER_ERROR,
-      hint: 'Export ANTHROPIC_API_KEY or rerun with --raw to inspect git evidence without LLM synthesis.'
-    })
-  }
-
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
+  const response = await fetch('http://127.0.0.1:8317', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': process.env.ANTHROPIC_API_KEY,
+      'x-api-key': 'proxypal-local',
       'anthropic-version': '2023-06-01'
     },
     body: JSON.stringify({
-      model: 'claude-haiku-4-5',
+      model: 'gpt-5.4',
       max_tokens: 500,
       messages: [{ role: 'user', content: buildPrompt(symbolName, commits, fileContext) }]
     })
