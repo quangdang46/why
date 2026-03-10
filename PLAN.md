@@ -496,13 +496,30 @@ strip = true
 ```toml
 # .why.toml — why configuration file
 # Copy to your project root or to ~/.config/why/config.toml
+# Values may be overridden via CLI flags for one-off runs.
 
 [llm]
+provider = "anthropic"         # "anthropic", "zai", or "gemini"
 model = "claude-haiku-4-5"
 max_tokens = 1024
-# api_key = "sk-ant-..."    # prefer ANTHROPIC_API_KEY env var
+# api_key = "sk-ant-..."      # prefer env vars over config files
+# Anthropic:
+# base_url = "https://api.anthropic.com/v1/messages"
+# z.ai recommended coding endpoint:
+# base_url = "https://api.z.ai/api/coding/paas/v4"
+# The general z.ai endpoint may still be used if the user/agent explicitly overrides it:
+# https://api.z.ai/api/paas/v4
+# Use the coding endpoint by default for coding scenarios.
+# Gemini example endpoint:
+# base_url = "https://generativelanguage.googleapis.com/v1beta/models"
 timeout_secs = 30
 retries = 3
+
+# CLI overrides (examples)
+# why --config .why.toml src/lib.rs:foo
+# why --provider gemini --model gemini-2.5-pro src/lib.rs:foo
+# why --base-url https://api.z.ai/api/coding/paas/v4 --provider zai src/lib.rs:foo
+# why --max-tokens 2048 --timeout-secs 60 src/lib.rs:foo
 
 [risk]
 default_level = "Low"
@@ -570,6 +587,163 @@ ghost_fn_weight = 2
 bus_factor_1_weight = 2
 stale_hack_weight = 1
 ```
+
+#### CLI configuration overrides
+
+The CLI should support both:
+1. one-off config overrides for interactive users, and
+2. stable machine-readable configuration for agents, MCP clients, hooks, CI, and shell wrappers.
+
+This allows the same configuration model to work for humans and automation.
+
+Recommended flags:
+- `--config <path>` — load an explicit config file
+- `--provider <anthropic|zai|gemini>` — override `[llm].provider`
+- `--model <name>` — override `[llm].model`
+- `--base-url <url>` — override `[llm].base_url`
+- `--max-tokens <n>` — override `[llm].max_tokens`
+- `--timeout-secs <n>` — override `[llm].timeout_secs`
+- `--retries <n>` — override `[llm].retries`
+- `--format <terminal|json>` — override `[output].format`
+- `--no-color` / `--color <auto|always|never>` — override output color behavior
+
+Recommended config subcommands:
+- `why config init` — create initial user config
+- `why config get <key>` — read an effective config value
+- `why config set <key> <value>` — persist a config value
+- `why config unset <key>` — remove a persisted override
+- `why config list` — print effective config
+- `why config doctor` — validate provider setup, endpoint, and env vars
+
+Agent-oriented behavior:
+- `why config get` and `why config list --json` should be stable for scripts and MCP clients
+- `why config doctor --json` should return machine-readable diagnostics
+- `why mcp` should load the same effective config resolution path as the CLI
+- `why context-inject` and git hooks should inherit the same resolved config automatically
+- CI should be able to pin a config file with `--config` while still allowing env-based secrets
+
+Stable JSON shape for `why config list --json`:
+```json
+{
+  "effective": {
+    "llm": {
+      "provider": "zai",
+      "model": "glm-4.5-air",
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "max_tokens": 1024,
+      "timeout_secs": 30,
+      "retries": 3
+    },
+    "output": {
+      "format": "terminal",
+      "color": "auto",
+      "show_cost": true,
+      "show_confidence": true
+    }
+  },
+  "sources": {
+    "llm.provider": "cli",
+    "llm.model": "config_file",
+    "llm.base_url": "config_file",
+    "llm.max_tokens": "default",
+    "llm.timeout_secs": "default",
+    "llm.retries": "default",
+    "output.format": "default",
+    "output.color": "default"
+  },
+  "redacted": {
+    "llm.api_key": true,
+    "github.token": true
+  }
+}
+```
+
+Field contract for `why config list --json`:
+- `effective`: fully resolved configuration after applying precedence rules
+- `sources`: origin of each resolved key (`cli`, `env`, `config_file`, `default`)
+- `redacted`: indicates which sensitive fields exist but are intentionally not emitted
+- Output should be deterministic and safe for agents to consume directly
+
+Stable JSON shape for `why config doctor --json`:
+```json
+{
+  "ok": true,
+  "provider": "zai",
+  "model": "glm-4.5-air",
+  "base_url": "https://api.z.ai/api/coding/paas/v4",
+  "config_sources": {
+    "provider": "cli",
+    "model": "config_file",
+    "base_url": "config_file",
+    "max_tokens": "default",
+    "timeout_secs": "env"
+  },
+  "auth": {
+    "env_var": "ZAI_API_KEY",
+    "present": true,
+    "redacted_preview": "za...****"
+  },
+  "endpoint": {
+    "kind": "coding",
+    "valid": true,
+    "warnings": []
+  },
+  "checks": [
+    {
+      "id": "provider_supported",
+      "ok": true,
+      "severity": "error",
+      "message": "Provider zai is supported"
+    },
+    {
+      "id": "api_key_present",
+      "ok": true,
+      "severity": "error",
+      "message": "ZAI_API_KEY is set"
+    },
+    {
+      "id": "zai_coding_endpoint",
+      "ok": true,
+      "severity": "error",
+      "message": "Using z.ai coding endpoint"
+    }
+  ],
+  "warnings": [],
+  "errors": []
+}
+```
+
+Field contract:
+- `ok`: overall status; false if any `error` severity check fails
+- `provider`, `model`, `base_url`: effective resolved values
+- `config_sources`: where each effective value came from (`cli`, `env`, `config_file`, `default`)
+- `auth.present`: whether the required provider credential is available
+- `auth.redacted_preview`: optional masked preview for debugging; never print full secrets
+- `endpoint.kind`: semantic classification such as `anthropic_messages`, `coding`, or `generative_language`
+- `endpoint.valid`: whether the endpoint matches provider expectations
+- `checks`: stable list for agents/scripts to inspect programmatically
+- `warnings`: user-visible warnings not severe enough to fail
+- `errors`: top-level fatal configuration problems
+
+z.ai rule:
+- If `provider = "zai"`, default to `https://api.z.ai/api/coding/paas/v4` for coding flows.
+- This endpoint is recommended, but it may be overridden explicitly by the user or agent via CLI, env, or config.
+- If the general endpoint `https://api.z.ai/api/paas/v4` is detected with `provider = "zai"`, doctor should emit a warning by default rather than hard-failing.
+- If the implementation later introduces a strict coding-only mode, that mode may upgrade this warning to an error.
+
+Config precedence should be:
+1. CLI flags
+2. Environment variables
+3. Config file (`.why.toml` or `--config` path)
+4. Built-in defaults
+
+Notes:
+- Provider secrets should still come from environment variables, not CLI flags,
+  to avoid leaking credentials into shell history.
+- For z.ai coding flows, default to `--provider zai --base-url https://api.z.ai/api/coding/paas/v4`.
+- The base URL may still be explicitly overridden when a user or agent has a different routing requirement.
+- The same precedence rules must apply consistently for user commands, agent/MCP calls,
+  hooks, and shell wrapper invocations.
 
 ---
 
@@ -1228,7 +1402,8 @@ entirely and a warning is emitted to stderr.
 ### 5.6 `crates/synthesizer` — LLM Synthesis
 
 #### Purpose
-Build the LLM prompt, call the Anthropic API, parse the response into a `WhyReport`.
+Build the LLM prompt, call the configured LLM provider API, parse the response into a `WhyReport`.
+Supports Anthropic by default, z.ai GLM Coding models for coding-focused synthesis, and Gemini models via a provider adapter.
 Handles retries, cost calculation, and graceful fallback when no API key is set.
 
 #### System prompt design
@@ -1338,12 +1513,12 @@ Give up   → return error with clear message
 
 #### Heuristic fallback (no API key)
 
-When `ANTHROPIC_API_KEY` is not set, builds a `WhyReport` from the evidence pack
+When the configured provider API key is not set, builds a `WhyReport` from the evidence pack
 without any LLM call:
 - summary = "Heuristic analysis: N commits found. Risk flags: X, Y."
 - why_it_exists = top 3 commit summaries
 - risk_level = heuristic_risk from context extractor
-- confidence = "low (heuristic only — set ANTHROPIC_API_KEY for full analysis)"
+- confidence = "low (heuristic only — set a provider API key for full analysis)"
 - unknowns = ["Full analysis requires LLM synthesis"]
 
 This ensures the tool is useful offline and without credentials.
@@ -1817,6 +1992,9 @@ require('mcphub').setup({
 | `why_coupled` | `target: string` | coupled file list |
 | `why_health` | (none) | health report JSON |
 | `why_annotate` | `target: string` | confirmation message |
+| `why_config_get` | `key: string` | effective config value |
+| `why_config_list` | `json?: bool` | effective config map |
+| `why_config_doctor` | `json?: bool` | stable provider/config diagnostics JSON |
 
 #### Protocol
 JSON-RPC 2.0 over stdin/stdout. Each message is newline-delimited.
@@ -2045,16 +2223,19 @@ User input:  why src/auth/session.rs:authenticate
    → verify ≤8000 chars
    → EvidencePack { target, local_context, history, signals }
 
-9. why_synthesizer::client::ApiClient::from_env("claude-haiku-4-5")
-   → read ANTHROPIC_API_KEY from env
+9. why_synthesizer::client::ApiClient::from_env(provider, model)
+   → read provider-specific API key from env
    → build reqwest::blocking::Client with 30s timeout
 
    why_synthesizer::prompt::build_query_prompt(&pack)
    → format evidence pack as user message
 
    client.complete(SYSTEM_PROMPT, user_prompt)
-   → POST https://api.anthropic.com/v1/messages
-   → response: { content: [{ text: '{ "summary": "...", ... }' }], usage: { ... } }
+   → Anthropic: POST https://api.anthropic.com/v1/messages
+   → z.ai GLM Coding: POST https://api.z.ai/api/coding/paas/v4
+   → Important: do not use https://api.z.ai/api/paas/v4 for coding flows
+   → Gemini: POST via Generative Language API provider adapter
+   → response parsed into WhyReport-compatible JSON
    → cost: $0.0009
 
 10. why_synthesizer::parser::parse_response(raw, Some(0.0009))
@@ -2329,13 +2510,13 @@ Nearby markers: TODO(2026-Q1): remove after mobile v2 rollout
 
 **Checklist:**
 - [ ] `crates/synthesizer/prompt.rs`: system prompt + user prompt builder
-- [ ] `crates/synthesizer/client.rs`: Anthropic API reqwest client with retry
+- [ ] `crates/synthesizer/client.rs`: provider-aware reqwest client (Anthropic, z.ai coding endpoint, Gemini) with retry
 - [ ] `crates/synthesizer/parser.rs`: parse JSON response into WhyReport
 - [ ] `crates/synthesizer/parser.rs`: build_heuristic_report() fallback
 - [ ] Formatted terminal output: summary, bullets, risk, evidence, confidence
 - [ ] `--json` flag outputs WhyReport as JSON
 - [ ] Cost display in terminal output
-- [ ] Clear error message when ANTHROPIC_API_KEY not set
+- [ ] Clear error message when the configured provider API key is not set
 
 **Exit criteria:**
 ```
@@ -2837,9 +3018,12 @@ Run with: `cargo bench`
 
 ### API key handling
 
-- `ANTHROPIC_API_KEY` is read from environment, never from git-tracked files
+- Provider API keys are read from environment, never from git-tracked files
+- Anthropic uses `ANTHROPIC_API_KEY`
+- z.ai support should use a dedicated env var such as `ZAI_API_KEY`
+- Gemini support should use a dedicated env var such as `GEMINI_API_KEY`
 - `.why.toml` allows `api_key` field but this is documented as insecure
-- When printing config in `--debug` mode, API key is redacted: `sk-ant-...****`
+- When printing config in `--debug` mode, API keys are redacted before display
 - No API key is ever written to cache or logs
 
 ### Cache security
@@ -3196,6 +3380,39 @@ and a heuristic risk level.
 
 ## 18. Integration with Claude Code
 
+### Shared config for users and agents
+
+`why` should expose one consistent configuration system for:
+- direct terminal users
+- Claude Code and other MCP clients
+- shell wrappers from `why context-inject`
+- git hooks
+- CI jobs
+
+Design requirement: an agent should not need a separate configuration mechanism.
+If a user runs `why config set llm.provider gemini`, then `why mcp`, hooks, and
+context-inject should observe the same effective configuration unless explicitly
+overridden by CLI flags or environment variables.
+
+Recommended commands:
+```bash
+why config init
+why config set llm.provider zai
+why config set llm.base_url https://api.z.ai/api/coding/paas/v4
+why config doctor --json
+```
+
+Recommended machine-readable commands:
+```bash
+why config list --json
+why config get llm.provider
+why config doctor --json
+```
+
+Doctor JSON is intended to be agent-safe and stable across releases. Agents should
+branch on `ok`, `checks[*].id`, `checks[*].ok`, and `config_sources` instead of
+parsing human-readable text.
+
 Add to any project's `CLAUDE.md`:
 
 ```markdown
@@ -3214,6 +3431,10 @@ Add to any project's `CLAUDE.md`:
    to see if they have separable archaeological origins
 
 ## MCP tools available (start with `why mcp`):
+- `why_config_get`
+- `why_config_list`
+- `why_config_doctor`
+
 
 - `why_symbol(target)` — explain why a function/line exists
 - `why_diff(range)` — risk report for a branch before merging
