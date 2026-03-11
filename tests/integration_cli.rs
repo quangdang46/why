@@ -59,6 +59,16 @@ fn hotfix_repo_json_output_has_phase_one_shape() -> Result<()> {
             .as_array()
             .is_some_and(|refs| refs.iter().any(|r| r == "#4521"))
     );
+    assert!(
+        hotfix_commit["coverage_score"]
+            .as_f64()
+            .is_some_and(|score| score > 0.9)
+    );
+    assert!(
+        hotfix_commit["relevance_score"]
+            .as_f64()
+            .is_some_and(|score| score > 0.0)
+    );
     assert_eq!(hotfix_commit["is_mechanical"], false);
 
     Ok(())

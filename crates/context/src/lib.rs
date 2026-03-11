@@ -1,1 +1,200 @@
 //! Local code context extraction and heuristics.
+
+use anyhow::{Context, Result};
+use serde::Deserialize;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+const DEFAULT_RISK_LEVEL: &str = "LOW";
+const DEFAULT_MAX_COMMITS: usize = 8;
+const DEFAULT_RECENCY_WINDOW_DAYS: i64 = 90;
+const DEFAULT_MECHANICAL_THRESHOLD_FILES: usize = 50;
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+pub struct WhyConfig {
+    #[serde(default)]
+    pub risk: RiskConfig,
+    #[serde(default)]
+    pub git: GitConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RiskConfig {
+    #[serde(default = "default_risk_level")]
+    pub default_level: String,
+    #[serde(default)]
+    pub keywords: RiskKeywords,
+}
+
+impl Default for RiskConfig {
+    fn default() -> Self {
+        Self {
+            default_level: default_risk_level(),
+            keywords: RiskKeywords::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+pub struct RiskKeywords {
+    #[serde(default)]
+    pub high: Vec<String>,
+    #[serde(default)]
+    pub medium: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct GitConfig {
+    #[serde(default = "default_max_commits")]
+    pub max_commits: usize,
+    #[serde(default = "default_recency_window_days")]
+    pub recency_window_days: i64,
+    #[serde(default = "default_mechanical_threshold_files")]
+    pub mechanical_threshold_files: usize,
+}
+
+impl Default for GitConfig {
+    fn default() -> Self {
+        Self {
+            max_commits: default_max_commits(),
+            recency_window_days: default_recency_window_days(),
+            mechanical_threshold_files: default_mechanical_threshold_files(),
+        }
+    }
+}
+
+pub fn load_config(start_dir: &Path) -> Result<WhyConfig> {
+    let Some(config_path) = find_config_path(start_dir) else {
+        return Ok(WhyConfig::default());
+    };
+
+    load_config_from_path(&config_path)
+}
+
+pub fn load_config_from_path(config_path: &Path) -> Result<WhyConfig> {
+    let contents = fs::read_to_string(config_path)
+        .with_context(|| format!("failed to read config file {}", config_path.display()))?;
+    toml::from_str(&contents)
+        .with_context(|| format!("failed to parse config file {}", config_path.display()))
+}
+
+fn find_config_path(start_dir: &Path) -> Option<PathBuf> {
+    let mut current = if start_dir.is_dir() {
+        start_dir.to_path_buf()
+    } else {
+        start_dir.parent()?.to_path_buf()
+    };
+
+    loop {
+        let candidate = current.join(".why.toml");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
+fn default_risk_level() -> String {
+    DEFAULT_RISK_LEVEL.to_string()
+}
+
+fn default_max_commits() -> usize {
+    DEFAULT_MAX_COMMITS
+}
+
+fn default_recency_window_days() -> i64 {
+    DEFAULT_RECENCY_WINDOW_DAYS
+}
+
+fn default_mechanical_threshold_files() -> usize {
+    DEFAULT_MECHANICAL_THRESHOLD_FILES
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        DEFAULT_MAX_COMMITS, DEFAULT_MECHANICAL_THRESHOLD_FILES, DEFAULT_RECENCY_WINDOW_DAYS,
+        DEFAULT_RISK_LEVEL, WhyConfig, find_config_path, load_config, load_config_from_path,
+    };
+    use anyhow::Result;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn returns_defaults_when_config_is_missing() -> Result<()> {
+        let tempdir = TempDir::new()?;
+        let config = load_config(tempdir.path())?;
+
+        assert_eq!(config.risk.default_level, DEFAULT_RISK_LEVEL);
+        assert_eq!(config.git.max_commits, DEFAULT_MAX_COMMITS);
+        assert_eq!(
+            config.git.mechanical_threshold_files,
+            DEFAULT_MECHANICAL_THRESHOLD_FILES
+        );
+        assert_eq!(config.git.recency_window_days, DEFAULT_RECENCY_WINDOW_DAYS);
+        assert!(config.risk.keywords.high.is_empty());
+        assert!(config.risk.keywords.medium.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn loads_risk_keywords_and_git_overrides_from_toml() -> Result<()> {
+        let tempdir = TempDir::new()?;
+        let config_path = tempdir.path().join(".why.toml");
+        fs::write(
+            &config_path,
+            r#"
+[risk]
+default_level = "medium"
+
+[risk.keywords]
+high = ["pci", "reconciliation"]
+medium = ["terraform"]
+
+[git]
+max_commits = 5
+recency_window_days = 30
+mechanical_threshold_files = 12
+"#,
+        )?;
+
+        let config = load_config_from_path(&config_path)?;
+
+        assert_eq!(
+            config,
+            WhyConfig {
+                risk: super::RiskConfig {
+                    default_level: "medium".into(),
+                    keywords: super::RiskKeywords {
+                        high: vec!["pci".into(), "reconciliation".into()],
+                        medium: vec!["terraform".into()],
+                    },
+                },
+                git: super::GitConfig {
+                    max_commits: 5,
+                    recency_window_days: 30,
+                    mechanical_threshold_files: 12,
+                },
+            }
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn finds_config_in_parent_directory() -> Result<()> {
+        let tempdir = TempDir::new()?;
+        let nested_dir = tempdir.path().join("src/lib");
+        fs::create_dir_all(&nested_dir)?;
+        let config_path = tempdir.path().join(".why.toml");
+        fs::write(&config_path, "[risk]\ndefault_level = \"LOW\"\n")?;
+
+        assert_eq!(find_config_path(&nested_dir), Some(config_path));
+
+        Ok(())
+    }
+}

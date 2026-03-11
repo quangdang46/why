@@ -1,0 +1,11 @@
+[risk]
+default_level = "LOW"
+
+[risk.keywords]
+high = ["settlement", "reconciliation"]
+medium = ["terraform"]
+
+[git]
+max_commits = 5
+recency_window_days = 30
+mechanical_threshold_files = 12

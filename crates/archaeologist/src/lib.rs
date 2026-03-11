@@ -5,21 +5,25 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use time::OffsetDateTime;
 use time::format_description::well_known::Iso8601;
+use why_context::WhyConfig;
+use why_context::load_config;
 use why_locator::{QueryKind, QueryTarget, resolve_target};
 
 const MAX_DIFF_EXCERPT_CHARS: usize = 500;
-const MECHANICAL_FILE_THRESHOLD: usize = 50;
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct CommitEvidence {
     pub oid: String,
     pub short_oid: String,
     pub author: String,
     pub email: String,
+    pub time: i64,
     pub date: String,
     pub summary: String,
     pub message: String,
     pub diff_excerpt: String,
+    pub coverage_score: f32,
+    pub relevance_score: f32,
     pub issue_refs: Vec<String>,
     pub is_mechanical: bool,
 }
@@ -49,7 +53,7 @@ pub struct OutputTarget {
     pub query_kind: QueryKind,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ArchaeologyResult {
     pub target: OutputTarget,
     pub commits: Vec<CommitEvidence>,
@@ -92,6 +96,7 @@ pub fn relative_repo_path(repo: &Repository, path: &Path) -> Result<PathBuf> {
 
 pub fn analyze_target(target: &QueryTarget, cwd: &Path) -> Result<ArchaeologyResult> {
     let resolved = resolve_target(target, cwd)?;
+    let config = load_config(cwd)?;
 
     let target_path = cwd.join(&resolved.path);
     let repo = discover_repository(&target_path)?;
@@ -101,6 +106,7 @@ pub fn analyze_target(target: &QueryTarget, cwd: &Path) -> Result<ArchaeologyRes
         &relative_path,
         resolved.start_line,
         resolved.end_line,
+        &config,
     )?;
 
     Ok(ArchaeologyResult {
@@ -110,7 +116,7 @@ pub fn analyze_target(target: &QueryTarget, cwd: &Path) -> Result<ArchaeologyRes
             end_line: resolved.end_line,
             query_kind: resolved.query_kind,
         },
-        risk_level: infer_risk_level(&commits),
+        risk_level: infer_risk_level(&commits, &config),
         commits,
         mode: "heuristic",
         notes: vec!["No LLM synthesis in phase 1"],
@@ -122,6 +128,7 @@ pub fn blame_commit_evidence(
     relative_path: &Path,
     start_line: u32,
     end_line: u32,
+    config: &WhyConfig,
 ) -> Result<Vec<CommitEvidence>> {
     if start_line == 0 || end_line == 0 {
         bail!("blame lines must be 1-based");
@@ -140,18 +147,28 @@ pub fn blame_commit_evidence(
         .blame_file(relative_path, Some(&mut options))
         .with_context(|| format!("failed to blame {}", relative_path.display()))?;
 
-    let mut seen = HashSet::new();
-    let mut ordered_oids = Vec::new();
+    let mut ownership = Vec::new();
+    let total_target_lines = (end_line - start_line + 1) as usize;
 
     for hunk in blame.iter() {
         let oid = hunk.final_commit_id();
-        if oid.is_zero() || !seen.insert(oid) {
+        if oid.is_zero() {
             continue;
         }
-        ordered_oids.push(oid);
+
+        let hunk_start = hunk.final_start_line() as u32;
+        let hunk_end = hunk_start + hunk.lines_in_hunk() as u32 - 1;
+        let overlap_start = hunk_start.max(start_line);
+        let overlap_end = hunk_end.min(end_line);
+        if overlap_end < overlap_start {
+            continue;
+        }
+
+        let owned_lines = (overlap_end - overlap_start + 1) as usize;
+        ownership.push((oid, owned_lines));
     }
 
-    if ordered_oids.is_empty() {
+    if ownership.is_empty() {
         bail!(
             "no commits found for {}:{}-{}",
             relative_path.display(),
@@ -160,13 +177,28 @@ pub fn blame_commit_evidence(
         );
     }
 
-    ordered_oids
-        .into_iter()
-        .map(|oid| load_commit_evidence(repo, oid))
-        .collect()
+    let mut seen = HashSet::new();
+    let mut commits = Vec::new();
+    for (oid, owned_lines) in ownership {
+        if !seen.insert(oid) {
+            continue;
+        }
+
+        let coverage_score = owned_lines as f32 / total_target_lines as f32;
+        let mut evidence = load_commit_evidence(repo, oid, coverage_score, config)?;
+        evidence.relevance_score = compute_relevance_score(&evidence, config);
+        commits.push(evidence);
+    }
+
+    Ok(select_top_commits(commits, config.git.max_commits))
 }
 
-fn load_commit_evidence(repo: &Repository, oid: Oid) -> Result<CommitEvidence> {
+fn load_commit_evidence(
+    repo: &Repository,
+    oid: Oid,
+    coverage_score: f32,
+    config: &WhyConfig,
+) -> Result<CommitEvidence> {
     let commit = repo
         .find_commit(oid)
         .with_context(|| format!("failed to load commit {oid}"))?;
@@ -179,24 +211,94 @@ fn load_commit_evidence(repo: &Repository, oid: Oid) -> Result<CommitEvidence> {
         .trim()
         .to_string();
     let summary = commit.summary().unwrap_or("(no summary)").to_string();
-    let date = format_git_time(commit.time().seconds())?;
+    let time = commit.time().seconds();
+    let date = format_git_time(time)?;
     let oid_text = oid.to_string();
     let diff_excerpt = load_diff_excerpt(repo, &commit)?;
     let issue_refs = extract_issue_refs(&message);
-    let is_mechanical = is_mechanical_commit(repo, &commit, &summary, &diff_excerpt)?;
+    let is_mechanical = is_mechanical_commit(repo, &commit, &summary, &diff_excerpt, config)?;
 
     Ok(CommitEvidence {
         short_oid: oid_text.chars().take(8).collect(),
         oid: oid_text,
         author: author_name,
         email,
+        time,
         date,
         summary,
         message,
         diff_excerpt,
+        coverage_score,
+        relevance_score: 0.0,
         issue_refs,
         is_mechanical,
     })
+}
+
+fn compute_relevance_score(commit: &CommitEvidence, config: &WhyConfig) -> f32 {
+    let mut score = commit.coverage_score * 100.0;
+    let combined_text = format!("{}\n{}", commit.summary, commit.message).to_ascii_lowercase();
+
+    if contains_any(&combined_text, HIGH_SIGNAL_KEYWORDS)
+        || contains_custom_any(&combined_text, &config.risk.keywords.high)
+    {
+        score += 30.0;
+    }
+    if contains_any(&combined_text, MEDIUM_SIGNAL_KEYWORDS)
+        || contains_custom_any(&combined_text, &config.risk.keywords.medium)
+    {
+        score += 15.0;
+    }
+    if contains_any(&combined_text, RISK_DOMAIN_KEYWORDS) {
+        score += 20.0;
+    }
+
+    score += commit.issue_refs.len() as f32 * 10.0;
+    if !commit.diff_excerpt.is_empty() {
+        score += 5.0;
+    }
+    score += recency_bonus(commit.time, config.git.recency_window_days);
+
+    if commit.is_mechanical {
+        score -= 40.0;
+    }
+
+    score.max(0.0)
+}
+
+fn recency_bonus(commit_time: i64, recency_window_days: i64) -> f32 {
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+    let age_days = ((now - commit_time).max(0)) / 86_400;
+    if age_days >= recency_window_days {
+        0.0
+    } else {
+        20.0 * (1.0 - age_days as f32 / recency_window_days as f32)
+    }
+}
+
+fn contains_any(text: &str, keywords: &[&str]) -> bool {
+    keywords.iter().any(|keyword| text.contains(keyword))
+}
+
+fn contains_custom_any(text: &str, keywords: &[String]) -> bool {
+    keywords
+        .iter()
+        .map(|keyword| keyword.to_ascii_lowercase())
+        .any(|keyword| text.contains(&keyword))
+}
+
+fn select_top_commits(
+    mut commits: Vec<CommitEvidence>,
+    max_relevant_commits: usize,
+) -> Vec<CommitEvidence> {
+    commits.sort_by(|left, right| {
+        right
+            .relevance_score
+            .partial_cmp(&left.relevance_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    commits.truncate(max_relevant_commits);
+    commits
 }
 
 fn load_diff_excerpt(repo: &Repository, commit: &git2::Commit<'_>) -> Result<String> {
@@ -260,6 +362,7 @@ fn is_mechanical_commit(
     commit: &git2::Commit<'_>,
     summary: &str,
     diff_excerpt: &str,
+    config: &WhyConfig,
 ) -> Result<bool> {
     if has_mechanical_summary(summary) {
         return Ok(true);
@@ -283,7 +386,7 @@ fn is_mechanical_commit(
         .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut diff_options))
         .context("failed to inspect commit diff")?;
 
-    if diff.deltas().len() > MECHANICAL_FILE_THRESHOLD {
+    if diff.deltas().len() > config.git.mechanical_threshold_files {
         return Ok(true);
     }
 
@@ -316,6 +419,53 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
 }
 
+const HIGH_SIGNAL_KEYWORDS: &[&str] = &[
+    "hotfix",
+    "security",
+    "vulnerability",
+    "cve",
+    "auth",
+    "bypass",
+    "incident",
+    "postmortem",
+    "rollback",
+    "revert",
+    "critical",
+    "emergency",
+    "breach",
+    "exploit",
+];
+
+const MEDIUM_SIGNAL_KEYWORDS: &[&str] = &[
+    "fix",
+    "bug",
+    "workaround",
+    "temporary",
+    "compat",
+    "migration",
+    "deprecated",
+    "legacy",
+    "backport",
+    "regression",
+];
+
+const RISK_DOMAIN_KEYWORDS: &[&str] = &[
+    "permission",
+    "session",
+    "token",
+    "cookie",
+    "password",
+    "secret",
+    "key",
+    "cert",
+    "tls",
+    "ssl",
+    "csrf",
+    "xss",
+    "injection",
+    "sanitize",
+];
+
 fn format_git_time(seconds: i64) -> Result<String> {
     let timestamp = OffsetDateTime::from_unix_timestamp(seconds)
         .with_context(|| format!("invalid git timestamp {seconds}"))?;
@@ -325,34 +475,58 @@ fn format_git_time(seconds: i64) -> Result<String> {
     Ok(iso)
 }
 
-pub fn infer_risk_level(commits: &[CommitEvidence]) -> RiskLevel {
+pub fn infer_risk_level(commits: &[CommitEvidence], config: &WhyConfig) -> RiskLevel {
+    let default_level = parse_default_risk_level(&config.risk.default_level);
     if commits
         .iter()
-        .any(|commit| has_high_signal_marker(&commit.summary))
+        .any(|commit| has_high_signal_marker(commit, config))
     {
         RiskLevel::HIGH
+    } else if commits
+        .iter()
+        .any(|commit| has_medium_signal_marker(commit, config))
+    {
+        RiskLevel::MEDIUM
     } else if commits.len() <= 1 {
-        RiskLevel::LOW
+        default_level
     } else {
         RiskLevel::MEDIUM
     }
 }
 
-fn has_high_signal_marker(summary: &str) -> bool {
-    let summary = summary.to_ascii_lowercase();
+fn has_high_signal_marker(commit: &CommitEvidence, config: &WhyConfig) -> bool {
+    let combined_text = format!("{}\n{}", commit.summary, commit.message).to_ascii_lowercase();
     ["hotfix", "security", "incident", "vulnerability"]
         .iter()
-        .any(|marker| summary.contains(marker))
+        .any(|marker| combined_text.contains(marker))
+        || contains_custom_any(&combined_text, &config.risk.keywords.high)
+}
+
+fn has_medium_signal_marker(commit: &CommitEvidence, config: &WhyConfig) -> bool {
+    let combined_text = format!("{}\n{}", commit.summary, commit.message).to_ascii_lowercase();
+    contains_any(&combined_text, MEDIUM_SIGNAL_KEYWORDS)
+        || contains_custom_any(&combined_text, &config.risk.keywords.medium)
+}
+
+fn parse_default_risk_level(level: &str) -> RiskLevel {
+    match level.trim().to_ascii_uppercase().as_str() {
+        "HIGH" => RiskLevel::HIGH,
+        "MEDIUM" => RiskLevel::MEDIUM,
+        _ => RiskLevel::LOW,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        CommitEvidence, RiskLevel, blame_commit_evidence, discover_repository, extract_issue_refs,
-        has_mechanical_summary, infer_risk_level, is_whitespace_only_diff_line, relative_repo_path,
-        truncate_chars,
+        CommitEvidence, RiskLevel, blame_commit_evidence, compute_relevance_score,
+        discover_repository, extract_issue_refs, has_mechanical_summary, infer_risk_level,
+        is_whitespace_only_diff_line, parse_default_risk_level, relative_repo_path,
+        select_top_commits, truncate_chars,
     };
     use std::path::Path;
+    use time::OffsetDateTime;
+    use why_context::WhyConfig;
 
     #[test]
     fn discovers_repository_from_workspace_root() {
@@ -373,7 +547,8 @@ mod tests {
         let repo = discover_repository(Path::new(".")).expect("repo should be discoverable");
         let relative =
             relative_repo_path(&repo, Path::new("README.md")).expect("path should be relative");
-        let commits = blame_commit_evidence(&repo, &relative, 1, 1).expect("blame should succeed");
+        let commits = blame_commit_evidence(&repo, &relative, 1, 1, &WhyConfig::default())
+            .expect("blame should succeed");
 
         assert!(!commits.is_empty());
         assert!(!commits[0].short_oid.is_empty());
@@ -387,15 +562,21 @@ mod tests {
             short_oid: "abc".into(),
             author: "alice".into(),
             email: "alice@example.com".into(),
+            time: 1_710_000_000,
             date: "2026-03-10".into(),
             summary: "hotfix: close security vulnerability".into(),
             message: "hotfix: close security vulnerability".into(),
             diff_excerpt: String::new(),
+            coverage_score: 1.0,
+            relevance_score: 0.0,
             issue_refs: Vec::new(),
             is_mechanical: false,
         }];
 
-        assert_eq!(infer_risk_level(&commits), RiskLevel::HIGH);
+        assert_eq!(
+            infer_risk_level(&commits, &WhyConfig::default()),
+            RiskLevel::HIGH
+        );
     }
 
     #[test]
@@ -405,15 +586,61 @@ mod tests {
             short_oid: "abc".into(),
             author: "alice".into(),
             email: "alice@example.com".into(),
+            time: 1_710_000_000,
             date: "2026-03-10".into(),
             summary: "feat: add helper".into(),
             message: "feat: add helper".into(),
             diff_excerpt: String::new(),
+            coverage_score: 1.0,
+            relevance_score: 0.0,
             issue_refs: Vec::new(),
             is_mechanical: false,
         }];
 
-        assert_eq!(infer_risk_level(&commits), RiskLevel::LOW);
+        assert_eq!(
+            infer_risk_level(&commits, &WhyConfig::default()),
+            RiskLevel::LOW
+        );
+    }
+
+    #[test]
+    fn custom_high_keywords_raise_risk_and_relevance() {
+        let config_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("tests/fixtures/config/high-risk.toml");
+        let config = why_context::load_config_from_path(&config_path).expect("config should load");
+        let commit = CommitEvidence {
+            oid: "abc".into(),
+            short_oid: "abc".into(),
+            author: "alice".into(),
+            email: "alice@example.com".into(),
+            time: OffsetDateTime::now_utc().unix_timestamp(),
+            date: "2026-03-11".into(),
+            summary: "feat: add reconciliation guard".into(),
+            message: "feat: add reconciliation guard for settlement pipeline".into(),
+            diff_excerpt: String::new(),
+            coverage_score: 0.4,
+            relevance_score: 0.0,
+            issue_refs: Vec::new(),
+            is_mechanical: false,
+        };
+
+        assert_eq!(
+            infer_risk_level(&[commit.clone()], &config),
+            RiskLevel::HIGH
+        );
+        assert!(
+            compute_relevance_score(&commit, &config)
+                > compute_relevance_score(&commit, &WhyConfig::default())
+        );
+    }
+
+    #[test]
+    fn default_risk_level_parsing_handles_expected_values() {
+        assert_eq!(parse_default_risk_level("high"), RiskLevel::HIGH);
+        assert_eq!(parse_default_risk_level("medium"), RiskLevel::MEDIUM);
+        assert_eq!(parse_default_risk_level("anything-else"), RiskLevel::LOW);
     }
 
     #[test]
@@ -445,5 +672,103 @@ mod tests {
     fn truncates_diff_excerpt_to_budget() {
         let text = "x".repeat(600);
         assert_eq!(truncate_chars(&text, 500).chars().count(), 500);
+    }
+
+    #[test]
+    fn high_signal_scoring_beats_plain_commit() {
+        let now = OffsetDateTime::now_utc().unix_timestamp();
+        let high_signal = CommitEvidence {
+            oid: "a".into(),
+            short_oid: "a".into(),
+            author: "alice".into(),
+            email: "alice@example.com".into(),
+            time: now,
+            date: "2026-03-11".into(),
+            summary: "hotfix: auth bypass incident".into(),
+            message: "hotfix: auth bypass incident closes #42".into(),
+            diff_excerpt: "diff --git a/src/auth.rs b/src/auth.rs".into(),
+            coverage_score: 0.5,
+            relevance_score: 0.0,
+            issue_refs: vec!["#42".into()],
+            is_mechanical: false,
+        };
+        let plain = CommitEvidence {
+            oid: "b".into(),
+            short_oid: "b".into(),
+            author: "bob".into(),
+            email: "bob@example.com".into(),
+            time: now - 120 * 86_400,
+            date: "2025-11-11".into(),
+            summary: "feat: add helper".into(),
+            message: "feat: add helper".into(),
+            diff_excerpt: String::new(),
+            coverage_score: 0.5,
+            relevance_score: 0.0,
+            issue_refs: Vec::new(),
+            is_mechanical: false,
+        };
+
+        assert!(
+            compute_relevance_score(&high_signal, &WhyConfig::default())
+                > compute_relevance_score(&plain, &WhyConfig::default())
+        );
+    }
+
+    #[test]
+    fn mechanical_penalty_reduces_relevance() {
+        let now = OffsetDateTime::now_utc().unix_timestamp();
+        let mut commit = CommitEvidence {
+            oid: "a".into(),
+            short_oid: "a".into(),
+            author: "alice".into(),
+            email: "alice@example.com".into(),
+            time: now,
+            date: "2026-03-11".into(),
+            summary: "fix: preserve session token flow".into(),
+            message: "fix: preserve session token flow closes #52".into(),
+            diff_excerpt: "diff --git a/src/auth.rs b/src/auth.rs".into(),
+            coverage_score: 0.8,
+            relevance_score: 0.0,
+            issue_refs: vec!["#52".into()],
+            is_mechanical: false,
+        };
+        let non_mechanical = compute_relevance_score(&commit, &WhyConfig::default());
+        commit.is_mechanical = true;
+        let mechanical = compute_relevance_score(&commit, &WhyConfig::default());
+
+        assert!(mechanical < non_mechanical);
+    }
+
+    #[test]
+    fn top_n_selection_keeps_highest_scores() {
+        let now = OffsetDateTime::now_utc().unix_timestamp();
+        let commits: Vec<_> = (0..10)
+            .map(|index| CommitEvidence {
+                oid: format!("oid-{index}"),
+                short_oid: format!("{index}"),
+                author: "alice".into(),
+                email: "alice@example.com".into(),
+                time: now,
+                date: "2026-03-11".into(),
+                summary: format!("commit-{index}"),
+                message: String::new(),
+                diff_excerpt: String::new(),
+                coverage_score: 0.1,
+                relevance_score: index as f32,
+                issue_refs: Vec::new(),
+                is_mechanical: false,
+            })
+            .collect();
+
+        let selected = select_top_commits(commits, 8);
+        assert_eq!(selected.len(), 8);
+        assert_eq!(
+            selected.first().map(|commit| commit.relevance_score),
+            Some(9.0)
+        );
+        assert_eq!(
+            selected.last().map(|commit| commit.relevance_score),
+            Some(2.0)
+        );
     }
 }
