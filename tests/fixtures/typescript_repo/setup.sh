@@ -11,21 +11,37 @@ git config user.name "Fixture Bot"
 
 mkdir -p src
 cat > src/auth.ts <<'EOF'
-export function authenticate(token: string): boolean {
-    return token.length > 0;
+export class AuthService {
+    login(token: string): boolean {
+        return token.length > 0;
+    }
 }
+
+const authenticate = (token: string): boolean => {
+    return token.length > 0;
+};
 EOF
 git add src/auth.ts
 git commit -m "feat: add auth entry point" >/dev/null
 
 cat > src/auth.ts <<'EOF'
-export function authenticate(token: string): boolean {
+export class AuthService {
+    login(token: string): boolean {
+        if (!token || token.length < 8) {
+            return false;
+        }
+
+        return token.startsWith("sk-");
+    }
+}
+
+const authenticate = (token: string): boolean => {
     if (!token || token.length < 8) {
         return false;
     }
 
     return token.startsWith("sk-");
-}
+};
 EOF
 git add src/auth.ts
 git commit -m "hotfix: tighten token validation after auth incident" >/dev/null

@@ -5,7 +5,7 @@ use anyhow::{Result, anyhow, bail};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
-pub use finder::{ResolvedTarget, resolve_target};
+pub use finder::{ResolvedTarget, list_all_symbols, resolve_target};
 pub use languages::SupportedLanguage;
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]

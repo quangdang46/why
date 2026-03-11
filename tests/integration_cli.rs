@@ -3,7 +3,7 @@ mod common;
 use anyhow::Result;
 use common::{
     ensure_success, setup_compat_shim_repo, setup_hotfix_repo, setup_javascript_repo,
-    setup_sparse_repo, setup_typescript_repo,
+    setup_python_repo, setup_sparse_repo, setup_typescript_repo,
 };
 use serde_json::Value;
 
@@ -137,8 +137,30 @@ fn typescript_symbol_queries_resolve_and_render_commit_output() -> Result<()> {
     let parsed: Value = serde_json::from_str(&stdout)?;
     assert_eq!(parsed["target"]["path"], "src/auth.ts");
     assert_eq!(parsed["target"]["query_kind"], "symbol");
+    assert_eq!(parsed["target"]["start_line"], 11);
+    assert_eq!(parsed["target"]["end_line"], 17);
+    assert_eq!(parsed["risk_level"], "HIGH");
+    assert!(
+        parsed["commits"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
+
+    Ok(())
+}
+
+#[test]
+fn typescript_class_symbol_queries_resolve_and_render_commit_output() -> Result<()> {
+    let repo = setup_typescript_repo()?;
+    let output = repo.run_why(&["src/auth.ts:AuthService", "--json", "--no-llm"])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    let parsed: Value = serde_json::from_str(&stdout)?;
+    assert_eq!(parsed["target"]["path"], "src/auth.ts");
+    assert_eq!(parsed["target"]["query_kind"], "symbol");
     assert_eq!(parsed["target"]["start_line"], 1);
-    assert_eq!(parsed["target"]["end_line"], 7);
+    assert_eq!(parsed["target"]["end_line"], 9);
     assert_eq!(parsed["risk_level"], "HIGH");
     assert!(
         parsed["commits"]
@@ -159,8 +181,52 @@ fn javascript_symbol_queries_resolve_and_render_commit_output() -> Result<()> {
     let parsed: Value = serde_json::from_str(&stdout)?;
     assert_eq!(parsed["target"]["path"], "src/auth.js");
     assert_eq!(parsed["target"]["query_kind"], "symbol");
-    assert_eq!(parsed["target"]["start_line"], 2);
-    assert_eq!(parsed["target"]["end_line"], 8);
+    assert_eq!(parsed["target"]["start_line"], 11);
+    assert_eq!(parsed["target"]["end_line"], 17);
+    assert_eq!(parsed["risk_level"], "HIGH");
+    assert!(
+        parsed["commits"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
+
+    Ok(())
+}
+
+#[test]
+fn javascript_class_symbol_queries_resolve_and_render_commit_output() -> Result<()> {
+    let repo = setup_javascript_repo()?;
+    let output = repo.run_why(&["src/auth.js:AuthService", "--json", "--no-llm"])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    let parsed: Value = serde_json::from_str(&stdout)?;
+    assert_eq!(parsed["target"]["path"], "src/auth.js");
+    assert_eq!(parsed["target"]["query_kind"], "symbol");
+    assert_eq!(parsed["target"]["start_line"], 1);
+    assert_eq!(parsed["target"]["end_line"], 9);
+    assert_eq!(parsed["risk_level"], "HIGH");
+    assert!(
+        parsed["commits"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
+
+    Ok(())
+}
+
+#[test]
+fn python_symbol_queries_resolve_and_render_commit_output() -> Result<()> {
+    let repo = setup_python_repo()?;
+    let output = repo.run_why(&["src/auth.py:authenticate", "--json", "--no-llm"])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    let parsed: Value = serde_json::from_str(&stdout)?;
+    assert_eq!(parsed["target"]["path"], "src/auth.py");
+    assert_eq!(parsed["target"]["query_kind"], "symbol");
+    assert_eq!(parsed["target"]["start_line"], 8);
+    assert_eq!(parsed["target"]["end_line"], 13);
     assert_eq!(parsed["risk_level"], "HIGH");
     assert!(
         parsed["commits"]

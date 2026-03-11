@@ -66,6 +66,16 @@ impl SupportedLanguage {
 (function_declaration
   name: (identifier) @symbol.name) @symbol.definition
 
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @symbol.name
+    value: (arrow_function)) @symbol.definition)
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @symbol.name
+    value: (arrow_function)) @symbol.definition)
+
 (method_definition
   name: (property_identifier) @symbol.name) @symbol.definition
 
@@ -77,6 +87,21 @@ impl SupportedLanguage {
                 r#"
 (function_declaration
   name: (identifier) @symbol.name) @symbol.definition
+
+(export_statement
+  declaration: (function_declaration
+    name: (identifier) @symbol.name) @symbol.definition)
+
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @symbol.name
+    value: (arrow_function)) @symbol.definition)
+
+(export_statement
+  declaration: (lexical_declaration
+    (variable_declarator
+      name: (identifier) @symbol.name
+      value: (arrow_function)) @symbol.definition))
 
 (method_definition
   name: (property_identifier) @symbol.name) @symbol.definition
@@ -92,6 +117,10 @@ impl SupportedLanguage {
                 r#"
 (function_definition
   name: (identifier) @symbol.name) @symbol.definition
+
+(decorated_definition
+  definition: (function_definition
+    name: (identifier) @symbol.name)) @symbol.definition
 
 (class_definition
   name: (identifier) @symbol.name) @symbol.definition

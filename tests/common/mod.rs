@@ -138,6 +138,11 @@ pub fn setup_split_repo() -> Result<FixtureRepo> {
     setup_fixture("split_repo")
 }
 
+#[allow(dead_code)]
+pub fn setup_python_repo() -> Result<FixtureRepo> {
+    setup_fixture("python_repo")
+}
+
 pub fn ensure_success(output: &Output) -> Result<()> {
     if output.status.success() {
         return Ok(());

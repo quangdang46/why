@@ -20,6 +20,7 @@ struct SymbolMatch {
     qualified_name: Option<String>,
     start_line: u32,
     end_line: u32,
+    nesting_depth: usize,
 }
 
 pub fn resolve_target(target: &QueryTarget, cwd: &Path) -> Result<ResolvedTarget> {
@@ -44,6 +45,23 @@ pub fn resolve_target(target: &QueryTarget, cwd: &Path) -> Result<ResolvedTarget
     }
 }
 
+pub fn list_all_symbols(
+    language: SupportedLanguage,
+    source: &str,
+) -> Result<Vec<(String, u32, u32)>> {
+    let mut symbols: Vec<_> = collect_symbol_matches(language, source)?
+        .into_iter()
+        .map(|candidate| (candidate.name, candidate.start_line, candidate.end_line))
+        .collect();
+    symbols.sort_by(|left, right| {
+        left.1
+            .cmp(&right.1)
+            .then(left.2.cmp(&right.2))
+            .then(left.0.cmp(&right.0))
+    });
+    Ok(symbols)
+}
+
 fn resolve_symbol_target(target: &QueryTarget, cwd: &Path) -> Result<ResolvedTarget> {
     let symbol = target
         .symbol
@@ -65,37 +83,66 @@ fn resolve_symbol_target(target: &QueryTarget, cwd: &Path) -> Result<ResolvedTar
         })
         .collect();
 
-    match matched.as_slice() {
-        [] => bail!(
-            "symbol '{symbol}' was not found in {}",
-            target.path.display()
-        ),
-        [candidate] => Ok(ResolvedTarget {
-            path: target.path.clone(),
-            start_line: candidate.start_line,
-            end_line: candidate.end_line,
-            query_kind: target.query_kind,
-            symbol: Some(symbol.to_string()),
-        }),
-        candidates => {
-            let spans = candidates
-                .iter()
-                .map(|candidate| {
-                    format!(
-                        "{}:{}-{}",
-                        target.path.display(),
-                        candidate.start_line,
-                        candidate.end_line
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
+    let candidate = match matched.as_slice() {
+        [] => {
             bail!(
-                "symbol '{symbol}' is ambiguous in {}. Candidates: {spans}",
+                "symbol '{symbol}' was not found in {}",
                 target.path.display()
             )
         }
+        [candidate] => candidate,
+        candidates => resolve_ambiguous_symbol(language, &target.path, symbol, candidates)?,
+    };
+
+    Ok(ResolvedTarget {
+        path: target.path.clone(),
+        start_line: candidate.start_line,
+        end_line: candidate.end_line,
+        query_kind: target.query_kind,
+        symbol: Some(symbol.to_string()),
+    })
+}
+
+fn resolve_ambiguous_symbol<'a>(
+    language: SupportedLanguage,
+    path: &Path,
+    symbol: &str,
+    candidates: &'a [SymbolMatch],
+) -> Result<&'a SymbolMatch> {
+    if matches!(
+        language,
+        SupportedLanguage::JavaScript | SupportedLanguage::TypeScript | SupportedLanguage::Python
+    ) {
+        let min_depth = candidates
+            .iter()
+            .map(|candidate| candidate.nesting_depth)
+            .min()
+            .ok_or_else(|| anyhow!("ambiguous symbol set cannot be empty"))?;
+        let shallowest: Vec<_> = candidates
+            .iter()
+            .filter(|candidate| candidate.nesting_depth == min_depth)
+            .collect();
+        if let [candidate] = shallowest.as_slice() {
+            return Ok(candidate);
+        }
     }
+
+    let spans = candidates
+        .iter()
+        .map(|candidate| {
+            format!(
+                "{}:{}-{}",
+                path.display(),
+                candidate.start_line,
+                candidate.end_line
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    bail!(
+        "symbol '{symbol}' is ambiguous in {}. Candidates: {spans}",
+        path.display()
+    )
 }
 
 fn collect_symbol_matches(language: SupportedLanguage, source: &str) -> Result<Vec<SymbolMatch>> {
@@ -109,7 +156,7 @@ fn collect_symbol_matches(language: SupportedLanguage, source: &str) -> Result<V
     let query = language.load_symbol_query()?;
     let capture_names = query.capture_names();
     let mut cursor = QueryCursor::new();
-    let mut matches = Vec::new();
+    let mut matches: Vec<SymbolMatch> = Vec::new();
 
     for query_match in cursor.matches(&query, tree.root_node(), source.as_bytes()) {
         let mut name = None;
@@ -145,15 +192,46 @@ fn collect_symbol_matches(language: SupportedLanguage, source: &str) -> Result<V
                 name,
                 start_line,
                 end_line,
+                nesting_depth: named_ancestor_depth(definition_node),
             };
 
-            if !matches.contains(&symbol_match) {
+            if let Some(existing) = matches.iter_mut().find(|existing| {
+                existing.name == symbol_match.name
+                    && existing.qualified_name == symbol_match.qualified_name
+                    && existing.start_line <= symbol_match.start_line
+                    && existing.end_line >= symbol_match.end_line
+            }) {
+                if symbol_match.start_line < existing.start_line
+                    || symbol_match.end_line > existing.end_line
+                {
+                    *existing = symbol_match;
+                }
+            } else if !matches.iter().any(|existing| {
+                existing.name == symbol_match.name
+                    && existing.qualified_name == symbol_match.qualified_name
+                    && existing.start_line == symbol_match.start_line
+                    && existing.end_line == symbol_match.end_line
+            }) {
                 matches.push(symbol_match);
             }
         }
     }
 
     Ok(matches)
+}
+
+fn named_ancestor_depth(node: tree_sitter::Node<'_>) -> usize {
+    let mut depth = 0;
+    let mut current = node.parent();
+
+    while let Some(parent) = current {
+        if parent.is_named() {
+            depth += 1;
+        }
+        current = parent.parent();
+    }
+
+    depth
 }
 
 fn qualified_rust_name(
@@ -211,7 +289,7 @@ fn first_named_identifier(node: tree_sitter::Node<'_>, source: &str) -> Result<O
 
 #[cfg(test)]
 mod tests {
-    use super::{ResolvedTarget, collect_symbol_matches, resolve_target};
+    use super::{ResolvedTarget, collect_symbol_matches, list_all_symbols, resolve_target};
     use crate::{QueryKind, QueryTarget, SupportedLanguage};
     use std::fs;
     use std::path::PathBuf;
@@ -361,6 +439,96 @@ mod tests {
     }
 
     #[test]
+    fn resolves_exported_typescript_function_symbol() {
+        let temp = TempSourceDir::new();
+        temp.write_file(
+            "src/app.ts",
+            "export function authenticate(token: string): boolean {\n    return token.length > 0;\n}\n",
+        );
+
+        let target = QueryTarget {
+            path: PathBuf::from("src/app.ts"),
+            start_line: None,
+            end_line: None,
+            symbol: Some("authenticate".into()),
+            query_kind: QueryKind::Symbol,
+        };
+
+        let resolved = resolve_target(&target, &temp.path)
+            .expect("exported TypeScript function should resolve");
+        assert_eq!(
+            resolved,
+            ResolvedTarget {
+                path: PathBuf::from("src/app.ts"),
+                start_line: 1,
+                end_line: 3,
+                query_kind: QueryKind::Symbol,
+                symbol: Some("authenticate".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn resolves_typescript_arrow_function_symbol() {
+        let temp = TempSourceDir::new();
+        temp.write_file(
+            "src/app.ts",
+            "export const authenticate = (token: string): boolean => {\n    return token.length > 0;\n};\n",
+        );
+
+        let target = QueryTarget {
+            path: PathBuf::from("src/app.ts"),
+            start_line: None,
+            end_line: None,
+            symbol: Some("authenticate".into()),
+            query_kind: QueryKind::Symbol,
+        };
+
+        let resolved =
+            resolve_target(&target, &temp.path).expect("TypeScript arrow function should resolve");
+        assert_eq!(
+            resolved,
+            ResolvedTarget {
+                path: PathBuf::from("src/app.ts"),
+                start_line: 1,
+                end_line: 3,
+                query_kind: QueryKind::Symbol,
+                symbol: Some("authenticate".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn resolves_javascript_arrow_function_symbol() {
+        let temp = TempSourceDir::new();
+        temp.write_file(
+            "src/app.js",
+            "const login = (token) => {\n  return Boolean(token);\n};\n",
+        );
+
+        let target = QueryTarget {
+            path: PathBuf::from("src/app.js"),
+            start_line: None,
+            end_line: None,
+            symbol: Some("login".into()),
+            query_kind: QueryKind::Symbol,
+        };
+
+        let resolved =
+            resolve_target(&target, &temp.path).expect("JavaScript arrow function should resolve");
+        assert_eq!(
+            resolved,
+            ResolvedTarget {
+                path: PathBuf::from("src/app.js"),
+                start_line: 1,
+                end_line: 3,
+                query_kind: QueryKind::Symbol,
+                symbol: Some("login".into()),
+            }
+        );
+    }
+
+    #[test]
     fn collects_rust_symbol_matches_from_source() {
         let source = "pub struct AuthService;\n\nimpl AuthService {\n    pub fn login(&self) -> bool {\n        true\n    }\n}\n\npub fn authenticate() -> bool {\n    true\n}\n";
         let matches = collect_symbol_matches(SupportedLanguage::Rust, source)
@@ -374,6 +542,7 @@ mod tests {
                 && candidate.qualified_name.as_deref() == Some("AuthService::login")
                 && candidate.start_line == 4
                 && candidate.end_line == 6
+                && candidate.nesting_depth > 0
         }));
         assert!(matches.iter().any(|candidate| {
             candidate.name == "authenticate"
@@ -409,6 +578,105 @@ mod tests {
                 query_kind: QueryKind::QualifiedSymbol,
                 symbol: Some("AuthService::login".into()),
             }
+        );
+    }
+
+    #[test]
+    fn resolves_python_decorated_function_symbol() {
+        let temp = TempSourceDir::new();
+        temp.write_file(
+            "src/auth.py",
+            "def audit_auth(fn):\n    return fn\n\n@audit_auth\ndef authenticate(token: str) -> bool:\n    return token.startswith(\"sk-\")\n",
+        );
+
+        let target = QueryTarget {
+            path: PathBuf::from("src/auth.py"),
+            start_line: None,
+            end_line: None,
+            symbol: Some("authenticate".into()),
+            query_kind: QueryKind::Symbol,
+        };
+
+        let resolved = resolve_target(&target, &temp.path).expect("python symbol should resolve");
+        assert_eq!(
+            resolved,
+            ResolvedTarget {
+                path: PathBuf::from("src/auth.py"),
+                start_line: 4,
+                end_line: 6,
+                query_kind: QueryKind::Symbol,
+                symbol: Some("authenticate".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn resolves_python_top_level_function_over_method_with_same_name() {
+        let temp = TempSourceDir::new();
+        temp.write_file(
+            "src/auth.py",
+            "class AuthService:\n    def login(self) -> bool:\n        return True\n\ndef login() -> bool:\n    return False\n",
+        );
+
+        let target = QueryTarget {
+            path: PathBuf::from("src/auth.py"),
+            start_line: None,
+            end_line: None,
+            symbol: Some("login".into()),
+            query_kind: QueryKind::Symbol,
+        };
+
+        let resolved = resolve_target(&target, &temp.path)
+            .expect("python top-level symbol should resolve deterministically");
+        assert_eq!(
+            resolved,
+            ResolvedTarget {
+                path: PathBuf::from("src/auth.py"),
+                start_line: 5,
+                end_line: 6,
+                query_kind: QueryKind::Symbol,
+                symbol: Some("login".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_ambiguous_python_methods_at_same_depth() {
+        let temp = TempSourceDir::new();
+        temp.write_file(
+            "src/auth.py",
+            "class Primary:\n    def login(self) -> bool:\n        return True\n\nclass Backup:\n    def login(self) -> bool:\n        return False\n",
+        );
+
+        let target = QueryTarget {
+            path: PathBuf::from("src/auth.py"),
+            start_line: None,
+            end_line: None,
+            symbol: Some("login".into()),
+            query_kind: QueryKind::Symbol,
+        };
+
+        let error = resolve_target(&target, &temp.path)
+            .expect_err("equally nested python matches should stay ambiguous");
+        let message = error.to_string();
+        assert!(message.contains("symbol 'login' is ambiguous"));
+        assert!(message.contains("src/auth.py:2-3"));
+        assert!(message.contains("src/auth.py:6-7"));
+    }
+
+    #[test]
+    fn lists_python_symbols_from_source() {
+        let source = "class AuthService:\n    def login(self) -> bool:\n        return True\n\n@audit_auth\ndef authenticate(token: str) -> bool:\n    return True\n";
+        let symbols = list_all_symbols(SupportedLanguage::Python, source)
+            .expect("python symbols should list");
+
+        assert_eq!(
+            symbols,
+            vec![
+                ("AuthService".to_string(), 1, 3),
+                ("login".to_string(), 2, 3),
+                ("authenticate".to_string(), 5, 7),
+            ]
         );
     }
 }
