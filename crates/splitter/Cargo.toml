@@ -9,3 +9,11 @@ publish = false
 
 [dependencies]
 anyhow.workspace = true
+git2.workspace = true
+serde.workspace = true
+why-archaeologist = { path = "../archaeologist" }
+why-context = { path = "../context" }
+why-locator = { path = "../locator" }
+
+[dev-dependencies]
+tempfile = "3"

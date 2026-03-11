@@ -132,7 +132,9 @@ fn render_split_terminal(target: &why_locator::QueryTarget, suggestion: Option<&
         }
         None => {
             let symbol = target.symbol.as_deref().unwrap_or("target");
-            println!("No split suggested for {symbol}. The target appears archaeologically cohesive.");
+            println!(
+                "No split suggested for {symbol}. The target appears archaeologically cohesive."
+            );
         }
     }
 }

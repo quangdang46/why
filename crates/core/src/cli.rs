@@ -53,7 +53,12 @@ impl Cli {
     pub fn parse_mode(self) -> Result<Mode> {
         match self.command {
             Some(Command::Mcp) => {
-                if self.target.is_some() || self.lines.is_some() || self.json || self.no_llm || self.split {
+                if self.target.is_some()
+                    || self.lines.is_some()
+                    || self.json
+                    || self.no_llm
+                    || self.split
+                {
                     bail!("the mcp subcommand does not accept query flags or a target");
                 }
                 Ok(Mode::Mcp)
@@ -161,6 +166,10 @@ mod tests {
     fn rejects_query_flags_for_mcp() {
         let error = Cli::try_parse_from(["why", "mcp", "--json"])
             .expect_err("clap should reject query flags for mcp");
-        assert!(error.to_string().contains("unexpected argument '--json' found"));
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--json' found")
+        );
     }
 }

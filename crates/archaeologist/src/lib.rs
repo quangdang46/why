@@ -2,6 +2,7 @@ use anyhow::{Context, Result, bail};
 use git2::{BlameOptions, DiffFormat, DiffOptions, Oid, Repository};
 use serde::Serialize;
 use std::collections::HashSet;
+use std::fs;
 use std::path::{Path, PathBuf};
 use time::OffsetDateTime;
 use time::format_description::well_known::Iso8601;
@@ -10,6 +11,10 @@ use why_context::load_config;
 use why_locator::{QueryKind, QueryTarget, resolve_target};
 
 const MAX_DIFF_EXCERPT_CHARS: usize = 500;
+const LOCAL_CONTEXT_WINDOW_LINES: u32 = 20;
+const MAX_LOCAL_COMMENTS: usize = 5;
+const MAX_LOCAL_MARKERS: usize = 5;
+const MAX_LOCAL_RISK_FLAGS: usize = 10;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct CommitEvidence {
@@ -43,6 +48,32 @@ impl RiskLevel {
             Self::LOW => "LOW",
         }
     }
+
+    pub fn summary(self) -> &'static str {
+        match self {
+            Self::HIGH => {
+                "The history suggests security sensitivity, incident context, or non-routine compatibility risk."
+            }
+            Self::MEDIUM => {
+                "The history suggests migration, retry, legacy, or transitional behavior that needs context before changes."
+            }
+            Self::LOW => {
+                "The available history does not show unusual operational or compatibility pressure."
+            }
+        }
+    }
+
+    pub fn change_guidance(self) -> &'static str {
+        match self {
+            Self::HIGH => {
+                "Stop and investigate before deleting or heavily refactoring this target."
+            }
+            Self::MEDIUM => {
+                "Change only after reviewing surrounding code and validating the behavior you might disturb."
+            }
+            Self::LOW => "Treat this as ordinary code unless stronger evidence appears elsewhere.",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -53,11 +84,21 @@ pub struct OutputTarget {
     pub query_kind: QueryKind,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct LocalContext {
+    pub comments: Vec<String>,
+    pub markers: Vec<String>,
+    pub risk_flags: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ArchaeologyResult {
     pub target: OutputTarget,
     pub commits: Vec<CommitEvidence>,
     pub risk_level: RiskLevel,
+    pub risk_summary: &'static str,
+    pub change_guidance: &'static str,
+    pub local_context: LocalContext,
     pub mode: &'static str,
     pub notes: Vec<&'static str>,
 }
@@ -108,6 +149,14 @@ pub fn analyze_target(target: &QueryTarget, cwd: &Path) -> Result<ArchaeologyRes
         resolved.end_line,
         &config,
     )?;
+    let local_context = extract_local_context(
+        &target_path,
+        resolved.start_line,
+        resolved.end_line,
+        &config,
+    )?;
+
+    let risk_level = infer_risk_level(&commits, &local_context, &config);
 
     Ok(ArchaeologyResult {
         target: OutputTarget {
@@ -116,10 +165,16 @@ pub fn analyze_target(target: &QueryTarget, cwd: &Path) -> Result<ArchaeologyRes
             end_line: resolved.end_line,
             query_kind: resolved.query_kind,
         },
-        risk_level: infer_risk_level(&commits, &config),
         commits,
+        risk_level,
+        risk_summary: risk_level.summary(),
+        change_guidance: risk_level.change_guidance(),
+        local_context,
         mode: "heuristic",
-        notes: vec!["No LLM synthesis in phase 1"],
+        notes: vec![
+            "No LLM synthesis in phase 1",
+            "Evidence and inference should be kept separate when presenting this result",
+        ],
     })
 }
 
@@ -191,6 +246,145 @@ pub fn blame_commit_evidence(
     }
 
     Ok(select_top_commits(commits, config.git.max_commits))
+}
+
+pub fn extract_local_context(
+    path: &Path,
+    start_line: u32,
+    end_line: u32,
+    config: &WhyConfig,
+) -> Result<LocalContext> {
+    if start_line == 0 || end_line == 0 {
+        bail!("context lines must be 1-based");
+    }
+    if end_line < start_line {
+        bail!("context range end must be greater than or equal to start");
+    }
+
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("failed to read source file {}", path.display()))?;
+    let lines: Vec<&str> = contents.lines().collect();
+    if lines.is_empty() {
+        return Ok(LocalContext {
+            comments: Vec::new(),
+            markers: Vec::new(),
+            risk_flags: Vec::new(),
+        });
+    }
+
+    let window_start = start_line.saturating_sub(LOCAL_CONTEXT_WINDOW_LINES).max(1) as usize;
+    let window_end = (end_line + LOCAL_CONTEXT_WINDOW_LINES).min(lines.len() as u32) as usize;
+
+    let mut comments = Vec::new();
+    let mut markers = Vec::new();
+    let mut risk_flags = Vec::new();
+    let mut seen_flags = HashSet::new();
+
+    for line in &lines[(window_start - 1)..window_end] {
+        if let Some(comment) = extract_comment_text(line) {
+            if comments.len() < MAX_LOCAL_COMMENTS {
+                comments.push(comment.clone());
+            }
+            if let Some(marker) = classify_marker(&comment) {
+                if markers.len() < MAX_LOCAL_MARKERS {
+                    markers.push(comment.clone());
+                }
+                if matches!(marker, "HACK" | "FIXME" | "TEMP" | "SAFETY") {
+                    push_risk_flag(
+                        &mut risk_flags,
+                        &mut seen_flags,
+                        marker.to_ascii_lowercase(),
+                    );
+                }
+            }
+            collect_risk_flags(&comment, config, &mut risk_flags, &mut seen_flags);
+        } else {
+            collect_risk_flags(line, config, &mut risk_flags, &mut seen_flags);
+        }
+    }
+
+    Ok(LocalContext {
+        comments,
+        markers,
+        risk_flags,
+    })
+}
+
+fn extract_comment_text(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Some(comment) = trimmed.strip_prefix("//") {
+        return normalize_context_text(comment);
+    }
+    if let Some(comment) = trimmed.strip_prefix('#') {
+        return normalize_context_text(comment);
+    }
+    if let Some(start) = trimmed.find("/*") {
+        let comment = &trimmed[start + 2..];
+        let comment = comment.strip_suffix("*/").unwrap_or(comment);
+        return normalize_context_text(comment);
+    }
+    if let Some(start) = trimmed.find("//") {
+        return normalize_context_text(&trimmed[start + 2..]);
+    }
+    None
+}
+
+fn normalize_context_text(text: &str) -> Option<String> {
+    let normalized = text.trim().trim_matches('*').trim();
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized.to_string())
+    }
+}
+
+fn classify_marker(text: &str) -> Option<&'static str> {
+    let upper = text.to_ascii_uppercase();
+    ["TODO", "FIXME", "HACK", "TEMP", "SAFETY", "XXX"]
+        .into_iter()
+        .find(|marker| upper.contains(marker))
+}
+
+fn collect_risk_flags(
+    text: &str,
+    config: &WhyConfig,
+    risk_flags: &mut Vec<String>,
+    seen_flags: &mut HashSet<String>,
+) {
+    let lower = text.to_ascii_lowercase();
+    for keyword in HIGH_SIGNAL_KEYWORDS
+        .iter()
+        .chain(MEDIUM_SIGNAL_KEYWORDS.iter())
+        .chain(RISK_DOMAIN_KEYWORDS.iter())
+    {
+        if lower.contains(keyword) {
+            push_risk_flag(risk_flags, seen_flags, (*keyword).to_string());
+        }
+    }
+
+    for keyword in &config.risk.keywords.high {
+        if lower.contains(&keyword.to_ascii_lowercase()) {
+            push_risk_flag(risk_flags, seen_flags, keyword.to_ascii_lowercase());
+        }
+    }
+    for keyword in &config.risk.keywords.medium {
+        if lower.contains(&keyword.to_ascii_lowercase()) {
+            push_risk_flag(risk_flags, seen_flags, keyword.to_ascii_lowercase());
+        }
+    }
+}
+
+fn push_risk_flag(risk_flags: &mut Vec<String>, seen_flags: &mut HashSet<String>, flag: String) {
+    if risk_flags.len() >= MAX_LOCAL_RISK_FLAGS {
+        return;
+    }
+    if seen_flags.insert(flag.clone()) {
+        risk_flags.push(flag);
+    }
 }
 
 fn load_commit_evidence(
@@ -475,16 +669,22 @@ fn format_git_time(seconds: i64) -> Result<String> {
     Ok(iso)
 }
 
-pub fn infer_risk_level(commits: &[CommitEvidence], config: &WhyConfig) -> RiskLevel {
+pub fn infer_risk_level(
+    commits: &[CommitEvidence],
+    local_context: &LocalContext,
+    config: &WhyConfig,
+) -> RiskLevel {
     let default_level = parse_default_risk_level(&config.risk.default_level);
     if commits
         .iter()
         .any(|commit| has_high_signal_marker(commit, config))
+        || local_context_has_high_signal(local_context, config)
     {
         RiskLevel::HIGH
     } else if commits
         .iter()
         .any(|commit| has_medium_signal_marker(commit, config))
+        || local_context_has_medium_signal(local_context, config)
     {
         RiskLevel::MEDIUM
     } else if commits.len() <= 1 {
@@ -508,6 +708,35 @@ fn has_medium_signal_marker(commit: &CommitEvidence, config: &WhyConfig) -> bool
         || contains_custom_any(&combined_text, &config.risk.keywords.medium)
 }
 
+fn local_context_has_high_signal(local_context: &LocalContext, config: &WhyConfig) -> bool {
+    local_context
+        .comments
+        .iter()
+        .chain(local_context.markers.iter())
+        .any(|text| {
+            let lower = text.to_ascii_lowercase();
+            contains_any(&lower, HIGH_SIGNAL_KEYWORDS)
+                || contains_custom_any(&lower, &config.risk.keywords.high)
+                || contains_any(&lower, RISK_DOMAIN_KEYWORDS)
+        })
+}
+
+fn local_context_has_medium_signal(local_context: &LocalContext, config: &WhyConfig) -> bool {
+    local_context
+        .comments
+        .iter()
+        .chain(local_context.markers.iter())
+        .any(|text| {
+            let lower = text.to_ascii_lowercase();
+            contains_any(&lower, MEDIUM_SIGNAL_KEYWORDS)
+                || contains_custom_any(&lower, &config.risk.keywords.medium)
+        })
+        || local_context
+            .risk_flags
+            .iter()
+            .any(|flag| matches!(flag.as_str(), "hack" | "fixme" | "temp" | "safety"))
+}
+
 fn parse_default_risk_level(level: &str) -> RiskLevel {
     match level.trim().to_ascii_uppercase().as_str() {
         "HIGH" => RiskLevel::HIGH,
@@ -519,12 +748,15 @@ fn parse_default_risk_level(level: &str) -> RiskLevel {
 #[cfg(test)]
 mod tests {
     use super::{
-        CommitEvidence, RiskLevel, blame_commit_evidence, compute_relevance_score,
-        discover_repository, extract_issue_refs, has_mechanical_summary, infer_risk_level,
-        is_whitespace_only_diff_line, parse_default_risk_level, relative_repo_path,
-        select_top_commits, truncate_chars,
+        CommitEvidence, LocalContext, RiskLevel, blame_commit_evidence, compute_relevance_score,
+        discover_repository, extract_issue_refs, extract_local_context, has_mechanical_summary,
+        infer_risk_level, is_whitespace_only_diff_line, parse_default_risk_level,
+        relative_repo_path, select_top_commits, truncate_chars,
     };
+    use anyhow::Result;
+    use std::fs;
     use std::path::Path;
+    use tempfile::TempDir;
     use time::OffsetDateTime;
     use why_context::WhyConfig;
 
@@ -574,7 +806,15 @@ mod tests {
         }];
 
         assert_eq!(
-            infer_risk_level(&commits, &WhyConfig::default()),
+            infer_risk_level(
+                &commits,
+                &LocalContext {
+                    comments: Vec::new(),
+                    markers: Vec::new(),
+                    risk_flags: Vec::new(),
+                },
+                &WhyConfig::default(),
+            ),
             RiskLevel::HIGH
         );
     }
@@ -598,7 +838,15 @@ mod tests {
         }];
 
         assert_eq!(
-            infer_risk_level(&commits, &WhyConfig::default()),
+            infer_risk_level(
+                &commits,
+                &LocalContext {
+                    comments: Vec::new(),
+                    markers: Vec::new(),
+                    risk_flags: Vec::new(),
+                },
+                &WhyConfig::default(),
+            ),
             RiskLevel::LOW
         );
     }
@@ -627,7 +875,15 @@ mod tests {
         };
 
         assert_eq!(
-            infer_risk_level(&[commit.clone()], &config),
+            infer_risk_level(
+                &[commit.clone()],
+                &LocalContext {
+                    comments: Vec::new(),
+                    markers: Vec::new(),
+                    risk_flags: Vec::new(),
+                },
+                &config,
+            ),
             RiskLevel::HIGH
         );
         assert!(
@@ -641,6 +897,32 @@ mod tests {
         assert_eq!(parse_default_risk_level("high"), RiskLevel::HIGH);
         assert_eq!(parse_default_risk_level("medium"), RiskLevel::MEDIUM);
         assert_eq!(parse_default_risk_level("anything-else"), RiskLevel::LOW);
+    }
+
+    #[test]
+    fn risk_levels_expose_user_facing_semantics() {
+        assert!(RiskLevel::HIGH.summary().contains("security sensitivity"));
+        assert!(
+            RiskLevel::HIGH
+                .change_guidance()
+                .contains("Stop and investigate")
+        );
+        assert!(
+            RiskLevel::MEDIUM
+                .summary()
+                .contains("transitional behavior")
+        );
+        assert!(
+            RiskLevel::MEDIUM
+                .change_guidance()
+                .contains("reviewing surrounding code")
+        );
+        assert!(
+            RiskLevel::LOW
+                .summary()
+                .contains("unusual operational or compatibility pressure")
+        );
+        assert!(RiskLevel::LOW.change_guidance().contains("ordinary code"));
     }
 
     #[test]
@@ -672,6 +954,98 @@ mod tests {
     fn truncates_diff_excerpt_to_budget() {
         let text = "x".repeat(600);
         assert_eq!(truncate_chars(&text, 500).chars().count(), 500);
+    }
+
+    #[test]
+    fn extracts_comments_markers_and_risk_flags_from_local_window() -> Result<()> {
+        let dir = TempDir::new()?;
+        let path = dir.path().join("sample.rs");
+        fs::write(
+            &path,
+            "pub fn helper() {}\n// auth: validate bearer token before session refresh\n// TODO: remove after mobile rollout\nfn target() {\n    do_work();\n}\n",
+        )?;
+
+        let context = extract_local_context(&path, 4, 5, &WhyConfig::default())?;
+        assert!(
+            context
+                .comments
+                .iter()
+                .any(|comment| comment.contains("validate bearer token"))
+        );
+        assert!(
+            context
+                .markers
+                .iter()
+                .any(|marker| marker.contains("TODO: remove after mobile rollout"))
+        );
+        assert!(context.risk_flags.iter().any(|flag| flag == "auth"));
+        assert!(context.risk_flags.iter().any(|flag| flag == "token"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn local_context_high_signal_produces_high_risk() {
+        let commits = vec![CommitEvidence {
+            oid: "abc".into(),
+            short_oid: "abc".into(),
+            author: "alice".into(),
+            email: "alice@example.com".into(),
+            time: 1_710_000_000,
+            date: "2026-03-10".into(),
+            summary: "feat: add helper".into(),
+            message: "feat: add helper".into(),
+            diff_excerpt: String::new(),
+            coverage_score: 1.0,
+            relevance_score: 0.0,
+            issue_refs: Vec::new(),
+            is_mechanical: false,
+        }];
+
+        assert_eq!(
+            infer_risk_level(
+                &commits,
+                &LocalContext {
+                    comments: vec!["security: validate session token before auth refresh".into()],
+                    markers: Vec::new(),
+                    risk_flags: vec!["security".into(), "session".into(), "token".into()],
+                },
+                &WhyConfig::default(),
+            ),
+            RiskLevel::HIGH
+        );
+    }
+
+    #[test]
+    fn local_context_marker_produces_medium_risk() {
+        let commits = vec![CommitEvidence {
+            oid: "abc".into(),
+            short_oid: "abc".into(),
+            author: "alice".into(),
+            email: "alice@example.com".into(),
+            time: 1_710_000_000,
+            date: "2026-03-10".into(),
+            summary: "feat: add helper".into(),
+            message: "feat: add helper".into(),
+            diff_excerpt: String::new(),
+            coverage_score: 1.0,
+            relevance_score: 0.0,
+            issue_refs: Vec::new(),
+            is_mechanical: false,
+        }];
+
+        assert_eq!(
+            infer_risk_level(
+                &commits,
+                &LocalContext {
+                    comments: Vec::new(),
+                    markers: vec!["HACK: temporary compatibility path".into()],
+                    risk_flags: vec!["hack".into()],
+                },
+                &WhyConfig::default(),
+            ),
+            RiskLevel::MEDIUM
+        );
     }
 
     #[test]

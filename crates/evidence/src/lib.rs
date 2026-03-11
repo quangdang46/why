@@ -1,6 +1,10 @@
 //! Evidence pack construction.
 
+use anyhow::{Context, Result, anyhow, bail};
+use reqwest::blocking::{Client, RequestBuilder};
+use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT};
 use serde::{Deserialize, Serialize};
+use why_context::WhyConfig;
 
 const MAX_PAYLOAD_CHARS: usize = 8_000;
 const MAX_DIFF_CHARS: usize = 500;
@@ -81,6 +85,99 @@ pub struct EvidenceCommit {
     pub diff_excerpt: String,
     pub coverage_score: f32,
     pub issue_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitHubRepo {
+    pub owner: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitHubRef {
+    pub number: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GitHubItem {
+    pub number: u64,
+    pub title: String,
+    pub body: String,
+    pub html_url: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct GitHubClient {
+    repo: GitHubRepo,
+    auth_value: Option<String>,
+    client: Client,
+}
+
+impl GitHubClient {
+    pub fn from_config(config: &WhyConfig, remote_url: &str) -> Result<Self> {
+        let repo = parse_github_remote(remote_url)?;
+        let auth_value = config.github_token();
+        let client = build_http_client()?;
+        Ok(Self {
+            repo,
+            auth_value,
+            client,
+        })
+    }
+
+    pub fn repo(&self) -> &GitHubRepo {
+        &self.repo
+    }
+
+    pub fn issue_endpoint(&self, issue: &GitHubRef) -> String {
+        format!(
+            "https://api.github.com/repos/{}/{}/issues/{}",
+            self.repo.owner, self.repo.name, issue.number
+        )
+    }
+
+    pub fn request_issue(&self, issue: &GitHubRef) -> RequestBuilder {
+        let builder = self
+            .client
+            .get(self.issue_endpoint(issue))
+            .header(ACCEPT, "application/vnd.github+json");
+
+        match self.auth_value.as_deref() {
+            Some(auth_value) => builder.header(AUTHORIZATION, format!("Bearer {auth_value}")),
+            None => builder,
+        }
+    }
+}
+
+pub fn parse_github_remote(remote_url: &str) -> Result<GitHubRepo> {
+    let trimmed = remote_url.trim();
+    let rest = trimmed
+        .strip_prefix("git@github.com:")
+        .or_else(|| trimmed.strip_prefix("https://github.com/"))
+        .or_else(|| trimmed.strip_prefix("ssh://git@github.com/"))
+        .ok_or_else(|| anyhow!("unsupported GitHub remote: {trimmed}"))?;
+
+    let rest = rest.trim_end_matches('/').trim_end_matches(".git");
+    let mut parts = rest.split('/');
+    let owner = parts.next().unwrap_or_default().trim();
+    let name = parts.next().unwrap_or_default().trim();
+    if owner.is_empty() || name.is_empty() || parts.next().is_some() {
+        bail!("unsupported GitHub remote: {trimmed}");
+    }
+
+    Ok(GitHubRepo {
+        owner: owner.to_string(),
+        name: name.to_string(),
+    })
+}
+
+fn build_http_client() -> Result<Client> {
+    let mut headers = HeaderMap::new();
+    headers.insert(USER_AGENT, HeaderValue::from_static("why-cli/0.1"));
+    Client::builder()
+        .default_headers(headers)
+        .build()
+        .context("failed to build GitHub client")
 }
 
 pub fn build(
@@ -209,6 +306,7 @@ fn truncate(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use why_context::{GitHubConfig, WhyConfig};
 
     fn sample_target() -> EvidenceTarget {
         EvidenceTarget {
@@ -279,5 +377,50 @@ mod tests {
     #[test]
     fn test_truncate_no_op_when_short() {
         assert_eq!(truncate("short", 100), "short");
+    }
+
+    #[test]
+    fn test_parse_github_remote_https() {
+        let repo = parse_github_remote("https://github.com/anthropics/why.git")
+            .expect("https remote should parse");
+
+        assert_eq!(repo.owner, "anthropics");
+        assert_eq!(repo.name, "why");
+    }
+
+    #[test]
+    fn test_parse_github_remote_ssh() {
+        let repo = parse_github_remote("git@github.com:anthropics/why.git")
+            .expect("ssh remote should parse");
+
+        assert_eq!(repo.owner, "anthropics");
+        assert_eq!(repo.name, "why");
+    }
+
+    #[test]
+    fn test_parse_github_remote_rejects_non_github_host() {
+        let error = parse_github_remote("https://gitlab.com/anthropics/why.git")
+            .expect_err("non-GitHub remote should fail");
+
+        assert!(error.to_string().contains("unsupported GitHub remote"));
+    }
+
+    #[test]
+    fn test_github_client_uses_config_and_builds_issue_endpoint() {
+        let config = WhyConfig {
+            github: GitHubConfig {
+                remote: "origin".into(),
+                token: Some("test-placeholder".into()),
+            },
+            ..WhyConfig::default()
+        };
+
+        let client = GitHubClient::from_config(&config, "https://github.com/anthropics/why.git")
+            .expect("client should build from config");
+        let endpoint = client.issue_endpoint(&GitHubRef { number: 42 });
+
+        assert_eq!(client.repo().owner, "anthropics");
+        assert_eq!(client.repo().name, "why");
+        assert_eq!(endpoint, "https://api.github.com/repos/anthropics/why/issues/42");
     }
 }

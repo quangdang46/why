@@ -1,0 +1,50 @@
+{
+  "target": {
+    "path": "src/payment.rs",
+    "start_line": 4,
+    "end_line": 12,
+    "query_kind": "symbol"
+  },
+  "risk_level": "HIGH",
+  "risk_summary": "The history suggests security sensitivity, incident context, or non-routine compatibility risk.",
+  "change_guidance": "Stop and investigate before deleting or heavily refactoring this target.",
+  "mode": "heuristic",
+  "notes": [
+    "No LLM synthesis in phase 1",
+    "Evidence and inference should be kept separate when presenting this result"
+  ],
+  "local_context": {
+    "comments": [
+      "security: validate amount range to prevent negative charge exploit",
+      "hotfix: rate limit to prevent duplicate charge incident #4521"
+    ],
+    "markers": [],
+    "risk_flags": [
+      "security",
+      "exploit",
+      "hotfix",
+      "incident",
+      "fix"
+    ]
+  },
+  "commits": [
+    {
+      "author": "Fixture Bot",
+      "email": "test@example.com",
+      "summary": "hotfix: fix duplicate charge vulnerability, closes #4521",
+      "message": "hotfix: fix duplicate charge vulnerability, closes #4521",
+      "issue_refs": [
+        "#4521"
+      ],
+      "is_mechanical": false
+    },
+    {
+      "author": "Fixture Bot",
+      "email": "test@example.com",
+      "summary": "feat: add payment processing",
+      "message": "feat: add payment processing",
+      "issue_refs": [],
+      "is_mechanical": false
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "path": "src/auth.rs",
+  "symbol": "authenticate",
+  "start_line": 1,
+  "end_line": 14,
+  "total_lines": 14,
+  "blocks": [
+    {
+      "start_line": 1,
+      "end_line": 6,
+      "line_count": 6,
+      "percentage_of_function": 43,
+      "era_label": "Security hardening era",
+      "dominant_commit_summary": "hotfix: harden authenticate after auth bypass incident #4521",
+      "suggested_name": "authenticate_with_guard",
+      "risk_level": "HIGH"
+    },
+    {
+      "start_line": 7,
+      "end_line": 14,
+      "line_count": 8,
+      "percentage_of_function": 57,
+      "era_label": "Backward compat era",
+      "dominant_commit_summary": "feat: add legacy v1 token support for mobile backward compat (#234)",
+      "suggested_name": "authenticate_legacy",
+      "risk_level": "MEDIUM"
+    }
+  ]
+}

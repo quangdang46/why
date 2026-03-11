@@ -1,0 +1,16 @@
+Suggested split for authenticate() (14 lines, lines 1-14)
+
+  Block A  lines 1-6  Security hardening era
+                           Dominant commit: <oid> — hotfix: harden authenticate after auth bypass incident #4521
+                           -> Suggested extraction: authenticate_with_guard()
+                           Risk: HIGH
+                           6 lines / 43% of function
+
+  Block B  lines 7-14  Backward compat era
+                           Dominant commit: <oid> — feat: add legacy v1 token support for mobile backward compat (#234)
+                           -> Suggested extraction: authenticate_legacy()
+                           Risk: MEDIUM
+                           8 lines / 57% of function
+
+These blocks have different reasons to change and different risk profiles.
+Splitting reduces blast radius by separating historically distinct paths.

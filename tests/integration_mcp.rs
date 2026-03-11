@@ -1,15 +1,45 @@
 mod common;
 
 use anyhow::Result;
-use common::{ensure_success, setup_hotfix_repo, setup_split_repo, setup_timebomb_repo};
+use common::{
+    assert_json_golden, ensure_success, setup_hotfix_repo, setup_split_repo, setup_timebomb_repo,
+};
 use serde_json::Value;
 
-fn response_lines(output: &std::process::Output) -> Vec<Value> {
+fn response_lines(output: &std::process::Output) -> Result<Vec<Value>> {
     String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter(|line| !line.trim().is_empty())
-        .map(|line| serde_json::from_str(line).expect("response line should be JSON"))
+        .map(|line| serde_json::from_str(line).map_err(Into::into))
         .collect()
+}
+
+fn archaeology_golden_view(payload: &Value) -> Value {
+    serde_json::json!({
+        "target": payload["target"],
+        "risk_level": payload["risk_level"],
+        "risk_summary": payload["risk_summary"],
+        "change_guidance": payload["change_guidance"],
+        "mode": payload["mode"],
+        "notes": payload["notes"],
+        "local_context": payload["local_context"],
+        "commits": payload["commits"]
+            .as_array()
+            .map(|commits| {
+                commits
+                    .iter()
+                    .map(|commit| serde_json::json!({
+                        "author": commit["author"],
+                        "email": commit["email"],
+                        "summary": commit["summary"],
+                        "message": commit["message"],
+                        "issue_refs": commit["issue_refs"],
+                        "is_mechanical": commit["is_mechanical"]
+                    }))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    })
 }
 
 #[test]
@@ -24,13 +54,13 @@ fn mcp_initialize_and_tools_list_work_over_stdio() -> Result<()> {
     )?;
     ensure_success(&output)?;
 
-    let responses = response_lines(&output);
+    let responses = response_lines(&output)?;
     assert_eq!(responses.len(), 2);
     assert_eq!(responses[0]["id"], 1);
     assert_eq!(responses[0]["result"]["protocolVersion"], "2.0");
     let tools = responses[1]["result"]["tools"]
         .as_array()
-        .expect("tools/list should return tool array");
+        .ok_or_else(|| anyhow::anyhow!("tools/list should return tool array"))?;
     assert_eq!(tools.len(), 3);
     assert_eq!(tools[0]["name"], "why_symbol");
     assert_eq!(tools[1]["name"], "why_split");
@@ -53,12 +83,20 @@ fn mcp_why_symbol_returns_archaeology_result() -> Result<()> {
     )?;
     ensure_success(&output)?;
 
-    let responses = response_lines(&output);
+    let responses = response_lines(&output)?;
     let payload = &responses[0]["result"]["content"][0]["json"];
     assert_eq!(payload["target"]["path"], "src/payment.rs");
     assert_eq!(payload["target"]["query_kind"], "symbol");
     assert_eq!(payload["risk_level"], "HIGH");
-    assert!(payload["commits"].as_array().is_some_and(|items| !items.is_empty()));
+    assert!(
+        payload["commits"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
+    assert_json_golden(
+        "mcp_why_symbol_hotfix_repo",
+        &archaeology_golden_view(payload),
+    )?;
 
     Ok(())
 }
@@ -77,11 +115,15 @@ fn mcp_why_split_returns_split_suggestion_json() -> Result<()> {
     )?;
     ensure_success(&output)?;
 
-    let responses = response_lines(&output);
+    let responses = response_lines(&output)?;
     let payload = &responses[0]["result"]["content"][0]["json"];
     assert_eq!(payload["path"], "src/auth.rs");
     assert_eq!(payload["symbol"], "authenticate");
-    assert_eq!(payload["blocks"].as_array().map(|blocks| blocks.len()), Some(2));
+    assert_eq!(
+        payload["blocks"].as_array().map(|blocks| blocks.len()),
+        Some(2)
+    );
+    assert_json_golden("mcp_why_split_split_repo", payload)?;
 
     Ok(())
 }
@@ -95,12 +137,16 @@ fn mcp_why_time_bombs_returns_findings() -> Result<()> {
     )?;
     ensure_success(&output)?;
 
-    let responses = response_lines(&output);
+    let responses = response_lines(&output)?;
     let payload = responses[0]["result"]["content"][0]["json"]
         .as_array()
-        .expect("time bomb result should be array");
+        .ok_or_else(|| anyhow::anyhow!("time bomb result should be array"))?;
     assert!(!payload.is_empty());
-    assert!(payload.iter().any(|finding| finding["kind"] == "PastDueTodo"));
+    assert!(
+        payload
+            .iter()
+            .any(|finding| finding["kind"] == "PastDueTodo")
+    );
 
     Ok(())
 }
@@ -114,12 +160,14 @@ fn mcp_returns_structured_error_for_unknown_tool() -> Result<()> {
     )?;
     ensure_success(&output)?;
 
-    let responses = response_lines(&output);
+    let responses = response_lines(&output)?;
     assert_eq!(responses[0]["id"], 7);
     assert_eq!(responses[0]["error"]["code"], -32602);
-    assert!(responses[0]["error"]["message"]
-        .as_str()
-        .is_some_and(|msg| msg.contains("unknown tool")));
+    assert!(
+        responses[0]["error"]["message"]
+            .as_str()
+            .is_some_and(|msg| msg.contains("unknown tool"))
+    );
 
     Ok(())
 }

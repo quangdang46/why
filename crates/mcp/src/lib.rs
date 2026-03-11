@@ -131,8 +131,12 @@ fn tool_definition(name: &str, description: &str, input_schema: Value) -> Value 
 
 fn call_tool(params: Option<Value>) -> std::result::Result<Value, McpError> {
     let params = params.ok_or_else(|| McpError::new(ErrorCode::InvalidParams, "missing params"))?;
-    let request: ToolCallRequest = serde_json::from_value(params)
-        .map_err(|error| McpError::new(ErrorCode::InvalidParams, format!("invalid tool call params: {error}")))?;
+    let request: ToolCallRequest = serde_json::from_value(params).map_err(|error| {
+        McpError::new(
+            ErrorCode::InvalidParams,
+            format!("invalid tool call params: {error}"),
+        )
+    })?;
 
     let cwd = std::env::current_dir().map_err(|error| {
         McpError::new(
@@ -147,15 +151,31 @@ fn call_tool(params: Option<Value>) -> std::result::Result<Value, McpError> {
             let target = parse_target(&args.target, args.lines.as_deref())
                 .map_err(|error| McpError::tool_error(error.to_string()))?;
             let _ = args.no_llm;
-            serde_json::to_value(analyze_target(&target, &cwd).map_err(|error| McpError::tool_error(error.to_string()))?)
-                .map_err(|error| McpError::new(ErrorCode::InternalError, format!("failed to serialize why_symbol result: {error}")))?
+            serde_json::to_value(
+                analyze_target(&target, &cwd)
+                    .map_err(|error| McpError::tool_error(error.to_string()))?,
+            )
+            .map_err(|error| {
+                McpError::new(
+                    ErrorCode::InternalError,
+                    format!("failed to serialize why_symbol result: {error}"),
+                )
+            })?
         }
         "why_split" => {
             let args: WhySplitArgs = deserialize_arguments(request.arguments)?;
             let target = parse_target(&args.target, None)
                 .map_err(|error| McpError::tool_error(error.to_string()))?;
-            serde_json::to_value(suggest_split(&target, &cwd).map_err(|error| McpError::tool_error(error.to_string()))?)
-                .map_err(|error| McpError::new(ErrorCode::InternalError, format!("failed to serialize why_split result: {error}")))?
+            serde_json::to_value(
+                suggest_split(&target, &cwd)
+                    .map_err(|error| McpError::tool_error(error.to_string()))?,
+            )
+            .map_err(|error| {
+                McpError::new(
+                    ErrorCode::InternalError,
+                    format!("failed to serialize why_split result: {error}"),
+                )
+            })?
         }
         "why_time_bombs" => {
             let args: WhyTimeBombsArgs = deserialize_arguments(request.arguments)?;
@@ -166,8 +186,16 @@ fn call_tool(params: Option<Value>) -> std::result::Result<Value, McpError> {
                     "max_age_days must be greater than zero",
                 ));
             }
-            serde_json::to_value(scan_time_bombs(&cwd, max_age_days).map_err(|error| McpError::tool_error(error.to_string()))?)
-                .map_err(|error| McpError::new(ErrorCode::InternalError, format!("failed to serialize why_time_bombs result: {error}")))?
+            serde_json::to_value(
+                scan_time_bombs(&cwd, max_age_days)
+                    .map_err(|error| McpError::tool_error(error.to_string()))?,
+            )
+            .map_err(|error| {
+                McpError::new(
+                    ErrorCode::InternalError,
+                    format!("failed to serialize why_time_bombs result: {error}"),
+                )
+            })?
         }
         other => {
             return Err(McpError::new(
@@ -330,7 +358,11 @@ mod tests {
     #[test]
     fn initialize_returns_server_metadata() {
         let response = handle_request(request("initialize", json!({})));
-        let result = response.result.expect("initialize should return result");
+        assert!(response.error.is_none());
+        let result = match response.result {
+            Some(result) => result,
+            None => panic!("initialize should return result"),
+        };
         assert_eq!(result["protocolVersion"], JSONRPC_VERSION);
         assert_eq!(result["serverInfo"]["name"], "why");
         assert!(result["capabilities"]["tools"].is_object());
@@ -339,8 +371,15 @@ mod tests {
     #[test]
     fn tools_list_returns_expected_tools() {
         let response = handle_request(request("tools/list", json!({})));
-        let result = response.result.expect("tools/list should return result");
-        let tools = result["tools"].as_array().expect("tools should be array");
+        assert!(response.error.is_none());
+        let result = match response.result {
+            Some(result) => result,
+            None => panic!("tools/list should return result"),
+        };
+        let tools = match result["tools"].as_array() {
+            Some(tools) => tools,
+            None => panic!("tools should be array"),
+        };
         assert_eq!(tools.len(), 3);
         assert_eq!(tools[0]["name"], "why_symbol");
         assert_eq!(tools[1]["name"], "why_split");
@@ -350,7 +389,11 @@ mod tests {
     #[test]
     fn rejects_unknown_method() {
         let response = handle_request(request("wat", json!({})));
-        let error = response.error.expect("unknown method should error");
+        assert!(response.result.is_none());
+        let error = match response.error {
+            Some(error) => error,
+            None => panic!("unknown method should error"),
+        };
         assert_eq!(error.code, ErrorCode::MethodNotFound.as_i32());
         assert!(error.message.contains("unknown method"));
     }
@@ -363,7 +406,11 @@ mod tests {
             method: "initialize".to_string(),
             params: Some(json!({})),
         });
-        let error = response.error.expect("invalid version should error");
+        assert!(response.result.is_none());
+        let error = match response.error {
+            Some(error) => error,
+            None => panic!("invalid version should error"),
+        };
         assert_eq!(error.code, ErrorCode::InvalidRequest.as_i32());
         assert!(error.message.contains("unsupported jsonrpc version"));
     }
@@ -377,7 +424,11 @@ mod tests {
                 "arguments": {}
             }),
         ));
-        let error = response.error.expect("unknown tool should error");
+        assert!(response.result.is_none());
+        let error = match response.error {
+            Some(error) => error,
+            None => panic!("unknown tool should error"),
+        };
         assert_eq!(error.code, ErrorCode::InvalidParams.as_i32());
         assert!(error.message.contains("unknown tool"));
     }
@@ -391,8 +442,16 @@ mod tests {
                 "arguments": { "max_age_days": 0 }
             }),
         ));
-        let error = response.error.expect("invalid args should error");
+        assert!(response.result.is_none());
+        let error = match response.error {
+            Some(error) => error,
+            None => panic!("invalid args should error"),
+        };
         assert_eq!(error.code, ErrorCode::InvalidParams.as_i32());
-        assert!(error.message.contains("max_age_days must be greater than zero"));
+        assert!(
+            error
+                .message
+                .contains("max_age_days must be greater than zero")
+        );
     }
 }

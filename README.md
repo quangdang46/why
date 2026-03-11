@@ -185,7 +185,13 @@ medium = ["terraform"]
 max_commits = 8
 recency_window_days = 90
 mechanical_threshold_files = 50
+
+[github]
+remote = "origin"
+# token = "ghp_..."   # optional fallback; prefer GITHUB_TOKEN env var
 ```
+
+For GitHub enrichment work, set `GITHUB_TOKEN` in the environment when available; `.why.toml` can also carry an optional `[github]` fallback token and remote name.
 
 See `.why.toml.example` for a fuller documented example of the currently implemented config surface.
 

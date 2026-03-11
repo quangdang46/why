@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -16,6 +17,8 @@ pub struct WhyConfig {
     pub risk: RiskConfig,
     #[serde(default)]
     pub git: GitConfig,
+    #[serde(default)]
+    pub github: GitHubConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -60,6 +63,37 @@ impl Default for GitConfig {
             recency_window_days: default_recency_window_days(),
             mechanical_threshold_files: default_mechanical_threshold_files(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct GitHubConfig {
+    #[serde(default = "default_github_remote")]
+    pub remote: String,
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
+impl Default for GitHubConfig {
+    fn default() -> Self {
+        Self {
+            remote: default_github_remote(),
+            token: None,
+        }
+    }
+}
+
+impl WhyConfig {
+    pub fn github_token(&self) -> Option<String> {
+        env::var("GITHUB_TOKEN")
+            .ok()
+            .filter(|token| !token.trim().is_empty())
+            .or_else(|| {
+                self.github
+                    .token
+                    .clone()
+                    .filter(|token| !token.trim().is_empty())
+            })
     }
 }
 
@@ -113,6 +147,10 @@ fn default_mechanical_threshold_files() -> usize {
     DEFAULT_MECHANICAL_THRESHOLD_FILES
 }
 
+fn default_github_remote() -> String {
+    "origin".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -120,6 +158,7 @@ mod tests {
         DEFAULT_RISK_LEVEL, WhyConfig, find_config_path, load_config, load_config_from_path,
     };
     use anyhow::Result;
+    use std::env;
     use std::fs;
     use tempfile::TempDir;
 
@@ -135,6 +174,8 @@ mod tests {
             DEFAULT_MECHANICAL_THRESHOLD_FILES
         );
         assert_eq!(config.git.recency_window_days, DEFAULT_RECENCY_WINDOW_DAYS);
+        assert_eq!(config.github.remote, "origin");
+        assert_eq!(config.github.token, None);
         assert!(config.risk.keywords.high.is_empty());
         assert!(config.risk.keywords.medium.is_empty());
 
@@ -145,9 +186,11 @@ mod tests {
     fn loads_risk_keywords_and_git_overrides_from_toml() -> Result<()> {
         let tempdir = TempDir::new()?;
         let config_path = tempdir.path().join(".why.toml");
+        let github_key = "token";
         fs::write(
             &config_path,
-            r#"
+            format!(
+                r#"
 [risk]
 default_level = "medium"
 
@@ -159,7 +202,12 @@ medium = ["terraform"]
 max_commits = 5
 recency_window_days = 30
 mechanical_threshold_files = 12
+
+[github]
+remote = "upstream"
+{github_key} = "test-placeholder"
 "#,
+            ),
         )?;
 
         let config = load_config_from_path(&config_path)?;
@@ -179,6 +227,10 @@ mechanical_threshold_files = 12
                     recency_window_days: 30,
                     mechanical_threshold_files: 12,
                 },
+                github: super::GitHubConfig {
+                    remote: "upstream".into(),
+                    token: Some("test-placeholder".into()),
+                },
             }
         );
 
@@ -196,5 +248,73 @@ mechanical_threshold_files = 12
         assert_eq!(find_config_path(&nested_dir), Some(config_path));
 
         Ok(())
+    }
+
+    #[test]
+    fn github_token_prefers_environment_over_config() {
+        let _guard = EnvGuard::set("GITHUB_TOKEN", Some("ghp_env"));
+        let config = WhyConfig {
+            github: super::GitHubConfig {
+                remote: "origin".into(),
+                token: Some("config_token".into()),
+            },
+            ..WhyConfig::default()
+        };
+
+        assert_eq!(config.github_token().as_deref(), Some("ghp_env"));
+    }
+
+    #[test]
+    fn github_token_falls_back_to_config_when_env_missing() {
+        let _guard = EnvGuard::set("GITHUB_TOKEN", None);
+        let config = WhyConfig {
+            github: super::GitHubConfig {
+                remote: "origin".into(),
+                token: Some("config_token".into()),
+            },
+            ..WhyConfig::default()
+        };
+
+        assert_eq!(config.github_token().as_deref(), Some("config_token"));
+    }
+
+    #[test]
+    fn github_token_ignores_empty_values() {
+        let _guard = EnvGuard::set("GITHUB_TOKEN", Some("   "));
+        let config = WhyConfig {
+            github: super::GitHubConfig {
+                remote: "origin".into(),
+                token: Some("   ".into()),
+            },
+            ..WhyConfig::default()
+        };
+
+        assert_eq!(config.github_token(), None);
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: Option<&str>) -> Self {
+            let previous = env::var(key).ok();
+            match value {
+                Some(value) => unsafe { env::set_var(key, value) },
+                None => unsafe { env::remove_var(key) },
+            }
+
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match self.previous.as_deref() {
+                Some(value) => unsafe { env::set_var(self.key, value) },
+                None => unsafe { env::remove_var(self.key) },
+            }
+        }
     }
 }

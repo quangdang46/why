@@ -2,8 +2,9 @@ mod common;
 
 use anyhow::Result;
 use common::{
-    ensure_success, setup_compat_shim_repo, setup_hotfix_repo, setup_javascript_repo,
-    setup_python_repo, setup_sparse_repo, setup_split_repo, setup_typescript_repo,
+    assert_json_golden, assert_terminal_golden, ensure_success, setup_compat_shim_repo,
+    setup_hotfix_repo, setup_javascript_repo, setup_python_repo, setup_sparse_repo,
+    setup_split_repo, setup_typescript_repo,
 };
 use serde_json::Value;
 
@@ -28,6 +29,32 @@ fn hotfix_repo_json_output_has_phase_one_shape() -> Result<()> {
             .is_some_and(|items| !items.is_empty())
     );
     assert_eq!(parsed["risk_level"], "HIGH");
+    assert!(
+        parsed["local_context"]["comments"]
+            .as_array()
+            .is_some_and(|comments| comments.iter().any(|comment| comment
+                .as_str()
+                .is_some_and(|text| text.contains("security: validate amount range"))))
+    );
+    assert!(
+        parsed["local_context"]["comments"]
+            .as_array()
+            .is_some_and(|comments| comments.iter().any(|comment| comment
+                .as_str()
+                .is_some_and(|text| text.contains("duplicate charge incident #4521"))))
+    );
+    assert!(
+        parsed["local_context"]["risk_flags"]
+            .as_array()
+            .is_some_and(|flags| flags.iter().any(|flag| flag == "security"))
+    );
+    assert!(
+        parsed["local_context"]["risk_flags"]
+            .as_array()
+            .is_some_and(|flags| flags
+                .iter()
+                .any(|flag| flag == "token" || flag == "incident" || flag == "hotfix"))
+    );
     let commits = parsed["commits"]
         .as_array()
         .expect("commits should be an array");
@@ -134,6 +161,16 @@ fn sparse_repo_yields_non_high_risk() -> Result<()> {
     let stdout = repo.stdout(&output);
     let parsed: Value = serde_json::from_str(&stdout)?;
     assert_ne!(parsed["risk_level"], "HIGH");
+    assert!(
+        parsed["local_context"]["comments"]
+            .as_array()
+            .is_some_and(|comments| comments.is_empty())
+    );
+    assert!(
+        parsed["local_context"]["markers"]
+            .as_array()
+            .is_some_and(|markers| markers.is_empty())
+    );
 
     Ok(())
 }
@@ -309,6 +346,7 @@ fn split_queries_return_json_null_when_no_split_is_suggested() -> Result<()> {
     let stdout = repo.stdout(&output);
     let parsed: Value = serde_json::from_str(&stdout)?;
     assert!(parsed.is_null());
+    assert_json_golden("cli_split_no_split_hotfix_repo", &parsed)?;
 
     Ok(())
 }
@@ -322,6 +360,7 @@ fn split_queries_render_no_split_message_when_target_is_cohesive() -> Result<()>
     let stdout = repo.stdout(&output);
     assert!(stdout.contains("No split suggested for PaymentService::process_payment"));
     assert!(stdout.contains("archaeologically cohesive"));
+    assert_terminal_golden("cli_split_no_split_hotfix_repo", &stdout)?;
 
     Ok(())
 }
@@ -352,9 +391,11 @@ fn split_queries_return_positive_json_suggestion_for_mixed_era_fixture() -> Resu
     assert_eq!(blocks[0]["era_label"], "Security hardening era");
     assert_eq!(blocks[0]["suggested_name"], "authenticate_with_guard");
     assert_eq!(blocks[0]["risk_level"], "HIGH");
-    assert!(blocks[0]["dominant_commit_summary"]
-        .as_str()
-        .is_some_and(|summary| summary.contains("hotfix: harden authenticate")));
+    assert!(
+        blocks[0]["dominant_commit_summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("hotfix: harden authenticate"))
+    );
 
     assert_eq!(blocks[1]["start_line"], 7);
     assert_eq!(blocks[1]["end_line"], 14);
@@ -363,9 +404,12 @@ fn split_queries_return_positive_json_suggestion_for_mixed_era_fixture() -> Resu
     assert_eq!(blocks[1]["era_label"], "Backward compat era");
     assert_eq!(blocks[1]["suggested_name"], "authenticate_legacy");
     assert_eq!(blocks[1]["risk_level"], "MEDIUM");
-    assert!(blocks[1]["dominant_commit_summary"]
-        .as_str()
-        .is_some_and(|summary| summary.contains("legacy v1 token support")));
+    assert!(
+        blocks[1]["dominant_commit_summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("legacy v1 token support"))
+    );
+    assert_json_golden("cli_split_positive_split_repo", &parsed)?;
 
     Ok(())
 }
@@ -386,6 +430,7 @@ fn split_queries_render_positive_terminal_suggestion_for_mixed_era_fixture() -> 
     assert!(stdout.contains("Risk: MEDIUM"));
     assert!(stdout.contains("different reasons to change"));
     assert!(stdout.contains("historically distinct paths"));
+    assert_terminal_golden("cli_split_positive_split_repo", &stdout)?;
 
     Ok(())
 }

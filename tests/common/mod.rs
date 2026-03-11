@@ -5,8 +5,9 @@
 use anyhow::{Context, Result, anyhow, bail};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::fs;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use tempfile::TempDir;
 
@@ -99,7 +100,9 @@ impl FixtureRepo {
                 .context("failed to write stdin to why command")?;
         }
 
-        child.wait_with_output().context("failed to wait for why command")
+        child
+            .wait_with_output()
+            .context("failed to wait for why command")
     }
 
     pub fn stdout(&self, output: &Output) -> String {
@@ -206,10 +209,57 @@ pub fn ensure_success(output: &Output) -> Result<()> {
 }
 
 #[allow(dead_code)]
+pub fn assert_terminal_golden(name: &str, text: &str) -> Result<()> {
+    let actual = normalize_terminal_snapshot(text);
+    let golden_path = golden_path(name, "txt");
+    let expected = fs::read_to_string(&golden_path)
+        .with_context(|| format!("failed to read terminal golden {}", golden_path.display()))?;
+
+    if actual == expected {
+        return Ok(());
+    }
+
+    bail!(
+        "terminal golden mismatch for {}\nexpected ({}):\n{}\n\nactual:\n{}",
+        name,
+        golden_path.display(),
+        expected,
+        actual
+    )
+}
+
+#[allow(dead_code)]
+pub fn assert_json_golden(name: &str, value: &Value) -> Result<()> {
+    let actual = normalize_json_snapshot(value);
+    let golden_path = golden_path(name, "json");
+    let expected_text = fs::read_to_string(&golden_path)
+        .with_context(|| format!("failed to read JSON golden {}", golden_path.display()))?;
+    let expected: Value = serde_json::from_str(&expected_text).with_context(|| {
+        format!(
+            "failed to parse JSON golden {} as JSON",
+            golden_path.display()
+        )
+    })?;
+
+    if actual == expected {
+        return Ok(());
+    }
+
+    bail!(
+        "JSON golden mismatch for {}\nexpected ({}):\n{}\n\nactual:\n{}",
+        name,
+        golden_path.display(),
+        serde_json::to_string_pretty(&expected)?,
+        serde_json::to_string_pretty(&actual)?
+    )
+}
+
+#[allow(dead_code)]
 pub fn normalize_terminal_snapshot(text: &str) -> String {
     text.lines()
         .map(|line| line.replace('\\', "/"))
         .map(|line| normalize_paths(&line))
+        .map(|line| normalize_terminal_line(&line))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -221,7 +271,18 @@ pub fn normalize_json_snapshot(value: &Value) -> Value {
             let mut normalized = serde_json::Map::new();
             for (key, val) in map {
                 match key.as_str() {
-                    "elapsed_ms" | "duration_ms" | "timestamp" | "generated_at" | "cache_key" => {}
+                    "elapsed_ms"
+                    | "duration_ms"
+                    | "timestamp"
+                    | "generated_at"
+                    | "cache_key"
+                    | "oid"
+                    | "short_oid"
+                    | "dominant_commit_oid"
+                    | "dominant_commit_short_oid"
+                    | "time"
+                    | "date"
+                    | "relevance_score" => {}
                     _ => {
                         normalized.insert(key.clone(), normalize_json_snapshot(val));
                     }
@@ -233,6 +294,52 @@ pub fn normalize_json_snapshot(value: &Value) -> Value {
         Value::String(text) => Value::String(normalize_paths(text)),
         other => other.clone(),
     }
+}
+
+#[allow(dead_code)]
+fn golden_path(name: &str, extension: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("golden")
+        .join(format!("{name}.{extension}"))
+}
+
+#[allow(dead_code)]
+fn normalize_terminal_line(line: &str) -> String {
+    let mut normalized = String::new();
+    let mut token = String::new();
+
+    for ch in line.chars() {
+        if ch.is_whitespace() {
+            if !token.is_empty() {
+                if is_hex_segment(&token) {
+                    normalized.push_str("<oid>");
+                } else {
+                    normalized.push_str(&token);
+                }
+                token.clear();
+            }
+            normalized.push(ch);
+        } else {
+            token.push(ch);
+        }
+    }
+
+    if !token.is_empty() {
+        if is_hex_segment(&token) {
+            normalized.push_str("<oid>");
+        } else {
+            normalized.push_str(&token);
+        }
+    }
+
+    normalized
+}
+
+#[allow(dead_code)]
+fn is_hex_segment(segment: &str) -> bool {
+    let trimmed = segment.trim_matches(|c: char| c == '—' || c == ',' || c == '(' || c == ')');
+    (7..=40).contains(&trimmed.len()) && trimmed.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 #[allow(dead_code)]

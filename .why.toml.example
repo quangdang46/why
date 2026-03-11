@@ -29,3 +29,10 @@ recency_window_days = 90
 
 # Commits touching at least this many files are more likely to be treated as mechanical.
 mechanical_threshold_files = 50
+
+[github]
+# Git remote name used to infer the repository when GitHub enrichment is enabled.
+remote = "origin"
+
+# Prefer GITHUB_TOKEN in the environment; this fallback is optional.
+# token = "ghp_..."
