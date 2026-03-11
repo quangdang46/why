@@ -114,6 +114,14 @@ pub fn setup_sparse_repo() -> Result<FixtureRepo> {
     setup_fixture("sparse_repo")
 }
 
+pub fn setup_typescript_repo() -> Result<FixtureRepo> {
+    setup_fixture("typescript_repo")
+}
+
+pub fn setup_javascript_repo() -> Result<FixtureRepo> {
+    setup_fixture("javascript_repo")
+}
+
 pub fn setup_coupling_repo() -> Result<FixtureRepo> {
     setup_fixture("coupling_repo")
 }

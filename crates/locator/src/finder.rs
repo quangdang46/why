@@ -316,7 +316,8 @@ mod tests {
             query_kind: QueryKind::Symbol,
         };
 
-        let resolved = resolve_target(&target, &temp.path).expect("TypeScript symbol should resolve");
+        let resolved =
+            resolve_target(&target, &temp.path).expect("TypeScript symbol should resolve");
         assert_eq!(
             resolved,
             ResolvedTarget {
@@ -345,7 +346,8 @@ mod tests {
             query_kind: QueryKind::Symbol,
         };
 
-        let resolved = resolve_target(&target, &temp.path).expect("JavaScript symbol should resolve");
+        let resolved =
+            resolve_target(&target, &temp.path).expect("JavaScript symbol should resolve");
         assert_eq!(
             resolved,
             ResolvedTarget {
