@@ -12,7 +12,8 @@ git config user.name "Fixture Bot"
 mkdir -p src
 cat > src/auth.rs <<'EOF'
 pub fn authenticate(user: &str, token: &str) -> bool {
-    check_password(user, token)
+    let session = new_session(user);
+    validate_token_with_session(token, &session)
 }
 EOF
 git add src/auth.rs
@@ -23,8 +24,9 @@ pub fn authenticate(user: &str, token: &str) -> bool {
     // security: added after incident #4521
     if is_rate_limited(user) { return false; }
     if token.is_empty() { return false; }
-    let session = new_session(user);
-    validate_token_with_session(token, &session)
+    if token.len() < 8 { return false; }
+    audit_auth_attempt(user);
+    enforce_guardrails(user, token)
 }
 EOF
 git add src/auth.rs
@@ -35,12 +37,13 @@ pub fn authenticate(user: &str, token: &str) -> bool {
     // security: added after incident #4521
     if is_rate_limited(user) { return false; }
     if token.is_empty() { return false; }
+    if token.len() < 8 { return false; }
+    audit_auth_attempt(user);
 
     // backward compat: legacy v1 token format for mobile clients
-    if token.starts_with("v1:") {
-        return validate_legacy_token(token, user);
-    }
-
+    if token.starts_with("v1:") { return validate_legacy_token(token, user); }
+    if token.starts_with("legacy:") { return validate_legacy_token(token, user); }
+    record_legacy_auth(user);
     let session = new_session(user);
     validate_token_with_session(token, &session)
 }

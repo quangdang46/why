@@ -3,7 +3,7 @@ mod common;
 use anyhow::Result;
 use common::{
     ensure_success, setup_compat_shim_repo, setup_hotfix_repo, setup_javascript_repo,
-    setup_python_repo, setup_sparse_repo, setup_typescript_repo,
+    setup_python_repo, setup_sparse_repo, setup_split_repo, setup_typescript_repo,
 };
 use serde_json::Value;
 
@@ -292,6 +292,100 @@ fn python_symbol_queries_resolve_and_render_commit_output() -> Result<()> {
             .as_array()
             .is_some_and(|items| !items.is_empty())
     );
+
+    Ok(())
+}
+
+#[test]
+fn split_queries_return_json_null_when_no_split_is_suggested() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let output = repo.run_why(&[
+        "src/payment.rs:PaymentService::process_payment",
+        "--split",
+        "--json",
+    ])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    let parsed: Value = serde_json::from_str(&stdout)?;
+    assert!(parsed.is_null());
+
+    Ok(())
+}
+
+#[test]
+fn split_queries_render_no_split_message_when_target_is_cohesive() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let output = repo.run_why(&["src/payment.rs:PaymentService::process_payment", "--split"])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    assert!(stdout.contains("No split suggested for PaymentService::process_payment"));
+    assert!(stdout.contains("archaeologically cohesive"));
+
+    Ok(())
+}
+
+#[test]
+fn split_queries_return_positive_json_suggestion_for_mixed_era_fixture() -> Result<()> {
+    let repo = setup_split_repo()?;
+    let output = repo.run_why(&["src/auth.rs:authenticate", "--split", "--json"])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    let parsed: Value = serde_json::from_str(&stdout)?;
+    let blocks = parsed["blocks"]
+        .as_array()
+        .expect("split suggestion should include blocks");
+
+    assert_eq!(parsed["path"], "src/auth.rs");
+    assert_eq!(parsed["symbol"], "authenticate");
+    assert_eq!(parsed["start_line"], 1);
+    assert_eq!(parsed["end_line"], 14);
+    assert_eq!(parsed["total_lines"], 14);
+    assert_eq!(blocks.len(), 2);
+
+    assert_eq!(blocks[0]["start_line"], 1);
+    assert_eq!(blocks[0]["end_line"], 6);
+    assert_eq!(blocks[0]["line_count"], 6);
+    assert_eq!(blocks[0]["percentage_of_function"], 43);
+    assert_eq!(blocks[0]["era_label"], "Security hardening era");
+    assert_eq!(blocks[0]["suggested_name"], "authenticate_with_guard");
+    assert_eq!(blocks[0]["risk_level"], "HIGH");
+    assert!(blocks[0]["dominant_commit_summary"]
+        .as_str()
+        .is_some_and(|summary| summary.contains("hotfix: harden authenticate")));
+
+    assert_eq!(blocks[1]["start_line"], 7);
+    assert_eq!(blocks[1]["end_line"], 14);
+    assert_eq!(blocks[1]["line_count"], 8);
+    assert_eq!(blocks[1]["percentage_of_function"], 57);
+    assert_eq!(blocks[1]["era_label"], "Backward compat era");
+    assert_eq!(blocks[1]["suggested_name"], "authenticate_legacy");
+    assert_eq!(blocks[1]["risk_level"], "MEDIUM");
+    assert!(blocks[1]["dominant_commit_summary"]
+        .as_str()
+        .is_some_and(|summary| summary.contains("legacy v1 token support")));
+
+    Ok(())
+}
+
+#[test]
+fn split_queries_render_positive_terminal_suggestion_for_mixed_era_fixture() -> Result<()> {
+    let repo = setup_split_repo()?;
+    let output = repo.run_why(&["src/auth.rs:authenticate", "--split"])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    assert!(stdout.contains("Suggested split for authenticate() (14 lines, lines 1-14)"));
+    assert!(stdout.contains("Block A  lines 1-6  Security hardening era"));
+    assert!(stdout.contains("Suggested extraction: authenticate_with_guard()"));
+    assert!(stdout.contains("Risk: HIGH"));
+    assert!(stdout.contains("Block B  lines 7-14  Backward compat era"));
+    assert!(stdout.contains("Suggested extraction: authenticate_legacy()"));
+    assert!(stdout.contains("Risk: MEDIUM"));
+    assert!(stdout.contains("different reasons to change"));
+    assert!(stdout.contains("historically distinct paths"));
 
     Ok(())
 }
