@@ -52,13 +52,6 @@ fn resolve_symbol_target(target: &QueryTarget, cwd: &Path) -> Result<ResolvedTar
     let absolute_path = cwd.join(&target.path);
     let language = SupportedLanguage::detect(&absolute_path)?;
 
-    if language != SupportedLanguage::Rust {
-        bail!(
-            "symbol resolution for {} is not implemented yet; currently supported: Rust (.rs)",
-            language.grammar_name()
-        );
-    }
-
     let source = fs::read_to_string(&absolute_path)
         .with_context(|| format!("failed to read {}", absolute_path.display()))?;
     let matches = collect_symbol_matches(language, &source)?;
@@ -308,9 +301,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsupported_symbol_language_for_now() {
+    fn resolves_typescript_function_symbol() {
         let temp = TempSourceDir::new();
-        temp.write_file("src/app.ts", "function authenticate() { return true }\n");
+        temp.write_file(
+            "src/app.ts",
+            "export function authenticate(): boolean {\n    return true;\n}\n",
+        );
 
         let target = QueryTarget {
             path: PathBuf::from("src/app.ts"),
@@ -320,12 +316,45 @@ mod tests {
             query_kind: QueryKind::Symbol,
         };
 
-        let error = resolve_target(&target, &temp.path)
-            .expect_err("non-Rust symbol resolution should be deferred");
-        assert!(
-            error
-                .to_string()
-                .contains("symbol resolution for typescript is not implemented yet")
+        let resolved = resolve_target(&target, &temp.path).expect("TypeScript symbol should resolve");
+        assert_eq!(
+            resolved,
+            ResolvedTarget {
+                path: PathBuf::from("src/app.ts"),
+                start_line: 1,
+                end_line: 3,
+                query_kind: QueryKind::Symbol,
+                symbol: Some("authenticate".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn resolves_javascript_class_method_symbol() {
+        let temp = TempSourceDir::new();
+        temp.write_file(
+            "src/app.js",
+            "class AuthService {\n  login() {\n    return true;\n  }\n}\n",
+        );
+
+        let target = QueryTarget {
+            path: PathBuf::from("src/app.js"),
+            start_line: None,
+            end_line: None,
+            symbol: Some("login".into()),
+            query_kind: QueryKind::Symbol,
+        };
+
+        let resolved = resolve_target(&target, &temp.path).expect("JavaScript symbol should resolve");
+        assert_eq!(
+            resolved,
+            ResolvedTarget {
+                path: PathBuf::from("src/app.js"),
+                start_line: 2,
+                end_line: 4,
+                query_kind: QueryKind::Symbol,
+                symbol: Some("login".into()),
+            }
         );
     }
 
