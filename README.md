@@ -116,6 +116,31 @@ No LLM synthesis (--no-llm or no API key). Heuristic risk: MEDIUM.
 
 A richer narrative explanation for symbol-level queries is planned for later phases after tree-sitter targeting and synthesis land.
 
+## Risk semantics and explanation style
+
+`why` should make conservative change decisions easier, not sound more certain than the evidence supports.
+
+### Risk levels
+
+- **HIGH** — The code shows security sensitivity, incident history, critical backward-compatibility behavior, or other signals that removal could break production behavior in a non-routine way. Treat this as a stop-and-investigate signal: do not delete or heavily refactor without deeper review.
+- **MEDIUM** — The code appears tied to migrations, retries, legacy paths, or transitional behavior where changes may be safe, but only after understanding the surrounding context.
+- **LOW** — The available history and nearby code do not show special operational or compatibility pressure. This is ordinary utility code unless stronger evidence emerges.
+
+### Explanation style rules
+
+- Separate **evidence** from **inference**. Commit messages, comments, and code markers are evidence; conclusions drawn from them are inference.
+- Be explicit about **unknowns** when history is sparse, noisy, or ambiguous.
+- Do not invent incidents, PR context, or dependencies that are not present in the evidence.
+- Keep output easy to scan: concise summary first, then supporting history, then risk.
+- Calibrate confidence downward when only 1–2 commits or weak signals are available.
+
+### Confidence guidance
+
+- **low** — Thin history, weak commit messages, or little corroborating context.
+- **medium** — Some useful historical signal, but limited direct evidence.
+- **medium-high** — Clear historical intent such as a hotfix, incident, or compatibility trail.
+- **high** — Multiple corroborating sources point to the same explanation.
+
 ## Integration with Claude Code
 
 Add to your project's `CLAUDE.md`:

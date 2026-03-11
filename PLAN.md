@@ -1427,7 +1427,7 @@ You will receive a JSON evidence pack containing:
 - The most relevant commits that modified this code (with diff excerpts)
 - Risk signals extracted from commit messages and code patterns
 
-Your response MUST be a valid JSON object with exactly these fields:
+Your response MUST be a valid JSON object with exactly these fields and no others:
 
 {
   "summary": "One paragraph (3-5 sentences) explaining why this code exists.",
@@ -1476,6 +1476,8 @@ And is asked to narrate the evolution rather than explain a single snapshot.
 
 #### `WhyReport` — output type
 
+This is the canonical phase-4 synthesis contract. The model response, parser, JSON output mode, and terminal formatter should all agree on this shape.
+
 ```rust
 pub struct WhyReport {
     pub summary: String,
@@ -1488,6 +1490,15 @@ pub struct WhyReport {
     pub estimated_cost_usd: Option<f64>,
 }
 ```
+
+Contract rules:
+- `summary` is a concise historical explanation, not a restatement of runtime behavior.
+- `why_it_exists` contains short, scannable bullets.
+- `risk_level` must be exactly `HIGH`, `MEDIUM`, or `LOW`.
+- `evidence` contains only directly cited facts from the evidence pack.
+- `confidence` communicates evidence quality rather than certainty theater.
+- `unknowns` holds inference, ambiguity, and unstated assumptions.
+- `estimated_cost_usd` is transport metadata and must never affect synthesis semantics.
 
 #### Cost calculation
 
@@ -2393,7 +2404,7 @@ Target: ${symbolOrLine}
 Recent commits touching this code:
 ${commits.map(c => `${c.oid} (${c.date}) ${c.author}: ${c.summary}`).join('\n')}
 
-Respond with JSON: { summary, why_it_exists, risk_level, likely_breakage, evidence, confidence }
+Respond with JSON: { summary, why_it_exists, risk_level, likely_breakage, evidence, confidence, unknowns }
   `.trim();
 
   const response = await client.messages.create({
@@ -3583,16 +3594,26 @@ Add to any project's `CLAUDE.md`:
 - `why coverage-gap --coverage lcov.info` — find unprotected HIGH risk functions
 - `why scan --time-bombs` — clean up past-due TODOs
 
-## Risk level meanings:
+## Risk level meanings
 
-HIGH: Security concern, incident history, or critical backward compat.
-      Do not modify without thorough analysis and peer review.
+- **HIGH** — Security concern, incident history, or critical backward compatibility. Treat as a stop-and-investigate signal; do not modify without thorough analysis and peer review.
+- **MEDIUM** — Migration, retry logic, or legacy compatibility. Understand the surrounding context before changing it.
+- **LOW** — Standard utility code with no special historical context.
 
-MEDIUM: Migration, retry logic, or legacy compatibility.
-        Understand the context before changing.
+## Explanation style guide
 
-LOW: Standard utility code with no special historical context.
-```
+- Keep evidence and inference separate.
+- Put unsupported but plausible reasoning in `unknowns`, not `evidence`.
+- Lower confidence when history is thin, noisy, or lacks issue/PR references.
+- Avoid overstating certainty or inventing historical intent.
+- Keep explanations concise enough to guide a change decision quickly.
+
+## Confidence guidance
+
+- `low` — 1–2 commits, weak summaries, no corroborating context.
+- `medium` — some useful signals, but limited direct evidence.
+- `medium-high` — clear hotfix, incident, or compatibility trail.
+- `high` — multiple corroborating sources establish a clear causal chain.
 
 ---
 
