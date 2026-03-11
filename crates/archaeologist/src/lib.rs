@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use time::OffsetDateTime;
 use time::format_description::well_known::Iso8601;
-use why_locator::{QueryKind, QueryTarget};
+use why_locator::{QueryKind, QueryTarget, resolve_target};
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct CommitEvidence {
@@ -83,24 +83,24 @@ pub fn relative_repo_path(repo: &Repository, path: &Path) -> Result<PathBuf> {
 }
 
 pub fn analyze_target(target: &QueryTarget, cwd: &Path) -> Result<ArchaeologyResult> {
-    let (start_line, end_line) = target.line_range().with_context(|| {
-        format!(
-            "target resolution for {:?} queries is not implemented yet",
-            target.query_kind
-        )
-    })?;
+    let resolved = resolve_target(target, cwd)?;
 
-    let target_path = cwd.join(&target.path);
+    let target_path = cwd.join(&resolved.path);
     let repo = discover_repository(&target_path)?;
     let relative_path = relative_repo_path(&repo, &target_path)?;
-    let commits = blame_commit_evidence(&repo, &relative_path, start_line, end_line)?;
+    let commits = blame_commit_evidence(
+        &repo,
+        &relative_path,
+        resolved.start_line,
+        resolved.end_line,
+    )?;
 
     Ok(ArchaeologyResult {
         target: OutputTarget {
             path: relative_path,
-            start_line,
-            end_line,
-            query_kind: target.query_kind,
+            start_line: resolved.start_line,
+            end_line: resolved.end_line,
+            query_kind: resolved.query_kind,
         },
         risk_level: infer_risk_level(&commits),
         commits,

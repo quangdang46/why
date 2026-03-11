@@ -1,6 +1,12 @@
+mod finder;
+mod languages;
+
 use anyhow::{Result, anyhow, bail};
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+pub use finder::{ResolvedTarget, resolve_target};
+pub use languages::SupportedLanguage;
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -27,6 +33,10 @@ impl QueryTarget {
             _ => None,
         }
     }
+}
+
+pub fn detect_language(path: &Path) -> Result<SupportedLanguage> {
+    SupportedLanguage::detect(path)
 }
 
 pub fn parse_target(target: &str, lines: Option<&str>) -> Result<QueryTarget> {
@@ -141,8 +151,8 @@ fn validate_line_number(line: u32, label: &str) -> Result<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{QueryKind, QueryTarget, parse_target};
-    use std::path::PathBuf;
+    use super::{QueryKind, QueryTarget, SupportedLanguage, detect_language, parse_target};
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn parses_file_colon_line_target() {
@@ -231,6 +241,22 @@ mod tests {
             error
                 .to_string()
                 .contains("do not combine a colon specifier with --lines")
+        );
+    }
+
+    #[test]
+    fn detects_language_from_extension() {
+        assert_eq!(
+            detect_language(Path::new("src/lib.rs")).unwrap(),
+            SupportedLanguage::Rust
+        );
+        assert_eq!(
+            detect_language(Path::new("src/file.ts")).unwrap(),
+            SupportedLanguage::TypeScript
+        );
+        assert_eq!(
+            detect_language(Path::new("src/file.py")).unwrap(),
+            SupportedLanguage::Python
         );
     }
 }

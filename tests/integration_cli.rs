@@ -77,13 +77,49 @@ fn sparse_repo_yields_non_high_risk() -> Result<()> {
 }
 
 #[test]
-fn symbol_queries_parse_but_are_not_resolved_yet() -> Result<()> {
+fn rust_symbol_queries_resolve_and_render_commit_output() -> Result<()> {
     let repo = setup_hotfix_repo()?;
-    let output = repo.run_why(&["src/payment.rs:process_payment", "--no-llm"])?;
-    assert!(!output.status.success());
+    let output = repo.run_why(&["src/payment.rs:process_payment", "--json", "--no-llm"])?;
+    ensure_success(&output)?;
 
-    let stderr = repo.stderr(&output);
-    assert!(stderr.contains("not implemented yet"));
+    let stdout = repo.stdout(&output);
+    let parsed: Value = serde_json::from_str(&stdout)?;
+    assert_eq!(parsed["target"]["path"], "src/payment.rs");
+    assert_eq!(parsed["target"]["query_kind"], "symbol");
+    assert_eq!(parsed["target"]["start_line"], 4);
+    assert_eq!(parsed["target"]["end_line"], 12);
+    assert_eq!(parsed["risk_level"], "HIGH");
+    assert!(
+        parsed["commits"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
+
+    Ok(())
+}
+
+#[test]
+fn rust_qualified_symbol_queries_resolve_impl_methods() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let output = repo.run_why(&[
+        "src/payment.rs:PaymentService::process_payment",
+        "--json",
+        "--no-llm",
+    ])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    let parsed: Value = serde_json::from_str(&stdout)?;
+    assert_eq!(parsed["target"]["path"], "src/payment.rs");
+    assert_eq!(parsed["target"]["query_kind"], "qualified_symbol");
+    assert_eq!(parsed["target"]["start_line"], 4);
+    assert_eq!(parsed["target"]["end_line"], 12);
+    assert_eq!(parsed["risk_level"], "HIGH");
+    assert!(
+        parsed["commits"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
 
     Ok(())
 }

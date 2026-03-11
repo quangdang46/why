@@ -1,5 +1,7 @@
 //! Planned unit-test matrix for crates/locator.
 //!
+//! Note: executable resolver coverage now lives primarily in `crates/locator/src/lib.rs`.
+//!
 //! These tests codify the expected behaviors from PLAN.md so the future
 //! locator crate can adopt them with minimal reinterpretation.
 //!
