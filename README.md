@@ -156,7 +156,7 @@ Add to your project's `CLAUDE.md`:
 - `why <file>:<line>` — explain why a specific line was written
 - `why <file> --lines <start:end>` — explain why a line range exists
 - `why <file>:<line> --json` — return machine-readable raw archaeology output
-- `why <file>:<symbol>` — reserved for a later phase after tree-sitter symbol targeting lands
+- `why <file>:<symbol>` — explain why a supported symbol exists (Rust, JavaScript, TypeScript, Python)
 
 **Always run `why` before deleting or significantly refactoring any function
 that exists in git history for more than 6 months.**
@@ -174,9 +174,20 @@ export ANTHROPIC_API_KEY=sk-ant-...
 
 Or in `.why.toml` at project root:
 ```toml
-model = "claude-haiku-4-5"
-max_commits = 20
+[risk]
+default_level = "LOW"
+
+[risk.keywords]
+high = ["pci", "reconciliation"]
+medium = ["terraform"]
+
+[git]
+max_commits = 8
+recency_window_days = 90
+mechanical_threshold_files = 50
 ```
+
+See `.why.toml.example` for a fuller documented example of the currently implemented config surface.
 
 ## Index Location
 

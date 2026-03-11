@@ -1,0 +1,31 @@
+# Example why configuration.
+# Copy this file to .why.toml at your repository root and adjust for your domain.
+
+[risk]
+# Fallback risk level when commit history and built-in keywords do not imply more urgency.
+default_level = "LOW"
+
+[risk.keywords]
+# Domain-specific HIGH-risk keywords layered on top of the built-in heuristic vocabulary.
+high = [
+  "pci",
+  "reconciliation",
+  "ledger",
+]
+
+# Domain-specific MEDIUM-risk keywords.
+medium = [
+  "terraform",
+  "webhook",
+  "idempotency",
+]
+
+[git]
+# Maximum number of commits to keep in the ranked archaeology output.
+max_commits = 8
+
+# Recent commits inside this window receive a relevance boost.
+recency_window_days = 90
+
+# Commits touching at least this many files are more likely to be treated as mechanical.
+mechanical_threshold_files = 50
