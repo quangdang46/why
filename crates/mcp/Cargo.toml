@@ -9,3 +9,9 @@ publish = false
 
 [dependencies]
 anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+why-archaeologist = { path = "../archaeologist" }
+why-locator = { path = "../locator" }
+why-scanner = { path = "../scanner" }
+why-splitter = { path = "../splitter" }

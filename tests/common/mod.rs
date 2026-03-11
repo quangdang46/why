@@ -6,7 +6,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::io::Write;
+use std::process::{Command, Output, Stdio};
 use tempfile::TempDir;
 
 pub struct FixtureRepo {
@@ -64,6 +65,41 @@ impl FixtureRepo {
 
         serde_json::from_str(&stdout)
             .map_err(|err| anyhow!("failed to parse JSON output: {err}\nstdout:\n{stdout}"))
+    }
+
+    pub fn run_why_with_stdin(&self, args: &[&str], stdin: &str) -> Result<Output> {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest_path = workspace_root.join("Cargo.toml");
+        let mut command = if let Ok(why_binary) = std::env::var("CARGO_BIN_EXE_why") {
+            let mut cmd = Command::new(why_binary);
+            cmd.args(args);
+            cmd.current_dir(&self.path);
+            cmd
+        } else {
+            let mut cmd = Command::new("cargo");
+            cmd.args(["run", "-q", "--manifest-path"]);
+            cmd.arg(&manifest_path);
+            cmd.args(["-p", "why-core", "--bin", "why", "--"]);
+            cmd.args(args);
+            cmd.current_dir(&self.path);
+            cmd
+        };
+
+        let mut child = command
+            .env("ANTHROPIC_API_KEY", "")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("failed to spawn why command")?;
+
+        if let Some(mut child_stdin) = child.stdin.take() {
+            child_stdin
+                .write_all(stdin.as_bytes())
+                .context("failed to write stdin to why command")?;
+        }
+
+        child.wait_with_output().context("failed to wait for why command")
     }
 
     pub fn stdout(&self, output: &Output) -> String {

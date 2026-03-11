@@ -834,6 +834,9 @@ name = "why-annotator"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "tempfile",
+ "why-archaeologist",
+ "why-locator",
 ]
 
 [[package]]
@@ -877,6 +880,8 @@ dependencies = [
  "serde_json",
  "why-archaeologist",
  "why-locator",
+ "why-mcp",
+ "why-splitter",
 ]
 
 [[package]]
@@ -921,6 +926,12 @@ name = "why-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "serde",
+ "serde_json",
+ "why-archaeologist",
+ "why-locator",
+ "why-scanner",
+ "why-splitter",
 ]
 
 [[package]]
@@ -946,6 +957,12 @@ name = "why-splitter"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "git2",
+ "serde",
+ "tempfile",
+ "why-archaeologist",
+ "why-context",
+ "why-locator",
 ]
 
 [[package]]
