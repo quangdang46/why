@@ -14,6 +14,7 @@ pub struct FixtureRepo {
     pub path: PathBuf,
 }
 
+#[allow(dead_code)]
 impl FixtureRepo {
     pub fn run_command(&self, program: &str, args: &[&str]) -> Result<Output> {
         let output = Command::new(program)
@@ -26,19 +27,27 @@ impl FixtureRepo {
     }
 
     pub fn run_why(&self, args: &[&str]) -> Result<Output> {
-        let default_binary = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join("debug")
-            .join("why");
-        let why_binary =
-            std::env::var("WHY_BINARY").unwrap_or_else(|_| default_binary.display().to_string());
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest_path = workspace_root.join("Cargo.toml");
+        let mut command = if let Ok(why_binary) = std::env::var("CARGO_BIN_EXE_why") {
+            let mut cmd = Command::new(why_binary);
+            cmd.args(args);
+            cmd.current_dir(&self.path);
+            cmd
+        } else {
+            let mut cmd = Command::new("cargo");
+            cmd.args(["run", "-q", "--manifest-path"]);
+            cmd.arg(&manifest_path);
+            cmd.args(["-p", "why-core", "--bin", "why", "--"]);
+            cmd.args(args);
+            cmd.current_dir(&self.path);
+            cmd
+        };
 
-        let output = Command::new(&why_binary)
-            .args(args)
-            .current_dir(&self.path)
+        let output = command
             .env("ANTHROPIC_API_KEY", "")
             .output()
-            .with_context(|| format!("failed to run why binary at {why_binary}"))?;
+            .context("failed to run why command")?;
 
         Ok(output)
     }
@@ -122,18 +131,22 @@ pub fn setup_javascript_repo() -> Result<FixtureRepo> {
     setup_fixture("javascript_repo")
 }
 
+#[allow(dead_code)]
 pub fn setup_coupling_repo() -> Result<FixtureRepo> {
     setup_fixture("coupling_repo")
 }
 
+#[allow(dead_code)]
 pub fn setup_timebomb_repo() -> Result<FixtureRepo> {
     setup_fixture("timebomb_repo")
 }
 
+#[allow(dead_code)]
 pub fn setup_ghost_repo() -> Result<FixtureRepo> {
     setup_fixture("ghost_repo")
 }
 
+#[allow(dead_code)]
 pub fn setup_split_repo() -> Result<FixtureRepo> {
     setup_fixture("split_repo")
 }
@@ -156,6 +169,7 @@ pub fn ensure_success(output: &Output) -> Result<()> {
     )
 }
 
+#[allow(dead_code)]
 pub fn normalize_terminal_snapshot(text: &str) -> String {
     text.lines()
         .map(|line| line.replace('\\', "/"))
@@ -164,6 +178,7 @@ pub fn normalize_terminal_snapshot(text: &str) -> String {
         .join("\n")
 }
 
+#[allow(dead_code)]
 pub fn normalize_json_snapshot(value: &Value) -> Value {
     match value {
         Value::Object(map) => {
@@ -184,6 +199,7 @@ pub fn normalize_json_snapshot(value: &Value) -> Value {
     }
 }
 
+#[allow(dead_code)]
 fn normalize_paths(text: &str) -> String {
     text.replace("\\r\\n", "\n")
         .replace(env!("CARGO_MANIFEST_DIR"), "<repo>")

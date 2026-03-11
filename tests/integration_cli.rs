@@ -28,6 +28,38 @@ fn hotfix_repo_json_output_has_phase_one_shape() -> Result<()> {
             .is_some_and(|items| !items.is_empty())
     );
     assert_eq!(parsed["risk_level"], "HIGH");
+    let commits = parsed["commits"]
+        .as_array()
+        .expect("commits should be an array");
+    assert!(
+        commits
+            .iter()
+            .all(|commit| commit["email"] == "test@example.com")
+    );
+    let hotfix_commit = commits
+        .iter()
+        .find(|commit| {
+            commit["summary"]
+                .as_str()
+                .is_some_and(|summary| summary.contains("hotfix"))
+        })
+        .expect("expected hotfix commit metadata");
+    assert!(
+        hotfix_commit["message"]
+            .as_str()
+            .is_some_and(|msg| msg.contains("#4521"))
+    );
+    assert!(
+        hotfix_commit["diff_excerpt"]
+            .as_str()
+            .is_some_and(|diff| diff.contains("diff --git a/src/payment.rs b/src/payment.rs"))
+    );
+    assert!(
+        hotfix_commit["issue_refs"]
+            .as_array()
+            .is_some_and(|refs| refs.iter().any(|r| r == "#4521"))
+    );
+    assert_eq!(hotfix_commit["is_mechanical"], false);
 
     Ok(())
 }
@@ -62,6 +94,23 @@ fn range_query_works_for_compat_fixture() -> Result<()> {
             .as_array()
             .is_some_and(|items| !items.is_empty())
     );
+    let commits = parsed["commits"]
+        .as_array()
+        .expect("commits should be an array");
+    let compat_commit = commits
+        .iter()
+        .find(|commit| {
+            commit["summary"]
+                .as_str()
+                .is_some_and(|summary| summary.contains("legacy mobile clients"))
+        })
+        .expect("expected compat commit metadata");
+    assert!(
+        compat_commit["issue_refs"]
+            .as_array()
+            .is_some_and(|refs| refs.iter().any(|r| r == "#318"))
+    );
+    assert_eq!(compat_commit["is_mechanical"], false);
 
     Ok(())
 }

@@ -70,10 +70,11 @@ export ANTHROPIC_API_KEY=sk-ant-...
 ## Usage
 
 Current repo state:
-- The checked-in implementation today is a Node.js POC under `poc/`
-- The planned Rust CLI contract is positional target syntax: `why <target> [flags]`
+- The checked-in prototype implementation is a Node.js POC under `poc/`
+- The checked-in Rust CLI uses positional target syntax: `why <target> [flags]`
+- The current Rust implementation supports line, explicit range, symbol, and qualified-symbol queries
 
-Planned Rust phase-1 CLI examples:
+Current Rust CLI examples:
 ```bash
 # Why was this specific line written?
 why src/auth.js:42
@@ -81,15 +82,19 @@ why src/auth.js:42
 # Why does this line range exist?
 why src/auth.js --lines 40:45 --no-llm
 
-# Machine-readable raw archaeology output
-why src/auth.js:42 --json
+# Why does this symbol exist?
+why src/auth.js:verifyToken --no-llm
+
+# Machine-readable archaeology output
+why src/auth.js:verifyToken --json
 ```
 
-Phase-1 Rust contract notes:
-- Phase 1 supports only line and explicit range queries.
-- Symbol queries like `why src/auth.js:verifyToken` are reserved for phase 2.
+Current Rust CLI notes:
 - The Rust CLI uses positional target syntax (`why <target> [flags]`), not `fn|file|line` subcommands.
-- The Rust CLI uses `--json` for machine-readable output; `--raw` is a Node POC flag, not a Rust phase-1 flag.
+- `--lines <start:end>` supports explicit range queries.
+- Symbol queries like `why src/auth.js:verifyToken` are implemented in the current Rust CLI for Rust, JavaScript, TypeScript, and Python.
+- Qualified symbol queries like `why src/payment.rs:PaymentService::process_payment` are implemented for Rust impl methods.
+- The Rust CLI uses `--json` for machine-readable output; `--raw` is a Node POC flag, not a Rust CLI flag.
 
 Current Node POC examples:
 ```bash

@@ -6,10 +6,10 @@
 //! locator crate can adopt them with minimal reinterpretation.
 //!
 //! Phase boundary note:
-//! - Phase 1 freezes only file:line and file + --lines parsing.
-//! - Symbol and qualified-name parsing/resolution below are phase-2 expectations
-//!   and should not be treated as part of the phase-1 CLI surface.
-//! - Real phase-1 parser behavior is covered in `crates/locator/src/lib.rs` unit tests
+//! - The original phase-1 plan froze only file:line and file + --lines parsing.
+//! - The checked-in locator implementation has since advanced beyond that boundary
+//!   and now includes symbol and qualified-name parsing/resolution.
+//! - Executable current behavior is covered in `crates/locator/src/lib.rs` unit tests
 //!   and `tests/integration_cli.rs` end-to-end fixture tests.
 
 #[allow(dead_code)]
