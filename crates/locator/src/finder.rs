@@ -17,6 +17,7 @@ pub struct ResolvedTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SymbolMatch {
     name: String,
+    qualified_name: Option<String>,
     start_line: u32,
     end_line: u32,
 }
@@ -39,11 +40,7 @@ pub fn resolve_target(target: &QueryTarget, cwd: &Path) -> Result<ResolvedTarget
                 symbol: None,
             })
         }
-        QueryKind::Symbol => resolve_symbol_target(target, cwd),
-        QueryKind::QualifiedSymbol => bail!(
-            "qualified symbol resolution is not implemented yet for {}",
-            target.path.display()
-        ),
+        QueryKind::Symbol | QueryKind::QualifiedSymbol => resolve_symbol_target(target, cwd),
     }
 }
 
@@ -68,7 +65,11 @@ fn resolve_symbol_target(target: &QueryTarget, cwd: &Path) -> Result<ResolvedTar
 
     let matched: Vec<_> = matches
         .into_iter()
-        .filter(|candidate| candidate.name == symbol)
+        .filter(|candidate| match target.query_kind {
+            QueryKind::Symbol => candidate.name == symbol,
+            QueryKind::QualifiedSymbol => candidate.qualified_name.as_deref() == Some(symbol),
+            _ => false,
+        })
         .collect();
 
     match matched.as_slice() {
@@ -121,6 +122,7 @@ fn collect_symbol_matches(language: SupportedLanguage, source: &str) -> Result<V
         let mut name = None;
         let mut start_line = None;
         let mut end_line = None;
+        let mut definition_node = None;
 
         for capture in query_match.captures {
             match capture_names[capture.index as usize] {
@@ -136,21 +138,82 @@ fn collect_symbol_matches(language: SupportedLanguage, source: &str) -> Result<V
                 "symbol.definition" => {
                     start_line = Some(capture.node.start_position().row as u32 + 1);
                     end_line = Some(capture.node.end_position().row as u32 + 1);
+                    definition_node = Some(capture.node);
                 }
                 _ => {}
             }
         }
 
-        if let (Some(name), Some(start_line), Some(end_line)) = (name, start_line, end_line) {
-            matches.push(SymbolMatch {
+        if let (Some(name), Some(start_line), Some(end_line), Some(definition_node)) =
+            (name, start_line, end_line, definition_node)
+        {
+            let symbol_match = SymbolMatch {
+                qualified_name: qualified_rust_name(definition_node, &name, source)?,
                 name,
                 start_line,
                 end_line,
-            });
+            };
+
+            if !matches.contains(&symbol_match) {
+                matches.push(symbol_match);
+            }
         }
     }
 
     Ok(matches)
+}
+
+fn qualified_rust_name(
+    definition_node: tree_sitter::Node<'_>,
+    symbol_name: &str,
+    source: &str,
+) -> Result<Option<String>> {
+    if definition_node.kind() != "function_item" {
+        return Ok(None);
+    }
+
+    let mut current = definition_node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == "impl_item" {
+            if let Some(type_name) = extract_impl_type_name(parent, source)? {
+                return Ok(Some(format!("{type_name}::{symbol_name}")));
+            }
+            break;
+        }
+        current = parent.parent();
+    }
+
+    Ok(None)
+}
+
+fn extract_impl_type_name(
+    impl_node: tree_sitter::Node<'_>,
+    source: &str,
+) -> Result<Option<String>> {
+    if let Some(type_node) = impl_node.child_by_field_name("type") {
+        return first_named_identifier(type_node, source);
+    }
+
+    first_named_identifier(impl_node, source)
+}
+
+fn first_named_identifier(node: tree_sitter::Node<'_>, source: &str) -> Result<Option<String>> {
+    if matches!(node.kind(), "type_identifier" | "identifier") {
+        return Ok(Some(
+            node.utf8_text(source.as_bytes())
+                .map_err(|error| anyhow!(error.to_string()))?
+                .to_string(),
+        ));
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(found) = first_named_identifier(child, source)? {
+            return Ok(Some(found));
+        }
+    }
+
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -213,8 +276,8 @@ mod tests {
             resolved,
             ResolvedTarget {
                 path: PathBuf::from("src/lib.rs"),
-                start_line: 8,
-                end_line: 10,
+                start_line: 9,
+                end_line: 11,
                 query_kind: QueryKind::Symbol,
                 symbol: Some("authenticate".into()),
             }
@@ -241,7 +304,7 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("symbol 'duplicate' is ambiguous"));
         assert!(message.contains("src/lib.rs:1-3"));
-        assert!(message.contains("src/lib.rs:5-7"));
+        assert!(message.contains("src/lib.rs:6-8"));
     }
 
     #[test]
@@ -268,7 +331,7 @@ mod tests {
 
     #[test]
     fn collects_rust_symbol_matches_from_source() {
-        let source = "pub struct AuthService;\n\npub fn authenticate() -> bool {\n    true\n}\n";
+        let source = "pub struct AuthService;\n\nimpl AuthService {\n    pub fn login(&self) -> bool {\n        true\n    }\n}\n\npub fn authenticate() -> bool {\n    true\n}\n";
         let matches = collect_symbol_matches(SupportedLanguage::Rust, source)
             .expect("rust symbols should be collected");
 
@@ -276,7 +339,45 @@ mod tests {
             candidate.name == "AuthService" && candidate.start_line == 1 && candidate.end_line == 1
         }));
         assert!(matches.iter().any(|candidate| {
-            candidate.name == "authenticate" && candidate.start_line == 3 && candidate.end_line == 5
+            candidate.name == "login"
+                && candidate.qualified_name.as_deref() == Some("AuthService::login")
+                && candidate.start_line == 4
+                && candidate.end_line == 6
         }));
+        assert!(matches.iter().any(|candidate| {
+            candidate.name == "authenticate"
+                && candidate.start_line == 9
+                && candidate.end_line == 11
+        }));
+    }
+
+    #[test]
+    fn resolves_qualified_rust_impl_method() {
+        let temp = TempSourceDir::new();
+        temp.write_file(
+            "src/lib.rs",
+            "pub struct AuthService;\n\nimpl AuthService {\n    pub fn login(&self) -> bool {\n        true\n    }\n}\n",
+        );
+
+        let target = QueryTarget {
+            path: PathBuf::from("src/lib.rs"),
+            start_line: None,
+            end_line: None,
+            symbol: Some("AuthService::login".into()),
+            query_kind: QueryKind::QualifiedSymbol,
+        };
+
+        let resolved =
+            resolve_target(&target, &temp.path).expect("qualified symbol should resolve");
+        assert_eq!(
+            resolved,
+            ResolvedTarget {
+                path: PathBuf::from("src/lib.rs"),
+                start_line: 4,
+                end_line: 6,
+                query_kind: QueryKind::QualifiedSymbol,
+                symbol: Some("AuthService::login".into()),
+            }
+        );
     }
 }
