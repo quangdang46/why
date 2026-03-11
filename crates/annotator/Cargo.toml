@@ -9,3 +9,8 @@ publish = false
 
 [dependencies]
 anyhow.workspace = true
+why-archaeologist = { path = "../archaeologist" }
+
+[dev-dependencies]
+tempfile = "3"
+why-locator = { path = "../locator" }
