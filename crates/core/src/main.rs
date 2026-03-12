@@ -3,8 +3,9 @@ mod cli;
 use anyhow::Result;
 use clap::Parser;
 use cli::{Cli, Mode, QueryRequest};
-use why_archaeologist::{ArchaeologyResult, analyze_target};
+use why_archaeologist::{ArchaeologyResult, TeamReport, analyze_target_with_options, analyze_team};
 use why_locator::QueryKind;
+use why_scanner::CouplingReport;
 use why_splitter::SplitSuggestion;
 
 fn main() {
@@ -37,7 +38,27 @@ fn run_query(request: QueryRequest) -> Result<()> {
         return Ok(());
     }
 
-    let result = analyze_target(&request.target, &cwd)?;
+    if request.coupled {
+        let report = why_scanner::scan_coupling(&cwd, &request.target, 10)?;
+        if request.json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            render_coupling_terminal(&report);
+        }
+        return Ok(());
+    }
+
+    if request.team {
+        let report = analyze_team(&request.target, &cwd, request.since_days)?;
+        if request.json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            render_team_terminal(&report);
+        }
+        return Ok(());
+    }
+
+    let result = analyze_target_with_options(&request.target, &cwd, request.since_days)?;
 
     if request.json {
         println!("{}", serde_json::to_string_pretty(&result)?);
@@ -90,6 +111,57 @@ fn render_terminal(result: &ArchaeologyResult) {
     );
     println!("{}", result.risk_summary);
     println!("{}", result.change_guidance);
+}
+
+fn render_team_terminal(report: &TeamReport) {
+    let heading = match report.target.query_kind {
+        QueryKind::Symbol | QueryKind::QualifiedSymbol => "Team ownership for target",
+        _ => "Team ownership for file range",
+    };
+    println!("{heading}");
+    println!();
+
+    for (index, owner) in report.owners.iter().enumerate() {
+        let primary = if index == 0 { "  [primary owner]" } else { "" };
+        let commits_label = if owner.commit_count == 1 { "commit" } else { "commits" };
+        println!(
+            "  {}    {} {} ({:>2}%)  Last: {}{}",
+            owner.author,
+            owner.commit_count,
+            commits_label,
+            owner.ownership_percent,
+            owner.last_commit_date,
+            primary
+        );
+    }
+
+    println!();
+    println!("Bus factor: {}", report.bus_factor);
+    println!("Risk: {}", report.risk_summary);
+}
+
+fn render_coupling_terminal(report: &CouplingReport) {
+    println!("Coupled files for {}", report.target_path.display());
+    println!();
+    if report.results.is_empty() {
+        println!("No coupled files met the configured ratio threshold.");
+        return;
+    }
+
+    println!(
+        "Scanned {} commits; {} non-mechanical commits touched the target.",
+        report.scan_commits, report.target_commit_count
+    );
+    println!();
+
+    for finding in &report.results {
+        println!(
+            "  {:.2}  {} shared  {}",
+            finding.coupling_ratio,
+            finding.shared_commits,
+            finding.path.display()
+        );
+    }
 }
 
 fn render_split_terminal(target: &why_locator::QueryTarget, suggestion: Option<&SplitSuggestion>) {

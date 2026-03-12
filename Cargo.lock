@@ -1612,6 +1612,7 @@ dependencies = [
  "why-archaeologist",
  "why-locator",
  "why-mcp",
+ "why-scanner",
  "why-splitter",
 ]
 
@@ -1678,6 +1679,7 @@ dependencies = [
  "time",
  "why-archaeologist",
  "why-context",
+ "why-locator",
 ]
 
 [[package]]

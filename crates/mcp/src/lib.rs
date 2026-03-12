@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use std::io::{self, BufRead, Write};
 use why_archaeologist::analyze_target;
 use why_locator::parse_target;
-use why_scanner::{scan_hotspots, scan_time_bombs};
+use why_scanner::{scan_coupling, scan_hotspots, scan_time_bombs};
 use why_splitter::suggest_split;
 
 const JSONRPC_VERSION: &str = "2.0";
@@ -128,6 +128,20 @@ fn tools_list_result() -> Value {
                     },
                     "additionalProperties": false
                 })
+            ),
+            tool_definition(
+                "why_coupling",
+                "Rank files that frequently co-change with the queried target.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "target": { "type": "string" },
+                        "lines": { "type": "string" },
+                        "limit": { "type": "integer" }
+                    },
+                    "required": ["target"],
+                    "additionalProperties": false
+                })
             )
         ]
     })
@@ -229,6 +243,28 @@ fn call_tool(params: Option<Value>) -> std::result::Result<Value, McpError> {
                 )
             })?
         }
+        "why_coupling" => {
+            let args: WhyCouplingArgs = deserialize_arguments(request.arguments)?;
+            let target = parse_target(&args.target, args.lines.as_deref())
+                .map_err(|error| McpError::tool_error(error.to_string()))?;
+            let limit = args.limit.unwrap_or(DEFAULT_HOTSPOT_LIMIT);
+            if limit == 0 {
+                return Err(McpError::new(
+                    ErrorCode::InvalidParams,
+                    "limit must be greater than zero",
+                ));
+            }
+            serde_json::to_value(
+                scan_coupling(&cwd, &target, limit)
+                    .map_err(|error| McpError::tool_error(error.to_string()))?,
+            )
+            .map_err(|error| {
+                McpError::new(
+                    ErrorCode::InternalError,
+                    format!("failed to serialize why_coupling result: {error}"),
+                )
+            })?
+        }
         other => {
             return Err(McpError::new(
                 ErrorCode::InvalidParams,
@@ -273,6 +309,15 @@ struct WhyTimeBombsArgs {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 struct WhyHotspotsArgs {
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct WhyCouplingArgs {
+    target: String,
+    #[serde(default)]
+    lines: Option<String>,
     #[serde(default)]
     limit: Option<usize>,
 }
@@ -413,11 +458,12 @@ mod tests {
         assert!(result["tools"].is_array(), "tools should be array");
         let empty_tools = Vec::new();
         let tools = result["tools"].as_array().unwrap_or(&empty_tools);
-        assert_eq!(tools.len(), 4);
+        assert_eq!(tools.len(), 5);
         assert_eq!(tools[0]["name"], "why_symbol");
         assert_eq!(tools[1]["name"], "why_split");
         assert_eq!(tools[2]["name"], "why_time_bombs");
         assert_eq!(tools[3]["name"], "why_hotspots");
+        assert_eq!(tools[4]["name"], "why_coupling");
     }
 
     #[test]

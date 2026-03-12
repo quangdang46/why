@@ -10,8 +10,10 @@ const DEFAULT_RISK_LEVEL: &str = "LOW";
 const DEFAULT_MAX_COMMITS: usize = 8;
 const DEFAULT_RECENCY_WINDOW_DAYS: i64 = 90;
 const DEFAULT_MECHANICAL_THRESHOLD_FILES: usize = 50;
+const DEFAULT_COUPLING_SCAN_COMMITS: usize = 500;
+const DEFAULT_COUPLING_RATIO_THRESHOLD: f64 = 0.30;
 
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 pub struct WhyConfig {
     #[serde(default)]
     pub risk: RiskConfig,
@@ -46,7 +48,7 @@ pub struct RiskKeywords {
     pub medium: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct GitConfig {
     #[serde(default = "default_max_commits")]
     pub max_commits: usize,
@@ -54,6 +56,10 @@ pub struct GitConfig {
     pub recency_window_days: i64,
     #[serde(default = "default_mechanical_threshold_files")]
     pub mechanical_threshold_files: usize,
+    #[serde(default = "default_coupling_scan_commits")]
+    pub coupling_scan_commits: usize,
+    #[serde(default = "default_coupling_ratio_threshold")]
+    pub coupling_ratio_threshold: f64,
 }
 
 impl Default for GitConfig {
@@ -62,6 +68,8 @@ impl Default for GitConfig {
             max_commits: default_max_commits(),
             recency_window_days: default_recency_window_days(),
             mechanical_threshold_files: default_mechanical_threshold_files(),
+            coupling_scan_commits: default_coupling_scan_commits(),
+            coupling_ratio_threshold: default_coupling_ratio_threshold(),
         }
     }
 }
@@ -147,6 +155,14 @@ fn default_mechanical_threshold_files() -> usize {
     DEFAULT_MECHANICAL_THRESHOLD_FILES
 }
 
+fn default_coupling_scan_commits() -> usize {
+    DEFAULT_COUPLING_SCAN_COMMITS
+}
+
+fn default_coupling_ratio_threshold() -> f64 {
+    DEFAULT_COUPLING_RATIO_THRESHOLD
+}
+
 fn default_github_remote() -> String {
     "origin".to_string()
 }
@@ -154,8 +170,9 @@ fn default_github_remote() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_MAX_COMMITS, DEFAULT_MECHANICAL_THRESHOLD_FILES, DEFAULT_RECENCY_WINDOW_DAYS,
-        DEFAULT_RISK_LEVEL, WhyConfig, find_config_path, load_config, load_config_from_path,
+        DEFAULT_COUPLING_RATIO_THRESHOLD, DEFAULT_COUPLING_SCAN_COMMITS, DEFAULT_MAX_COMMITS,
+        DEFAULT_MECHANICAL_THRESHOLD_FILES, DEFAULT_RECENCY_WINDOW_DAYS, DEFAULT_RISK_LEVEL,
+        WhyConfig, find_config_path, load_config, load_config_from_path,
     };
     use anyhow::Result;
     use std::env;
@@ -174,6 +191,11 @@ mod tests {
             DEFAULT_MECHANICAL_THRESHOLD_FILES
         );
         assert_eq!(config.git.recency_window_days, DEFAULT_RECENCY_WINDOW_DAYS);
+        assert_eq!(config.git.coupling_scan_commits, DEFAULT_COUPLING_SCAN_COMMITS);
+        assert_eq!(
+            config.git.coupling_ratio_threshold,
+            DEFAULT_COUPLING_RATIO_THRESHOLD
+        );
         assert_eq!(config.github.remote, "origin");
         assert_eq!(config.github.token, None);
         assert!(config.risk.keywords.high.is_empty());
@@ -202,6 +224,8 @@ medium = ["terraform"]
 max_commits = 5
 recency_window_days = 30
 mechanical_threshold_files = 12
+coupling_scan_commits = 120
+coupling_ratio_threshold = 0.45
 
 [github]
 remote = "upstream"
@@ -226,6 +250,8 @@ remote = "upstream"
                     max_commits: 5,
                     recency_window_days: 30,
                     mechanical_threshold_files: 12,
+                    coupling_scan_commits: 120,
+                    coupling_ratio_threshold: 0.45,
                 },
                 github: super::GitHubConfig {
                     remote: "upstream".into(),

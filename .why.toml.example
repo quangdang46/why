@@ -30,6 +30,12 @@ recency_window_days = 90
 # Commits touching at least this many files are more likely to be treated as mechanical.
 mechanical_threshold_files = 50
 
+# Maximum number of recent commits to inspect when computing file coupling.
+coupling_scan_commits = 500
+
+# Minimum shared-history ratio required to report another file as coupled.
+coupling_ratio_threshold = 0.30
+
 [github]
 # Git remote name used to infer the repository when GitHub enrichment is enabled.
 remote = "origin"

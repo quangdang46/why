@@ -2,7 +2,8 @@ mod common;
 
 use anyhow::Result;
 use common::{
-    assert_json_golden, ensure_success, setup_hotfix_repo, setup_split_repo, setup_timebomb_repo,
+    assert_json_golden, ensure_success, setup_coupling_repo, setup_hotfix_repo, setup_split_repo,
+    setup_timebomb_repo,
 };
 use serde_json::Value;
 
@@ -61,11 +62,12 @@ fn mcp_initialize_and_tools_list_work_over_stdio() -> Result<()> {
     let tools = responses[1]["result"]["tools"]
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("tools/list should return tool array"))?;
-    assert_eq!(tools.len(), 4);
+    assert_eq!(tools.len(), 5);
     assert_eq!(tools[0]["name"], "why_symbol");
     assert_eq!(tools[1]["name"], "why_split");
     assert_eq!(tools[2]["name"], "why_time_bombs");
     assert_eq!(tools[3]["name"], "why_hotspots");
+    assert_eq!(tools[4]["name"], "why_coupling");
 
     Ok(())
 }
@@ -169,6 +171,30 @@ fn mcp_why_hotspots_returns_ranked_findings() -> Result<()> {
     assert!(payload[0]["path"].is_string());
     assert!(payload[0]["churn_commits"].as_u64().unwrap_or_default() >= 1);
     assert!(payload[0]["hotspot_score"].as_f64().unwrap_or_default() >= 1.0);
+
+    Ok(())
+}
+
+#[test]
+fn mcp_why_coupling_returns_ranked_findings() -> Result<()> {
+    let repo = setup_coupling_repo()?;
+    let output = repo.run_why_with_stdin(
+        &["mcp"],
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"why_coupling\",\"arguments\":{\"target\":\"src/schema.rs:1\",\"limit\":5}}}\n",
+    )?;
+    ensure_success(&output)?;
+
+    let responses = response_lines(&output)?;
+    let payload = &responses[0]["result"]["content"][0]["json"];
+    assert_eq!(payload["target_path"], "src/schema.rs");
+    assert_eq!(payload["target_commit_count"], 5);
+    let results = payload["results"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("coupling result should include array"))?;
+    assert!(!results.is_empty());
+    assert_eq!(results[0]["path"], "src/data.rs");
+    assert_eq!(results[0]["shared_commits"], 5);
+    assert_eq!(results[0]["coupling_ratio"], 1.0);
 
     Ok(())
 }

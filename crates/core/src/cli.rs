@@ -27,6 +27,18 @@ pub struct Cli {
     /// Show archaeology-guided split suggestions for a symbol target.
     #[arg(long)]
     pub split: bool,
+
+    /// Show file-level co-change coupling for the queried target.
+    #[arg(long)]
+    pub coupled: bool,
+
+    /// Limit history to commits from the last N days.
+    #[arg(long, value_name = "DAYS")]
+    pub since: Option<u64>,
+
+    /// Show ownership and bus-factor information for the queried target.
+    #[arg(long)]
+    pub team: bool,
 }
 
 #[derive(Debug, Subcommand, Clone, PartialEq, Eq)]
@@ -41,6 +53,9 @@ pub struct QueryRequest {
     pub json: bool,
     pub no_llm: bool,
     pub split: bool,
+    pub coupled: bool,
+    pub since_days: Option<u64>,
+    pub team: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +73,9 @@ impl Cli {
                     || self.json
                     || self.no_llm
                     || self.split
+                    || self.coupled
+                    || self.since.is_some()
+                    || self.team
                 {
                     bail!("the mcp subcommand does not accept query flags or a target");
                 }
@@ -75,6 +93,9 @@ impl Cli {
                     json: self.json,
                     no_llm: self.no_llm,
                     split: self.split,
+                    coupled: self.coupled,
+                    since_days: self.since,
+                    team: self.team,
                 }))
             }
         }
@@ -106,6 +127,9 @@ mod tests {
                 json: false,
                 no_llm: false,
                 split: false,
+                coupled: false,
+                since_days: None,
+                team: false,
             })
         );
     }
@@ -135,6 +159,9 @@ mod tests {
                 json: true,
                 no_llm: true,
                 split: false,
+                coupled: false,
+                since_days: None,
+                team: false,
             })
         );
     }
@@ -153,6 +180,41 @@ mod tests {
         assert!(!request.json);
         assert!(!request.no_llm);
         assert!(request.split);
+        assert!(!request.coupled);
+    }
+
+    #[test]
+    fn parses_coupled_request() {
+        let cli = Cli::parse_from(["why", "src/lib.rs:authenticate", "--coupled"]);
+        let mode = cli.parse_mode().expect("coupled target should parse");
+        let Mode::Query(request) = mode else {
+            panic!("expected query mode");
+        };
+
+        assert_eq!(request.target.path, PathBuf::from("src/lib.rs"));
+        assert_eq!(request.target.symbol.as_deref(), Some("authenticate"));
+        assert_eq!(request.target.query_kind, QueryKind::Symbol);
+        assert!(!request.json);
+        assert!(!request.no_llm);
+        assert!(!request.split);
+        assert!(request.coupled);
+        assert_eq!(request.since_days, None);
+        assert!(!request.team);
+    }
+
+    #[test]
+    fn parses_since_and_team_request() {
+        let cli = Cli::parse_from(["why", "src/lib.rs:authenticate", "--since", "30", "--team"]);
+        let mode = cli.parse_mode().expect("since/team target should parse");
+        let Mode::Query(request) = mode else {
+            panic!("expected query mode");
+        };
+
+        assert_eq!(request.target.path, PathBuf::from("src/lib.rs"));
+        assert_eq!(request.target.symbol.as_deref(), Some("authenticate"));
+        assert_eq!(request.target.query_kind, QueryKind::Symbol);
+        assert_eq!(request.since_days, Some(30));
+        assert!(request.team);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
-use git2::{BlameOptions, DiffFormat, DiffOptions, Oid, Repository};
+use git2::{BlameOptions, DiffFormat, DiffOptions, Oid, Repository, Sort};
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use time::OffsetDateTime;
@@ -103,6 +103,23 @@ pub struct ArchaeologyResult {
     pub notes: Vec<&'static str>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TeamOwner {
+    pub author: String,
+    pub commit_count: usize,
+    pub ownership_percent: u8,
+    pub last_commit_date: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TeamReport {
+    pub target: OutputTarget,
+    pub owners: Vec<TeamOwner>,
+    pub bus_factor: usize,
+    pub risk_level: RiskLevel,
+    pub risk_summary: String,
+}
+
 pub fn discover_repository(starting_dir: &Path) -> Result<Repository> {
     Repository::discover(starting_dir).with_context(|| {
         format!(
@@ -136,6 +153,14 @@ pub fn relative_repo_path(repo: &Repository, path: &Path) -> Result<PathBuf> {
 }
 
 pub fn analyze_target(target: &QueryTarget, cwd: &Path) -> Result<ArchaeologyResult> {
+    analyze_target_with_options(target, cwd, None)
+}
+
+pub fn analyze_target_with_options(
+    target: &QueryTarget,
+    cwd: &Path,
+    since_days: Option<u64>,
+) -> Result<ArchaeologyResult> {
     let resolved = resolve_target(target, cwd)?;
     let config = load_config(cwd)?;
 
@@ -148,6 +173,7 @@ pub fn analyze_target(target: &QueryTarget, cwd: &Path) -> Result<ArchaeologyRes
         resolved.start_line,
         resolved.end_line,
         &config,
+        since_days,
     )?;
     let local_context = extract_local_context(
         &target_path,
@@ -184,6 +210,7 @@ pub fn blame_commit_evidence(
     start_line: u32,
     end_line: u32,
     config: &WhyConfig,
+    since_days: Option<u64>,
 ) -> Result<Vec<CommitEvidence>> {
     if start_line == 0 || end_line == 0 {
         bail!("blame lines must be 1-based");
@@ -197,6 +224,26 @@ pub fn blame_commit_evidence(
     options
         .min_line(start_line as usize)
         .max_line(end_line as usize);
+
+    if let Some(since_days) = since_days {
+        let since_ts = OffsetDateTime::now_utc().unix_timestamp() - since_days as i64 * 86_400;
+        let mut revwalk = repo.revwalk().context("failed to create revwalk")?;
+        revwalk.push_head().context("failed to walk HEAD")?;
+        revwalk
+            .set_sorting(Sort::TIME)
+            .context("failed to set revwalk ordering")?;
+        for oid in revwalk {
+            let oid = oid.context("failed to read commit from revwalk")?;
+            let commit = repo
+                .find_commit(oid)
+                .with_context(|| format!("failed to load commit {oid}"))?;
+            if commit.time().seconds() < since_ts {
+                continue;
+            }
+            options.newest_commit(oid);
+            break;
+        }
+    }
 
     let blame = repo
         .blame_file(relative_path, Some(&mut options))
@@ -246,6 +293,86 @@ pub fn blame_commit_evidence(
     }
 
     Ok(select_top_commits(commits, config.git.max_commits))
+}
+
+pub fn analyze_team(target: &QueryTarget, cwd: &Path, since_days: Option<u64>) -> Result<TeamReport> {
+    let resolved = resolve_target(target, cwd)?;
+    let config = load_config(cwd)?;
+    let target_path = cwd.join(&resolved.path);
+    let repo = discover_repository(&target_path)?;
+    let relative_path = relative_repo_path(&repo, &target_path)?;
+    let commits = blame_commit_evidence(
+        &repo,
+        &relative_path,
+        resolved.start_line,
+        resolved.end_line,
+        &config,
+        since_days,
+    )?;
+    let local_context = extract_local_context(
+        &target_path,
+        resolved.start_line,
+        resolved.end_line,
+        &config,
+    )?;
+    let risk_level = infer_risk_level(&commits, &local_context, &config);
+
+    let mut by_author: BTreeMap<String, (usize, i64)> = BTreeMap::new();
+    for commit in &commits {
+        let entry = by_author
+            .entry(commit.author.clone())
+            .or_insert((0, commit.time));
+        entry.0 += 1;
+        entry.1 = entry.1.max(commit.time);
+    }
+
+    let total = commits.len().max(1);
+    let mut owners = by_author
+        .into_iter()
+        .map(|(author, (commit_count, last_time))| TeamOwner {
+            author,
+            commit_count,
+            ownership_percent: ((commit_count * 100) / total) as u8,
+            last_commit_date: format_git_time(last_time).unwrap_or_else(|_| "unknown".into()),
+        })
+        .collect::<Vec<_>>();
+    owners.sort_by(|left, right| {
+        right
+            .commit_count
+            .cmp(&left.commit_count)
+            .then(left.author.cmp(&right.author))
+    });
+
+    let bus_factor = owners
+        .iter()
+        .find(|owner| owner.ownership_percent >= 50)
+        .map(|_| 1)
+        .unwrap_or(owners.len().min(2));
+    let risk_summary = if let Some(primary) = owners.first() {
+        format!(
+            "{} is the primary owner of {}-risk code for this target.",
+            primary.author,
+            risk_level.as_str()
+        )
+    } else {
+        format!(
+            "Ownership is unclear, but this target still carries {}-risk history.",
+            risk_level.as_str()
+        )
+    };
+
+    Ok(TeamReport {
+        target: OutputTarget {
+            path: relative_path,
+            start_line: resolved.start_line,
+            end_line: resolved.end_line,
+            query_kind: resolved.query_kind,
+        },
+        owners,
+        bus_factor,
+        risk_level,
+        risk_summary,
+    })
 }
 
 pub fn extract_local_context(
@@ -393,9 +520,7 @@ fn load_commit_evidence(
     coverage_score: f32,
     config: &WhyConfig,
 ) -> Result<CommitEvidence> {
-    let commit = repo
-        .find_commit(oid)
-        .with_context(|| format!("failed to load commit {oid}"))?;
+    let commit = explainable_commit(repo, oid, config)?;
     let author = commit.author();
     let author_name = author.name().unwrap_or("unknown").to_string();
     let email = author.email().unwrap_or("unknown").to_string();
@@ -427,6 +552,49 @@ fn load_commit_evidence(
         issue_refs,
         is_mechanical,
     })
+}
+
+fn explainable_commit<'repo>(
+    repo: &'repo Repository,
+    oid: Oid,
+    config: &WhyConfig,
+) -> Result<git2::Commit<'repo>> {
+    let mut current = repo
+        .find_commit(oid)
+        .with_context(|| format!("failed to load commit {oid}"))?;
+
+    loop {
+        let parent_count = current.parent_count();
+        if parent_count > 1 {
+            let mut selected = None;
+            for index in (0..parent_count).rev() {
+                let parent = current
+                    .parent(index)
+                    .context("failed to load parent while following merge origin")?;
+                if !commit_is_mechanical(repo, &parent, config)? {
+                    selected = Some(parent);
+                    break;
+                }
+                selected.get_or_insert(parent);
+            }
+            current = selected.context("merge commit had no parents to follow")?;
+            continue;
+        }
+
+        if commit_is_mechanical(repo, &current, config)? {
+            if parent_count == 0 {
+                break;
+            }
+            current = current
+                .parent(0)
+                .context("failed to load parent while following merge origin")?;
+            continue;
+        }
+
+        break;
+    }
+
+    Ok(current)
 }
 
 fn compute_relevance_score(commit: &CommitEvidence, config: &WhyConfig) -> f32 {
@@ -549,6 +717,16 @@ fn normalize_issue_ref(token: &str) -> Option<String> {
         }
     }
     None
+}
+
+pub fn commit_is_mechanical(
+    repo: &Repository,
+    commit: &git2::Commit<'_>,
+    config: &WhyConfig,
+) -> Result<bool> {
+    let summary = commit.summary().unwrap_or("(no summary)");
+    let diff_excerpt = load_diff_excerpt(repo, commit)?;
+    is_mechanical_commit(repo, commit, summary, &diff_excerpt, config)
 }
 
 fn is_mechanical_commit(
@@ -749,11 +927,12 @@ fn parse_default_risk_level(level: &str) -> RiskLevel {
 mod tests {
     use super::{
         CommitEvidence, LocalContext, RiskLevel, blame_commit_evidence, compute_relevance_score,
-        discover_repository, extract_issue_refs, extract_local_context, has_mechanical_summary,
-        infer_risk_level, is_whitespace_only_diff_line, parse_default_risk_level,
-        relative_repo_path, select_top_commits, truncate_chars,
+        discover_repository, explainable_commit, extract_issue_refs, extract_local_context,
+        has_mechanical_summary, infer_risk_level, is_whitespace_only_diff_line,
+        parse_default_risk_level, relative_repo_path, select_top_commits, truncate_chars,
     };
-    use anyhow::Result;
+    use anyhow::{Context, Result};
+    use git2::Repository;
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
@@ -775,11 +954,61 @@ mod tests {
     }
 
     #[test]
+    fn explainable_commit_walks_past_merge_wrappers() -> Result<()> {
+        let dir = TempDir::new()?;
+        let repo = Repository::init(dir.path())?;
+        {
+            let mut cfg = repo.config()?;
+            cfg.set_str("user.name", "Fixture Bot")?;
+            cfg.set_str("user.email", "test@example.com")?;
+        }
+
+        let path = dir.path().join("sample.rs");
+        fs::write(&path, "pub fn helper() {\n    1\n}\n")?;
+        std::process::Command::new("git")
+            .args(["add", "sample.rs"])
+            .current_dir(dir.path())
+            .output()?;
+        std::process::Command::new("git")
+            .args(["commit", "-m", "feat: add helper"])
+            .current_dir(dir.path())
+            .output()?;
+
+        std::process::Command::new("git")
+            .args(["checkout", "-b", "feature"])
+            .current_dir(dir.path())
+            .output()?;
+        fs::write(&path, "pub fn helper() {\n    2\n}\n")?;
+        std::process::Command::new("git")
+            .args(["add", "sample.rs"])
+            .current_dir(dir.path())
+            .output()?;
+        std::process::Command::new("git")
+            .args(["commit", "-m", "fix: adjust helper"])
+            .current_dir(dir.path())
+            .output()?;
+
+        std::process::Command::new("git")
+            .args(["checkout", "master"])
+            .current_dir(dir.path())
+            .output()?;
+        std::process::Command::new("git")
+            .args(["merge", "--no-ff", "feature", "-m", "Merge branch 'feature'"])
+            .current_dir(dir.path())
+            .output()?;
+
+        let head = repo.head()?.target().context("expected HEAD target")?;
+        let explainable = explainable_commit(&repo, head, &WhyConfig::default())?;
+        assert!(explainable.summary().unwrap_or_default().contains("adjust helper"));
+        Ok(())
+    }
+
+    #[test]
     fn blames_a_single_line() {
         let repo = discover_repository(Path::new(".")).expect("repo should be discoverable");
         let relative =
             relative_repo_path(&repo, Path::new("README.md")).expect("path should be relative");
-        let commits = blame_commit_evidence(&repo, &relative, 1, 1, &WhyConfig::default())
+        let commits = blame_commit_evidence(&repo, &relative, 1, 1, &WhyConfig::default(), None)
             .expect("blame should succeed");
 
         assert!(!commits.is_empty());

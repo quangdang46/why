@@ -11,6 +11,9 @@ const MAX_DIFF_CHARS: usize = 500;
 const MAX_COMMENT_CHARS: usize = 200;
 const MAX_MARKER_CHARS: usize = 150;
 const MAX_SUBJECT_CHARS: usize = 120;
+const MAX_SIGNAL_ISSUE_REFS: usize = 20;
+const MAX_COMMIT_ISSUE_REFS: usize = 5;
+const MAX_SIGNAL_RISK_KEYWORDS: usize = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EvidencePack {
@@ -185,14 +188,29 @@ pub fn build(
     commits: &[EvidenceCommit],
     context: &EvidenceContext,
 ) -> EvidencePack {
+    let total_commit_count = commits.len();
     let all_issue_refs = dedupe_issue_refs(commits);
-    let full = build_internal(target, commits, context, &all_issue_refs, true);
+    let full = build_internal(
+        target,
+        commits,
+        context,
+        &all_issue_refs,
+        total_commit_count,
+        true,
+    );
 
     if serialized_len(&full) <= MAX_PAYLOAD_CHARS {
         return full;
     }
 
-    let mut reduced = build_internal(target, commits, context, &all_issue_refs, false);
+    let mut reduced = build_internal(
+        target,
+        commits,
+        context,
+        &all_issue_refs,
+        total_commit_count,
+        false,
+    );
     if serialized_len(&reduced) <= MAX_PAYLOAD_CHARS {
         return reduced;
     }
@@ -205,6 +223,7 @@ pub fn build(
             &commits[..slice_len],
             context,
             &all_issue_refs,
+            total_commit_count,
             false,
         );
         if serialized_len(&reduced) <= MAX_PAYLOAD_CHARS {
@@ -220,6 +239,7 @@ fn build_internal(
     commits: &[EvidenceCommit],
     context: &EvidenceContext,
     all_issue_refs: &[String],
+    total_commit_count: usize,
     include_diffs: bool,
 ) -> EvidencePack {
     let top_commits: Vec<CommitSummary> = commits
@@ -235,7 +255,12 @@ fn build_internal(
                 String::new()
             },
             coverage_pct: (commit.coverage_score * 100.0).round() as u32,
-            issue_refs: commit.issue_refs.clone(),
+            issue_refs: commit
+                .issue_refs
+                .iter()
+                .take(MAX_COMMIT_ISSUE_REFS)
+                .cloned()
+                .collect(),
         })
         .collect();
 
@@ -262,13 +287,22 @@ fn build_internal(
             risk_flags: context.risk_flags.iter().take(10).cloned().collect(),
         },
         history: HistoryInfo {
-            total_commit_count: commits.len(),
+            total_commit_count,
             commits_shown: top_commits.len(),
             top_commits,
         },
         signals: SignalInfo {
-            issue_refs: all_issue_refs.to_vec(),
-            risk_keywords: context.risk_flags.clone(),
+            issue_refs: all_issue_refs
+                .iter()
+                .take(MAX_SIGNAL_ISSUE_REFS)
+                .cloned()
+                .collect(),
+            risk_keywords: context
+                .risk_flags
+                .iter()
+                .take(MAX_SIGNAL_RISK_KEYWORDS)
+                .cloned()
+                .collect(),
             heuristic_risk: context.heuristic_risk.clone(),
         },
     }
@@ -372,6 +406,49 @@ mod tests {
         let pack = build(&sample_target(), &commits, &sample_context());
 
         assert_eq!(pack.signals.issue_refs, vec!["#42", "#7", "#99"]);
+    }
+
+    #[test]
+    fn test_total_commit_count_preserved_when_payload_is_reduced() {
+        let commits: Vec<_> = (0..20)
+            .map(|index| sample_commit(index, 2_000, vec!["#1", "#2", "#3", "#4", "#5", "#6"]))
+            .collect();
+        let pack = build(&sample_target(), &commits, &sample_context());
+
+        assert_eq!(pack.history.total_commit_count, commits.len());
+        assert!(pack.history.commits_shown <= pack.history.total_commit_count);
+    }
+
+    #[test]
+    fn test_signal_lists_are_bounded() {
+        let commits: Vec<_> = (0..30)
+            .map(|index| {
+                sample_commit(
+                    index,
+                    100,
+                    vec![
+                        "#1", "#2", "#3", "#4", "#5", "#6", "#7", "#8", "#9", "#10",
+                        "#11", "#12", "#13", "#14", "#15", "#16", "#17", "#18", "#19", "#20",
+                        "#21", "#22", "#23", "#24", "#25",
+                    ],
+                )
+            })
+            .collect();
+        let context = EvidenceContext {
+            comments: vec![],
+            markers: vec![],
+            risk_flags: (0..20).map(|index| format!("flag-{index}")).collect(),
+            heuristic_risk: "MEDIUM".into(),
+        };
+        let pack = build(&sample_target(), &commits, &context);
+
+        assert!(pack.signals.issue_refs.len() <= MAX_SIGNAL_ISSUE_REFS);
+        assert!(pack.signals.risk_keywords.len() <= MAX_SIGNAL_RISK_KEYWORDS);
+        assert!(pack
+            .history
+            .top_commits
+            .iter()
+            .all(|commit| commit.issue_refs.len() <= MAX_COMMIT_ISSUE_REFS));
     }
 
     #[test]

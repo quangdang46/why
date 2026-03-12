@@ -9,7 +9,7 @@ use why_archaeologist::{
 };
 use why_context::load_config;
 
-const SOURCE_EXTENSIONS: &[&str] = &[
+pub(crate) const SOURCE_EXTENSIONS: &[&str] = &[
     "c", "cc", "cpp", "cs", "go", "h", "hpp", "java", "js", "jsx", "py", "rb", "rs", "swift", "ts",
     "tsx",
 ];
@@ -100,7 +100,7 @@ fn analyze_file_hotspot(
         return Ok(None);
     }
 
-    let commits = blame_commit_evidence(repo, relative_path, 1, line_count, config)?;
+    let commits = blame_commit_evidence(repo, relative_path, 1, line_count, config, None)?;
     let local_context = extract_local_context(path, 1, line_count, config)?;
     let risk_level = infer_risk_level(&commits, &local_context, config);
     let hotspot_score = churn_commits as f32 * risk_weight(risk_level);

@@ -18,4 +18,5 @@ serde_json.workspace = true
 why-archaeologist = { path = "../archaeologist" }
 why-locator = { path = "../locator" }
 why-mcp = { path = "../mcp" }
+why-scanner = { path = "../scanner" }
 why-splitter = { path = "../splitter" }

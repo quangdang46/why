@@ -3,8 +3,8 @@ mod common;
 use anyhow::Result;
 use common::{
     assert_json_golden, assert_terminal_golden, ensure_success, setup_compat_shim_repo,
-    setup_hotfix_repo, setup_javascript_repo, setup_python_repo, setup_sparse_repo,
-    setup_split_repo, setup_typescript_repo,
+    setup_coupling_repo, setup_hotfix_repo, setup_javascript_repo, setup_python_repo,
+    setup_sparse_repo, setup_split_repo, setup_typescript_repo,
 };
 use serde_json::Value;
 
@@ -97,6 +97,46 @@ fn hotfix_repo_json_output_has_phase_one_shape() -> Result<()> {
             .is_some_and(|score| score > 0.0)
     );
     assert_eq!(hotfix_commit["is_mechanical"], false);
+
+    Ok(())
+}
+
+#[test]
+fn hotfix_repo_since_filters_to_recent_commits() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let output = repo.run_why(&["src/payment.rs:6", "--json", "--no-llm", "--since", "1"])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    let parsed: Value = serde_json::from_str(&stdout)?;
+    let commits = parsed["commits"]
+        .as_array()
+        .expect("commits should be an array");
+    assert_eq!(commits.len(), 1);
+    assert!(commits[0]["summary"]
+        .as_str()
+        .is_some_and(|summary| summary.contains("hotfix")));
+
+    Ok(())
+}
+
+#[test]
+fn hotfix_repo_team_report_shows_primary_owner_and_bus_factor() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let output = repo.run_why(&["src/payment.rs:process_payment", "--team", "--json"])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    let parsed: Value = serde_json::from_str(&stdout)?;
+    assert_eq!(parsed["target"]["path"], "src/payment.rs");
+    assert_eq!(parsed["target"]["query_kind"], "symbol");
+    assert_eq!(parsed["bus_factor"], 1);
+    assert_eq!(parsed["risk_level"], "HIGH");
+    let owners = parsed["owners"].as_array().expect("owners should be array");
+    assert_eq!(owners.len(), 1);
+    assert_eq!(owners[0]["author"], "Fixture Bot");
+    assert_eq!(owners[0]["commit_count"], 2);
+    assert_eq!(owners[0]["ownership_percent"], 100);
 
     Ok(())
 }
@@ -329,6 +369,28 @@ fn python_symbol_queries_resolve_and_render_commit_output() -> Result<()> {
             .as_array()
             .is_some_and(|items| !items.is_empty())
     );
+
+    Ok(())
+}
+
+#[test]
+fn coupling_queries_return_ranked_json_for_fixture_repo() -> Result<()> {
+    let repo = setup_coupling_repo()?;
+    let output = repo.run_why(&["src/schema.rs:1", "--coupled", "--json"])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    let parsed: Value = serde_json::from_str(&stdout)?;
+    assert_eq!(parsed["target_path"], "src/schema.rs");
+    assert_eq!(parsed["target_commit_count"], 5);
+    let results = parsed["results"]
+        .as_array()
+        .expect("coupling results should be an array");
+    assert!(!results.is_empty());
+    assert_eq!(results[0]["path"], "src/data.rs");
+    assert_eq!(results[0]["shared_commits"], 5);
+    assert_eq!(results[0]["target_commit_count"], 5);
+    assert_eq!(results[0]["coupling_ratio"], 1.0);
 
     Ok(())
 }
