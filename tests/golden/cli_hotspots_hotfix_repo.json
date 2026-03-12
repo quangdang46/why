@@ -1,0 +1,12 @@
+[
+  {
+    "path": "src/payment.rs",
+    "churn_commits": 3,
+    "risk_level": "HIGH",
+    "hotspot_score": 9.0,
+    "top_commit_summaries": [
+      "hotfix: fix duplicate charge vulnerability, closes #4521",
+      "feat: add payment processing"
+    ]
+  }
+]

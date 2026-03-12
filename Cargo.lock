@@ -1608,8 +1608,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "git2",
  "serde_json",
  "why-archaeologist",
+ "why-cache",
+ "why-context",
  "why-locator",
  "why-mcp",
  "why-scanner",
@@ -1707,6 +1710,7 @@ name = "why-synthesizer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "reqwest",
  "serde",
  "serde_json",
 ]

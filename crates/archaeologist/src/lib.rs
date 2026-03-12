@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use git2::{BlameOptions, DiffFormat, DiffOptions, Oid, Repository, Sort};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,7 +16,7 @@ const MAX_LOCAL_COMMENTS: usize = 5;
 const MAX_LOCAL_MARKERS: usize = 5;
 const MAX_LOCAL_RISK_FLAGS: usize = 10;
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CommitEvidence {
     pub oid: String,
     pub short_oid: String,
@@ -33,7 +33,7 @@ pub struct CommitEvidence {
     pub is_mechanical: bool,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum RiskLevel {
     HIGH,
     MEDIUM,
@@ -76,7 +76,7 @@ impl RiskLevel {
     }
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OutputTarget {
     pub path: PathBuf,
     pub start_line: u32,
@@ -84,26 +84,26 @@ pub struct OutputTarget {
     pub query_kind: QueryKind,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LocalContext {
     pub comments: Vec<String>,
     pub markers: Vec<String>,
     pub risk_flags: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ArchaeologyResult {
     pub target: OutputTarget,
     pub commits: Vec<CommitEvidence>,
     pub risk_level: RiskLevel,
-    pub risk_summary: &'static str,
-    pub change_guidance: &'static str,
+    pub risk_summary: String,
+    pub change_guidance: String,
     pub local_context: LocalContext,
-    pub mode: &'static str,
-    pub notes: Vec<&'static str>,
+    pub mode: String,
+    pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TeamOwner {
     pub author: String,
     pub commit_count: usize,
@@ -111,7 +111,7 @@ pub struct TeamOwner {
     pub last_commit_date: String,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TeamReport {
     pub target: OutputTarget,
     pub owners: Vec<TeamOwner>,
@@ -120,7 +120,7 @@ pub struct TeamReport {
     pub risk_summary: String,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BlameChainResult {
     pub target: OutputTarget,
     pub starting_commit: CommitEvidence,
@@ -208,13 +208,14 @@ pub fn analyze_target_with_options(
         },
         commits,
         risk_level,
-        risk_summary: risk_level.summary(),
-        change_guidance: risk_level.change_guidance(),
+        risk_summary: risk_level.summary().to_string(),
+        change_guidance: risk_level.change_guidance().to_string(),
         local_context,
-        mode: "heuristic",
+        mode: "heuristic".to_string(),
         notes: vec![
-            "No LLM synthesis in phase 1",
-            "Evidence and inference should be kept separate when presenting this result",
+            "No LLM synthesis in phase 1".to_string(),
+            "Evidence and inference should be kept separate when presenting this result"
+                .to_string(),
         ],
     })
 }

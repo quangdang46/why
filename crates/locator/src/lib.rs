@@ -2,13 +2,13 @@ mod finder;
 mod languages;
 
 use anyhow::{Result, anyhow, bail};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub use finder::{ResolvedTarget, list_all_symbols, resolve_target};
 pub use languages::SupportedLanguage;
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum QueryKind {
     Line,
@@ -17,7 +17,7 @@ pub enum QueryKind {
     QualifiedSymbol,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct QueryTarget {
     pub path: PathBuf,
     pub start_line: Option<u32>,

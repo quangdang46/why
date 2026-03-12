@@ -1,0 +1,9 @@
+[
+  {
+    "path": "src/legacy.rs",
+    "line": 2,
+    "kind": "PastDueTodo",
+    "marker": "// TODO(2020-01-15): remove after v3 migration is complete",
+    "severity": "Critical"
+  }
+]

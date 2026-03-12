@@ -1,19 +1,26 @@
 # Example why configuration.
 # Copy this file to .why.toml at your repository root and adjust for your domain.
+#
+# All values below are optional. Missing sections fall back to built-in defaults.
+# Keywords are matched case-insensitively against commit messages, diff context,
+# and nearby source comments/markers when heuristic risk is computed.
 
 [risk]
-# Fallback risk level when commit history and built-in keywords do not imply more urgency.
+# Fallback risk level when commit history and built-in/custom keywords do not
+# imply more urgency. Accepted values are LOW, MEDIUM, or HIGH.
 default_level = "LOW"
 
 [risk.keywords]
 # Domain-specific HIGH-risk keywords layered on top of the built-in heuristic vocabulary.
+# Use this for terms where deletion or refactoring should trigger extra caution.
 high = [
   "pci",
   "reconciliation",
   "ledger",
 ]
 
-# Domain-specific MEDIUM-risk keywords.
+# Domain-specific MEDIUM-risk keywords for migrations, integrations, or
+# compatibility-sensitive concepts that deserve review before changes land.
 medium = [
   "terraform",
   "webhook",
@@ -21,7 +28,7 @@ medium = [
 ]
 
 [git]
-# Maximum number of commits to keep in the ranked archaeology output.
+# Maximum number of commits to keep in ranked archaeology output after scoring.
 max_commits = 8
 
 # Recent commits inside this window receive a relevance boost.
@@ -34,6 +41,7 @@ mechanical_threshold_files = 50
 coupling_scan_commits = 500
 
 # Minimum shared-history ratio required to report another file as coupled.
+# Lower values surface weaker relationships; higher values keep only stronger co-change signals.
 coupling_ratio_threshold = 0.30
 
 [github]
@@ -41,4 +49,5 @@ coupling_ratio_threshold = 0.30
 remote = "origin"
 
 # Prefer GITHUB_TOKEN in the environment; this fallback is optional.
+# Environment variables win when both are present, and blank values are ignored.
 # token = "ghp_..."

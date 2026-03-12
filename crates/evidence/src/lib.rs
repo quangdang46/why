@@ -427,9 +427,9 @@ mod tests {
                     index,
                     100,
                     vec![
-                        "#1", "#2", "#3", "#4", "#5", "#6", "#7", "#8", "#9", "#10",
-                        "#11", "#12", "#13", "#14", "#15", "#16", "#17", "#18", "#19", "#20",
-                        "#21", "#22", "#23", "#24", "#25",
+                        "#1", "#2", "#3", "#4", "#5", "#6", "#7", "#8", "#9", "#10", "#11", "#12",
+                        "#13", "#14", "#15", "#16", "#17", "#18", "#19", "#20", "#21", "#22",
+                        "#23", "#24", "#25",
                     ],
                 )
             })
@@ -444,11 +444,12 @@ mod tests {
 
         assert!(pack.signals.issue_refs.len() <= MAX_SIGNAL_ISSUE_REFS);
         assert!(pack.signals.risk_keywords.len() <= MAX_SIGNAL_RISK_KEYWORDS);
-        assert!(pack
-            .history
-            .top_commits
-            .iter()
-            .all(|commit| commit.issue_refs.len() <= MAX_COMMIT_ISSUE_REFS));
+        assert!(
+            pack.history
+                .top_commits
+                .iter()
+                .all(|commit| commit.issue_refs.len() <= MAX_COMMIT_ISSUE_REFS)
+        );
     }
 
     #[test]
@@ -498,6 +499,9 @@ mod tests {
 
         assert_eq!(client.repo().owner, "anthropics");
         assert_eq!(client.repo().name, "why");
-        assert_eq!(endpoint, "https://api.github.com/repos/anthropics/why/issues/42");
+        assert_eq!(
+            endpoint,
+            "https://api.github.com/repos/anthropics/why/issues/42"
+        );
     }
 }

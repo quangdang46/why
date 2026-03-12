@@ -1,0 +1,4 @@
+Top 3 hotspots by churn × risk
+
+   1. src/payment.rs                 churn   3  risk HIGH    score 9.00
+      top history: hotfix: fix duplicate charge vulnerability, closes #4521 | feat: add payment processing

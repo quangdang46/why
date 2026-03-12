@@ -12,6 +12,7 @@ const DEFAULT_RECENCY_WINDOW_DAYS: i64 = 90;
 const DEFAULT_MECHANICAL_THRESHOLD_FILES: usize = 50;
 const DEFAULT_COUPLING_SCAN_COMMITS: usize = 500;
 const DEFAULT_COUPLING_RATIO_THRESHOLD: f64 = 0.30;
+const DEFAULT_CACHE_MAX_ENTRIES: usize = 500;
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 pub struct WhyConfig {
@@ -19,6 +20,8 @@ pub struct WhyConfig {
     pub risk: RiskConfig,
     #[serde(default)]
     pub git: GitConfig,
+    #[serde(default)]
+    pub cache: CacheConfig,
     #[serde(default)]
     pub github: GitHubConfig,
 }
@@ -70,6 +73,20 @@ impl Default for GitConfig {
             mechanical_threshold_files: default_mechanical_threshold_files(),
             coupling_scan_commits: default_coupling_scan_commits(),
             coupling_ratio_threshold: default_coupling_ratio_threshold(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct CacheConfig {
+    #[serde(default = "default_cache_max_entries")]
+    pub max_entries: usize,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            max_entries: default_cache_max_entries(),
         }
     }
 }
@@ -163,6 +180,10 @@ fn default_coupling_ratio_threshold() -> f64 {
     DEFAULT_COUPLING_RATIO_THRESHOLD
 }
 
+fn default_cache_max_entries() -> usize {
+    DEFAULT_CACHE_MAX_ENTRIES
+}
+
 fn default_github_remote() -> String {
     "origin".to_string()
 }
@@ -170,10 +191,12 @@ fn default_github_remote() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_COUPLING_RATIO_THRESHOLD, DEFAULT_COUPLING_SCAN_COMMITS, DEFAULT_MAX_COMMITS,
+        DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_COUPLING_RATIO_THRESHOLD,
+        DEFAULT_COUPLING_SCAN_COMMITS, DEFAULT_MAX_COMMITS,
         DEFAULT_MECHANICAL_THRESHOLD_FILES, DEFAULT_RECENCY_WINDOW_DAYS, DEFAULT_RISK_LEVEL,
         WhyConfig, find_config_path, load_config, load_config_from_path,
     };
+    use std::path::Path;
     use anyhow::Result;
     use std::env;
     use std::fs;
@@ -191,11 +214,15 @@ mod tests {
             DEFAULT_MECHANICAL_THRESHOLD_FILES
         );
         assert_eq!(config.git.recency_window_days, DEFAULT_RECENCY_WINDOW_DAYS);
-        assert_eq!(config.git.coupling_scan_commits, DEFAULT_COUPLING_SCAN_COMMITS);
+        assert_eq!(
+            config.git.coupling_scan_commits,
+            DEFAULT_COUPLING_SCAN_COMMITS
+        );
         assert_eq!(
             config.git.coupling_ratio_threshold,
             DEFAULT_COUPLING_RATIO_THRESHOLD
         );
+        assert_eq!(config.cache.max_entries, DEFAULT_CACHE_MAX_ENTRIES);
         assert_eq!(config.github.remote, "origin");
         assert_eq!(config.github.token, None);
         assert!(config.risk.keywords.high.is_empty());
@@ -227,6 +254,9 @@ mechanical_threshold_files = 12
 coupling_scan_commits = 120
 coupling_ratio_threshold = 0.45
 
+[cache]
+max_entries = 42
+
 [github]
 remote = "upstream"
 {github_key} = "test-placeholder"
@@ -253,6 +283,7 @@ remote = "upstream"
                     coupling_scan_commits: 120,
                     coupling_ratio_threshold: 0.45,
                 },
+                cache: super::CacheConfig { max_entries: 42 },
                 github: super::GitHubConfig {
                     remote: "upstream".into(),
                     token: Some("test-placeholder".into()),
@@ -272,6 +303,41 @@ remote = "upstream"
         fs::write(&config_path, "[risk]\ndefault_level = \"LOW\"\n")?;
 
         assert_eq!(find_config_path(&nested_dir), Some(config_path));
+
+        Ok(())
+    }
+
+    #[test]
+    fn example_config_stays_in_sync_with_supported_surface() -> Result<()> {
+        let config_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join(".why.toml.example");
+        let config = load_config_from_path(&config_path)?;
+
+        assert_eq!(config.risk.default_level, DEFAULT_RISK_LEVEL);
+        assert_eq!(config.risk.keywords.high, vec!["pci", "reconciliation", "ledger"]);
+        assert_eq!(
+            config.risk.keywords.medium,
+            vec!["terraform", "webhook", "idempotency"]
+        );
+        assert_eq!(config.git.max_commits, DEFAULT_MAX_COMMITS);
+        assert_eq!(config.git.recency_window_days, DEFAULT_RECENCY_WINDOW_DAYS);
+        assert_eq!(
+            config.git.mechanical_threshold_files,
+            DEFAULT_MECHANICAL_THRESHOLD_FILES
+        );
+        assert_eq!(
+            config.git.coupling_scan_commits,
+            DEFAULT_COUPLING_SCAN_COMMITS
+        );
+        assert_eq!(
+            config.git.coupling_ratio_threshold,
+            DEFAULT_COUPLING_RATIO_THRESHOLD
+        );
+        assert_eq!(config.cache.max_entries, DEFAULT_CACHE_MAX_ENTRIES);
+        assert_eq!(config.github.remote, "origin");
+        assert_eq!(config.github.token, None);
 
         Ok(())
     }

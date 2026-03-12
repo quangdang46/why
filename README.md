@@ -87,6 +87,9 @@ why src/auth.js:verifyToken --no-llm
 
 # Machine-readable archaeology output
 why src/auth.js:verifyToken --json
+
+# Repo-wide danger hotspots ranked by churn × heuristic risk
+why hotspots --limit 10
 ```
 
 Current Rust CLI notes:
@@ -185,15 +188,19 @@ medium = ["terraform"]
 max_commits = 8
 recency_window_days = 90
 mechanical_threshold_files = 50
+coupling_scan_commits = 500
+coupling_ratio_threshold = 0.30
 
 [github]
 remote = "origin"
 # token = "ghp_..."   # optional fallback; prefer GITHUB_TOKEN env var
 ```
 
-For GitHub enrichment work, set `GITHUB_TOKEN` in the environment when available; `.why.toml` can also carry an optional `[github]` fallback token and remote name.
+`[risk.keywords]` extends the built-in heuristic vocabulary with team- or domain-specific terms. Matches are case-insensitive and can affect both ranked evidence relevance and the heuristic risk level.
 
-See `.why.toml.example` for a fuller documented example of the currently implemented config surface.
+For GitHub enrichment work, set `GITHUB_TOKEN` in the environment when available; `.why.toml` can also carry an optional `[github]` fallback token and remote name. Environment variables take precedence over `.why.toml`, and blank values are ignored.
+
+See `.why.toml.example` for a fully documented example of the currently implemented config surface.
 
 ## Index Location
 

@@ -43,6 +43,59 @@ fn archaeology_golden_view(payload: &Value) -> Value {
     })
 }
 
+fn hotspots_golden_view(payload: &[Value]) -> Value {
+    Value::Array(
+        payload
+            .iter()
+            .map(|finding| serde_json::json!({
+                "path": finding["path"],
+                "churn_commits": finding["churn_commits"],
+                "risk_level": finding["risk_level"],
+                "hotspot_score": finding["hotspot_score"],
+                "top_commit_summaries": finding["top_commit_summaries"]
+            }))
+            .collect(),
+    )
+}
+
+fn time_bombs_golden_view(payload: &[Value]) -> Value {
+    Value::Array(
+        payload
+            .iter()
+            .map(|finding| serde_json::json!({
+                "path": finding["path"],
+                "line": finding["line"],
+                "kind": finding["kind"],
+                "marker": finding["marker"],
+                "severity": finding["severity"]
+            }))
+            .collect(),
+    )
+}
+
+fn coupling_golden_view(payload: &Value) -> Value {
+    serde_json::json!({
+        "target_path": payload["target_path"],
+        "target_commit_count": payload["target_commit_count"],
+        "scan_commits": payload["scan_commits"],
+        "results": payload["results"]
+            .as_array()
+            .map(|results| {
+                results
+                    .iter()
+                    .map(|finding| serde_json::json!({
+                        "path": finding["path"],
+                        "shared_commits": finding["shared_commits"],
+                        "target_commit_count": finding["target_commit_count"],
+                        "coupling_ratio": finding["coupling_ratio"],
+                        "top_commit_summaries": finding["top_commit_summaries"]
+                    }))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    })
+}
+
 #[test]
 fn mcp_initialize_and_tools_list_work_over_stdio() -> Result<()> {
     let repo = setup_hotfix_repo()?;
@@ -150,6 +203,7 @@ fn mcp_why_time_bombs_returns_findings() -> Result<()> {
             .iter()
             .any(|finding| finding["kind"] == "PastDueTodo")
     );
+    assert_json_golden("mcp_why_time_bombs_timebomb_repo", &time_bombs_golden_view(payload))?;
 
     Ok(())
 }
@@ -171,6 +225,7 @@ fn mcp_why_hotspots_returns_ranked_findings() -> Result<()> {
     assert!(payload[0]["path"].is_string());
     assert!(payload[0]["churn_commits"].as_u64().unwrap_or_default() >= 1);
     assert!(payload[0]["hotspot_score"].as_f64().unwrap_or_default() >= 1.0);
+    assert_json_golden("mcp_why_hotspots_hotfix_repo", &hotspots_golden_view(payload))?;
 
     Ok(())
 }
@@ -195,6 +250,7 @@ fn mcp_why_coupling_returns_ranked_findings() -> Result<()> {
     assert_eq!(results[0]["path"], "src/data.rs");
     assert_eq!(results[0]["shared_commits"], 5);
     assert_eq!(results[0]["coupling_ratio"], 1.0);
+    assert_json_golden("mcp_why_coupling_coupling_repo", &coupling_golden_view(payload))?;
 
     Ok(())
 }

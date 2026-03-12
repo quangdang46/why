@@ -27,7 +27,11 @@ pub struct CouplingReport {
     pub results: Vec<CouplingFinding>,
 }
 
-pub fn scan_coupling(repo_root: &Path, target: &QueryTarget, limit: usize) -> Result<CouplingReport> {
+pub fn scan_coupling(
+    repo_root: &Path,
+    target: &QueryTarget,
+    limit: usize,
+) -> Result<CouplingReport> {
     let repo = discover_repository(repo_root)?;
     let workdir = repo
         .workdir()
@@ -70,7 +74,9 @@ pub fn scan_coupling(repo_root: &Path, target: &QueryTarget, limit: usize) -> Re
             }
             let entry = candidates.entry(path).or_default();
             entry.shared_commits += 1;
-            if entry.top_commit_summaries.len() < 3 && !entry.top_commit_summaries.contains(&summary) {
+            if entry.top_commit_summaries.len() < 3
+                && !entry.top_commit_summaries.contains(&summary)
+            {
                 entry.top_commit_summaries.push(summary.clone());
             }
         }
@@ -120,7 +126,10 @@ struct CandidateStats {
     top_commit_summaries: Vec<String>,
 }
 
-fn commit_touched_source_paths(repo: &Repository, commit: &git2::Commit<'_>) -> Result<Vec<PathBuf>> {
+fn commit_touched_source_paths(
+    repo: &Repository,
+    commit: &git2::Commit<'_>,
+) -> Result<Vec<PathBuf>> {
     let tree = commit.tree().context("failed to load commit tree")?;
     let parent_tree = if commit.parent_count() > 0 {
         Some(

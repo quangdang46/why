@@ -24,6 +24,10 @@ pub struct Cli {
     #[arg(long)]
     pub no_llm: bool,
 
+    /// Bypass cached results and refresh the query output.
+    #[arg(long)]
+    pub no_cache: bool,
+
     /// Show archaeology-guided split suggestions for a symbol target.
     #[arg(long)]
     pub split: bool,
@@ -49,6 +53,16 @@ pub struct Cli {
 pub enum Command {
     /// Run the MCP stdio server.
     Mcp,
+    /// Rank repository hotspots using churn × heuristic risk scoring.
+    Hotspots {
+        /// Maximum number of findings to return.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+
+        /// Emit machine-readable output.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +70,7 @@ pub struct QueryRequest {
     pub target: QueryTarget,
     pub json: bool,
     pub no_llm: bool,
+    pub no_cache: bool,
     pub split: bool,
     pub coupled: bool,
     pub since_days: Option<u64>,
@@ -67,6 +82,7 @@ pub struct QueryRequest {
 pub enum Mode {
     Query(QueryRequest),
     Mcp,
+    Hotspots { limit: usize, json: bool },
 }
 
 impl Cli {
@@ -77,6 +93,7 @@ impl Cli {
                     || self.lines.is_some()
                     || self.json
                     || self.no_llm
+                    || self.no_cache
                     || self.split
                     || self.coupled
                     || self.since.is_some()
@@ -86,6 +103,24 @@ impl Cli {
                     bail!("the mcp subcommand does not accept query flags or a target");
                 }
                 Ok(Mode::Mcp)
+            }
+            Some(Command::Hotspots { limit, json }) => {
+                if self.target.is_some()
+                    || self.lines.is_some()
+                    || self.no_llm
+                    || self.no_cache
+                    || self.split
+                    || self.coupled
+                    || self.since.is_some()
+                    || self.team
+                    || self.blame_chain
+                {
+                    bail!("the hotspots subcommand does not accept query flags or a target");
+                }
+                if limit == 0 {
+                    bail!("--limit must be greater than zero");
+                }
+                Ok(Mode::Hotspots { limit, json })
             }
             None => {
                 let target = self.target.ok_or_else(|| {
@@ -98,6 +133,7 @@ impl Cli {
                     target: parse_target(&target, self.lines.as_deref())?,
                     json: self.json,
                     no_llm: self.no_llm,
+                    no_cache: self.no_cache,
                     split: self.split,
                     coupled: self.coupled,
                     since_days: self.since,
@@ -133,6 +169,7 @@ mod tests {
                 },
                 json: false,
                 no_llm: false,
+                no_cache: false,
                 split: false,
                 coupled: false,
                 since_days: None,
@@ -166,6 +203,7 @@ mod tests {
                 },
                 json: true,
                 no_llm: true,
+                no_cache: false,
                 split: false,
                 coupled: false,
                 since_days: None,
@@ -188,6 +226,7 @@ mod tests {
         assert_eq!(request.target.query_kind, QueryKind::Symbol);
         assert!(!request.json);
         assert!(!request.no_llm);
+        assert!(!request.no_cache);
         assert!(request.split);
         assert!(!request.coupled);
     }
@@ -205,6 +244,7 @@ mod tests {
         assert_eq!(request.target.query_kind, QueryKind::Symbol);
         assert!(!request.json);
         assert!(!request.no_llm);
+        assert!(!request.no_cache);
         assert!(!request.split);
         assert!(request.coupled);
         assert_eq!(request.since_days, None);
@@ -223,6 +263,7 @@ mod tests {
         assert_eq!(request.target.path, PathBuf::from("src/lib.rs"));
         assert_eq!(request.target.symbol.as_deref(), Some("authenticate"));
         assert_eq!(request.target.query_kind, QueryKind::Symbol);
+        assert!(!request.no_cache);
         assert_eq!(request.since_days, Some(30));
         assert!(request.team);
         assert!(!request.blame_chain);
@@ -239,6 +280,7 @@ mod tests {
         assert_eq!(request.target.path, PathBuf::from("src/lib.rs"));
         assert_eq!(request.target.symbol.as_deref(), Some("authenticate"));
         assert_eq!(request.target.query_kind, QueryKind::Symbol);
+        assert!(!request.no_cache);
         assert!(request.blame_chain);
         assert!(!request.team);
         assert!(!request.coupled);
@@ -250,6 +292,61 @@ mod tests {
         let cli = Cli::parse_from(["why", "mcp"]);
         assert_eq!(cli.command, Some(Command::Mcp));
         assert_eq!(cli.parse_mode().expect("mcp should parse"), Mode::Mcp);
+    }
+
+    #[test]
+    fn parses_hotspots_subcommand() {
+        let cli = Cli::parse_from(["why", "hotspots", "--limit", "7", "--json"]);
+        assert_eq!(
+            cli.parse_mode().expect("hotspots should parse"),
+            Mode::Hotspots {
+                limit: 7,
+                json: true,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_no_cache_request() {
+        let cli = Cli::parse_from(["why", "src/lib.rs:42", "--no-cache"]);
+        let mode = cli.parse_mode().expect("no-cache target should parse");
+        let Mode::Query(request) = mode else {
+            panic!("expected query mode");
+        };
+
+        assert!(request.no_cache);
+        assert!(!request.no_llm);
+    }
+
+    #[test]
+    fn rejects_positional_target_for_hotspots() {
+        let error = Cli::try_parse_from(["why", "hotspots", "--limit", "5", "src/lib.rs:42"])
+            .expect_err("clap should reject positional targets for hotspots");
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument 'src/lib.rs:42' found")
+        );
+    }
+
+    #[test]
+    fn rejects_zero_limit_for_hotspots() {
+        let cli = Cli::parse_from(["why", "hotspots", "--limit", "0"]);
+        let error = cli
+            .parse_mode()
+            .expect_err("hotspots should reject a zero limit");
+        assert!(error.to_string().contains("--limit must be greater than zero"));
+    }
+
+    #[test]
+    fn rejects_no_cache_for_hotspots() {
+        let error = Cli::try_parse_from(["why", "hotspots", "--no-cache"])
+            .expect_err("clap should reject query flags for hotspots");
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--no-cache' found")
+        );
     }
 
     #[test]

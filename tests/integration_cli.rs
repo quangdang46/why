@@ -153,6 +153,39 @@ fn hotfix_repo_terminal_output_lists_commits_and_risk() -> Result<()> {
     assert!(stdout.contains("why: src/payment.rs (line 6)"));
     assert!(stdout.contains("Commits touching this line:"));
     assert!(stdout.contains("Heuristic risk: HIGH."));
+    assert!(!stdout.contains("[cached]"));
+
+    Ok(())
+}
+
+#[test]
+fn repeated_query_uses_cache_and_writes_cache_file() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+
+    let first = repo.run_why(&["src/payment.rs:6", "--no-llm"])?;
+    ensure_success(&first)?;
+    assert!(!repo.stdout(&first).contains("[cached]"));
+
+    let cache_path = repo.path.join(".why").join("cache.json");
+    assert!(cache_path.is_file());
+
+    let second = repo.run_why(&["src/payment.rs:6", "--no-llm"])?;
+    ensure_success(&second)?;
+    assert!(repo.stdout(&second).contains("[cached]"));
+
+    Ok(())
+}
+
+#[test]
+fn no_cache_flag_bypasses_cached_hit_indicator() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+
+    let first = repo.run_why(&["src/payment.rs:6", "--no-llm"])?;
+    ensure_success(&first)?;
+
+    let second = repo.run_why(&["src/payment.rs:6", "--no-llm", "--no-cache"])?;
+    ensure_success(&second)?;
+    assert!(!repo.stdout(&second).contains("[cached]"));
 
     Ok(())
 }
@@ -393,6 +426,39 @@ fn coupling_queries_return_ranked_json_for_fixture_repo() -> Result<()> {
     assert_eq!(results[0]["shared_commits"], 5);
     assert_eq!(results[0]["target_commit_count"], 5);
     assert_eq!(results[0]["coupling_ratio"], 1.0);
+
+    Ok(())
+}
+
+#[test]
+fn hotspots_subcommand_returns_ranked_json_for_fixture_repo() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let output = repo.run_why(&["hotspots", "--limit", "5", "--json"])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    let parsed: Value = serde_json::from_str(&stdout)?;
+    let findings = parsed
+        .as_array()
+        .expect("hotspots output should be an array");
+    assert!(!findings.is_empty());
+    assert_eq!(findings[0]["path"], "src/payment.rs");
+    assert!(findings[0]["churn_commits"].as_u64().unwrap_or_default() >= 2);
+    assert_eq!(findings[0]["risk_level"], "HIGH");
+    assert!(findings[0]["hotspot_score"].as_f64().unwrap_or_default() >= 6.0);
+    assert_json_golden("cli_hotspots_hotfix_repo", &parsed)?;
+
+    Ok(())
+}
+
+#[test]
+fn hotspots_subcommand_renders_terminal_summary() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let output = repo.run_why(&["hotspots", "--limit", "3"])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    assert_terminal_golden("cli_hotspots_hotfix_repo", &stdout)?;
 
     Ok(())
 }

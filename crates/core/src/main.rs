@@ -3,12 +3,15 @@ mod cli;
 use anyhow::Result;
 use clap::Parser;
 use cli::{Cli, Mode, QueryRequest};
+use git2::Repository;
 use why_archaeologist::{
     ArchaeologyResult, BlameChainResult, TeamReport, analyze_blame_chain,
     analyze_target_with_options, analyze_team,
 };
+use why_cache::Cache;
+use why_context::load_config;
 use why_locator::QueryKind;
-use why_scanner::CouplingReport;
+use why_scanner::{CouplingReport, HotspotFinding};
 use why_splitter::SplitSuggestion;
 
 fn main() {
@@ -24,12 +27,27 @@ fn run() -> Result<()> {
 
     match mode {
         Mode::Mcp => why_mcp::run_stdio(),
+        Mode::Hotspots { limit, json } => run_hotspots(limit, json),
         Mode::Query(request) => run_query(request),
     }
 }
 
+fn run_hotspots(limit: usize, json: bool) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let findings = why_scanner::scan_hotspots(&cwd, limit)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&findings)?);
+    } else {
+        render_hotspots_terminal(&findings, limit);
+    }
+
+    Ok(())
+}
+
 fn run_query(request: QueryRequest) -> Result<()> {
     let cwd = std::env::current_dir()?;
+    let config = load_config(&cwd)?;
 
     if request.split {
         let suggestion = why_splitter::suggest_split(&request.target, &cwd)?;
@@ -71,18 +89,60 @@ fn run_query(request: QueryRequest) -> Result<()> {
         return Ok(());
     }
 
+    let repo = Repository::discover(&cwd)?;
+    let repo_root = repo
+        .workdir()
+        .map(|path| path.to_path_buf())
+        .unwrap_or_else(|| cwd.clone());
+    let head_hash = repo.head()?.peel_to_commit()?.id().to_string();
+    let target_label = match request.target.query_kind {
+        QueryKind::Line => request
+            .target
+            .start_line
+            .map(|line| line.to_string())
+            .unwrap_or_else(|| "line".to_string()),
+        QueryKind::Range => format!(
+            "{}:{}",
+            request.target.start_line.unwrap_or_default(),
+            request.target.end_line.unwrap_or_default()
+        ),
+        QueryKind::Symbol | QueryKind::QualifiedSymbol => request
+            .target
+            .symbol
+            .clone()
+            .unwrap_or_else(|| "symbol".to_string()),
+    };
+    let cache_key = Cache::make_key(
+        &request.target.path.to_string_lossy(),
+        &target_label,
+        &head_hash,
+    );
+    let mut cache = Cache::open(&repo_root, config.cache.max_entries)?;
+
+    if !request.no_cache {
+        if let Some(cached) = cache.get::<ArchaeologyResult>(&cache_key) {
+            if request.json {
+                println!("{}", serde_json::to_string_pretty(&cached)?);
+            } else {
+                render_terminal(&cached, true);
+            }
+            return Ok(());
+        }
+    }
+
     let result = analyze_target_with_options(&request.target, &cwd, request.since_days)?;
+    cache.set(cache_key, &result, &head_hash)?;
 
     if request.json {
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
-        render_terminal(&result);
+        render_terminal(&result, false);
     }
 
     Ok(())
 }
 
-fn render_terminal(result: &ArchaeologyResult) {
+fn render_terminal(result: &ArchaeologyResult, cached: bool) {
     match result.target.query_kind {
         QueryKind::Line => {
             println!(
@@ -118,6 +178,9 @@ fn render_terminal(result: &ArchaeologyResult) {
     }
 
     println!();
+    if cached {
+        println!("[cached]");
+    }
     println!(
         "No LLM synthesis (--no-llm or no API key). Heuristic risk: {}.",
         result.risk_level.as_str()
@@ -240,6 +303,32 @@ fn render_coupling_terminal(report: &CouplingReport) {
             finding.shared_commits,
             finding.path.display()
         );
+    }
+}
+
+fn render_hotspots_terminal(findings: &[HotspotFinding], limit: usize) {
+    println!("Top {limit} hotspots by churn × risk");
+    println!();
+    if findings.is_empty() {
+        println!("No source hotspots were found in the current repository.");
+        return;
+    }
+
+    for (index, finding) in findings.iter().enumerate() {
+        println!(
+            "  {:>2}. {:<30} churn {:>3}  risk {:<6}  score {:.2}",
+            index + 1,
+            finding.path.display(),
+            finding.churn_commits,
+            finding.risk_level.as_str(),
+            finding.hotspot_score
+        );
+        if !finding.top_commit_summaries.is_empty() {
+            println!(
+                "      top history: {}",
+                finding.top_commit_summaries.join(" | ")
+            );
+        }
     }
 }
 

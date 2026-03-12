@@ -163,14 +163,18 @@ fn commit_touches_path(
         .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut options))
         .context("failed to inspect commit diff")?;
 
-    Ok(diff.deltas().any(|delta| delta_matches_path(&delta, relative_path)))
+    Ok(diff
+        .deltas()
+        .any(|delta| delta_matches_path(&delta, relative_path)))
 }
 
 fn delta_matches_path(delta: &git2::DiffDelta<'_>, relative_path: &Path) -> bool {
     [delta.new_file().path(), delta.old_file().path()]
         .into_iter()
         .flatten()
-        .any(|path| path == relative_path || (delta.status() == Delta::Renamed && path == relative_path))
+        .any(|path| {
+            path == relative_path || (delta.status() == Delta::Renamed && path == relative_path)
+        })
 }
 
 fn is_source_file(path: &Path) -> bool {
@@ -263,10 +267,12 @@ done
         assert!(findings[0].churn_commits >= 4);
         assert_eq!(findings[0].risk_level, RiskLevel::HIGH);
         assert!(findings[0].hotspot_score >= 12.0);
-        assert!(findings[0]
-            .top_commit_summaries
-            .iter()
-            .any(|summary| summary.contains("security hotfix")));
+        assert!(
+            findings[0]
+                .top_commit_summaries
+                .iter()
+                .any(|summary| summary.contains("security hotfix"))
+        );
 
         let util = findings
             .iter()
