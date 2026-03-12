@@ -61,10 +61,11 @@ fn mcp_initialize_and_tools_list_work_over_stdio() -> Result<()> {
     let tools = responses[1]["result"]["tools"]
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("tools/list should return tool array"))?;
-    assert_eq!(tools.len(), 3);
+    assert_eq!(tools.len(), 4);
     assert_eq!(tools[0]["name"], "why_symbol");
     assert_eq!(tools[1]["name"], "why_split");
     assert_eq!(tools[2]["name"], "why_time_bombs");
+    assert_eq!(tools[3]["name"], "why_hotspots");
 
     Ok(())
 }
@@ -147,6 +148,27 @@ fn mcp_why_time_bombs_returns_findings() -> Result<()> {
             .iter()
             .any(|finding| finding["kind"] == "PastDueTodo")
     );
+
+    Ok(())
+}
+
+#[test]
+fn mcp_why_hotspots_returns_ranked_findings() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let output = repo.run_why_with_stdin(
+        &["mcp"],
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"why_hotspots\",\"arguments\":{\"limit\":5}}}\n",
+    )?;
+    ensure_success(&output)?;
+
+    let responses = response_lines(&output)?;
+    let payload = responses[0]["result"]["content"][0]["json"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("hotspots result should be array"))?;
+    assert!(!payload.is_empty());
+    assert!(payload[0]["path"].is_string());
+    assert!(payload[0]["churn_commits"].as_u64().unwrap_or_default() >= 1);
+    assert!(payload[0]["hotspot_score"].as_f64().unwrap_or_default() >= 1.0);
 
     Ok(())
 }

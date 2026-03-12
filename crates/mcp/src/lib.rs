@@ -4,11 +4,12 @@ use serde_json::{Value, json};
 use std::io::{self, BufRead, Write};
 use why_archaeologist::analyze_target;
 use why_locator::parse_target;
-use why_scanner::scan_time_bombs;
+use why_scanner::{scan_hotspots, scan_time_bombs};
 use why_splitter::suggest_split;
 
 const JSONRPC_VERSION: &str = "2.0";
 const DEFAULT_TIME_BOMB_AGE_DAYS: i64 = 30;
+const DEFAULT_HOTSPOT_LIMIT: usize = 10;
 
 pub fn run_stdio() -> Result<()> {
     let stdin = io::stdin();
@@ -116,6 +117,17 @@ fn tools_list_result() -> Value {
                     },
                     "additionalProperties": false
                 })
+            ),
+            tool_definition(
+                "why_hotspots",
+                "Rank high-churn files by churn × archaeology-derived risk.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "limit": { "type": "integer" }
+                    },
+                    "additionalProperties": false
+                })
             )
         ]
     })
@@ -197,6 +209,26 @@ fn call_tool(params: Option<Value>) -> std::result::Result<Value, McpError> {
                 )
             })?
         }
+        "why_hotspots" => {
+            let args: WhyHotspotsArgs = deserialize_arguments(request.arguments)?;
+            let limit = args.limit.unwrap_or(DEFAULT_HOTSPOT_LIMIT);
+            if limit == 0 {
+                return Err(McpError::new(
+                    ErrorCode::InvalidParams,
+                    "limit must be greater than zero",
+                ));
+            }
+            serde_json::to_value(
+                scan_hotspots(&cwd, limit)
+                    .map_err(|error| McpError::tool_error(error.to_string()))?,
+            )
+            .map_err(|error| {
+                McpError::new(
+                    ErrorCode::InternalError,
+                    format!("failed to serialize why_hotspots result: {error}"),
+                )
+            })?
+        }
         other => {
             return Err(McpError::new(
                 ErrorCode::InvalidParams,
@@ -237,6 +269,12 @@ struct WhySplitArgs {
 struct WhyTimeBombsArgs {
     #[serde(default)]
     max_age_days: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct WhyHotspotsArgs {
+    #[serde(default)]
+    limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -359,10 +397,8 @@ mod tests {
     fn initialize_returns_server_metadata() {
         let response = handle_request(request("initialize", json!({})));
         assert!(response.error.is_none());
-        let result = match response.result {
-            Some(result) => result,
-            None => panic!("initialize should return result"),
-        };
+        assert!(response.result.is_some(), "initialize should return result");
+        let result = response.result.unwrap_or(Value::Null);
         assert_eq!(result["protocolVersion"], JSONRPC_VERSION);
         assert_eq!(result["serverInfo"]["name"], "why");
         assert!(result["capabilities"]["tools"].is_object());
@@ -372,28 +408,27 @@ mod tests {
     fn tools_list_returns_expected_tools() {
         let response = handle_request(request("tools/list", json!({})));
         assert!(response.error.is_none());
-        let result = match response.result {
-            Some(result) => result,
-            None => panic!("tools/list should return result"),
-        };
-        let tools = match result["tools"].as_array() {
-            Some(tools) => tools,
-            None => panic!("tools should be array"),
-        };
-        assert_eq!(tools.len(), 3);
+        assert!(response.result.is_some(), "tools/list should return result");
+        let result = response.result.unwrap_or(Value::Null);
+        assert!(result["tools"].is_array(), "tools should be array");
+        let empty_tools = Vec::new();
+        let tools = result["tools"].as_array().unwrap_or(&empty_tools);
+        assert_eq!(tools.len(), 4);
         assert_eq!(tools[0]["name"], "why_symbol");
         assert_eq!(tools[1]["name"], "why_split");
         assert_eq!(tools[2]["name"], "why_time_bombs");
+        assert_eq!(tools[3]["name"], "why_hotspots");
     }
 
     #[test]
     fn rejects_unknown_method() {
         let response = handle_request(request("wat", json!({})));
         assert!(response.result.is_none());
-        let error = match response.error {
-            Some(error) => error,
-            None => panic!("unknown method should error"),
-        };
+        assert!(response.error.is_some(), "unknown method should error");
+        let error = response.error.unwrap_or(JsonRpcError {
+            code: 0,
+            message: String::new(),
+        });
         assert_eq!(error.code, ErrorCode::MethodNotFound.as_i32());
         assert!(error.message.contains("unknown method"));
     }
@@ -407,10 +442,11 @@ mod tests {
             params: Some(json!({})),
         });
         assert!(response.result.is_none());
-        let error = match response.error {
-            Some(error) => error,
-            None => panic!("invalid version should error"),
-        };
+        assert!(response.error.is_some(), "invalid version should error");
+        let error = response.error.unwrap_or(JsonRpcError {
+            code: 0,
+            message: String::new(),
+        });
         assert_eq!(error.code, ErrorCode::InvalidRequest.as_i32());
         assert!(error.message.contains("unsupported jsonrpc version"));
     }
@@ -425,10 +461,11 @@ mod tests {
             }),
         ));
         assert!(response.result.is_none());
-        let error = match response.error {
-            Some(error) => error,
-            None => panic!("unknown tool should error"),
-        };
+        assert!(response.error.is_some(), "unknown tool should error");
+        let error = response.error.unwrap_or(JsonRpcError {
+            code: 0,
+            message: String::new(),
+        });
         assert_eq!(error.code, ErrorCode::InvalidParams.as_i32());
         assert!(error.message.contains("unknown tool"));
     }
@@ -443,15 +480,35 @@ mod tests {
             }),
         ));
         assert!(response.result.is_none());
-        let error = match response.error {
-            Some(error) => error,
-            None => panic!("invalid args should error"),
-        };
+        assert!(response.error.is_some(), "invalid args should error");
+        let error = response.error.unwrap_or(JsonRpcError {
+            code: 0,
+            message: String::new(),
+        });
         assert_eq!(error.code, ErrorCode::InvalidParams.as_i32());
         assert!(
             error
                 .message
                 .contains("max_age_days must be greater than zero")
         );
+    }
+
+    #[test]
+    fn rejects_invalid_hotspot_args() {
+        let response = handle_request(request(
+            "tools/call",
+            json!({
+                "name": "why_hotspots",
+                "arguments": { "limit": 0 }
+            }),
+        ));
+        assert!(response.result.is_none());
+        assert!(response.error.is_some(), "invalid args should error");
+        let error = response.error.unwrap_or(JsonRpcError {
+            code: 0,
+            message: String::new(),
+        });
+        assert_eq!(error.code, ErrorCode::InvalidParams.as_i32());
+        assert!(error.message.contains("limit must be greater than zero"));
     }
 }

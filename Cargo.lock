@@ -1676,6 +1676,8 @@ dependencies = [
  "serde",
  "tempfile",
  "time",
+ "why-archaeologist",
+ "why-context",
 ]
 
 [[package]]

@@ -12,6 +12,8 @@ anyhow.workspace = true
 git2.workspace = true
 serde.workspace = true
 time.workspace = true
+why-archaeologist = { path = "../archaeologist" }
+why-context = { path = "../context" }
 
 [dev-dependencies]
 tempfile = "3"
