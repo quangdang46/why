@@ -120,6 +120,21 @@ pub struct TeamReport {
     pub risk_summary: String,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct BlameChainResult {
+    pub target: OutputTarget,
+    pub starting_commit: CommitEvidence,
+    pub noise_commits_skipped: Vec<CommitEvidence>,
+    pub origin_commit: CommitEvidence,
+    pub chain_depth: usize,
+    pub risk_level: RiskLevel,
+    pub risk_summary: &'static str,
+    pub change_guidance: &'static str,
+    pub local_context: LocalContext,
+    pub mode: &'static str,
+    pub notes: Vec<&'static str>,
+}
+
 pub fn discover_repository(starting_dir: &Path) -> Result<Repository> {
     Repository::discover(starting_dir).with_context(|| {
         format!(
@@ -212,6 +227,40 @@ pub fn blame_commit_evidence(
     config: &WhyConfig,
     since_days: Option<u64>,
 ) -> Result<Vec<CommitEvidence>> {
+    let ownership = blame_ownership(repo, relative_path, start_line, end_line, since_days)?;
+    let total_target_lines = (end_line - start_line + 1) as usize;
+
+    let mut seen = HashSet::new();
+    let mut commits = Vec::new();
+    for (oid, owned_lines) in ownership {
+        if !seen.insert(oid) {
+            continue;
+        }
+
+        let coverage_score = owned_lines as f32 / total_target_lines as f32;
+        let mut evidence = load_commit_evidence(repo, oid, coverage_score, config)?;
+        evidence.relevance_score = compute_relevance_score(&evidence, config);
+        commits.push(evidence);
+    }
+
+    Ok(select_top_commits(commits, config.git.max_commits))
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct BlameChainTrace {
+    starting_commit: CommitEvidence,
+    noise_commits_skipped: Vec<CommitEvidence>,
+    origin_commit: CommitEvidence,
+    chain_depth: usize,
+}
+
+fn blame_ownership(
+    repo: &Repository,
+    relative_path: &Path,
+    start_line: u32,
+    end_line: u32,
+    since_days: Option<u64>,
+) -> Result<Vec<(Oid, usize)>> {
     if start_line == 0 || end_line == 0 {
         bail!("blame lines must be 1-based");
     }
@@ -250,8 +299,6 @@ pub fn blame_commit_evidence(
         .with_context(|| format!("failed to blame {}", relative_path.display()))?;
 
     let mut ownership = Vec::new();
-    let total_target_lines = (end_line - start_line + 1) as usize;
-
     for hunk in blame.iter() {
         let oid = hunk.final_commit_id();
         if oid.is_zero() {
@@ -279,23 +326,152 @@ pub fn blame_commit_evidence(
         );
     }
 
-    let mut seen = HashSet::new();
-    let mut commits = Vec::new();
-    for (oid, owned_lines) in ownership {
-        if !seen.insert(oid) {
+    Ok(ownership)
+}
+
+fn blame_chain(
+    repo: &Repository,
+    relative_path: &Path,
+    start_line: u32,
+    end_line: u32,
+    config: &WhyConfig,
+    since_days: Option<u64>,
+) -> Result<BlameChainTrace> {
+    let ownership = blame_ownership(repo, relative_path, start_line, end_line, since_days)?;
+    let total_target_lines = (end_line - start_line + 1) as usize;
+    let (starting_oid, owned_lines) = ownership
+        .into_iter()
+        .max_by_key(|(_, owned_lines)| *owned_lines)
+        .context("expected blamed ownership to contain at least one commit")?;
+    let coverage_score = owned_lines as f32 / total_target_lines as f32;
+    let mut current = repo
+        .find_commit(starting_oid)
+        .with_context(|| format!("failed to load commit {starting_oid}"))?;
+    let mut starting_commit = finalize_chain_commit(repo, &current, coverage_score, config)?;
+    starting_commit.relevance_score = compute_relevance_score(&starting_commit, config);
+    let mut skipped = Vec::new();
+    let mut chain_depth = 0;
+
+    loop {
+        let parent_count = current.parent_count();
+        if parent_count > 1 {
+            let skipped_commit = finalize_chain_commit(repo, &current, coverage_score, config)?;
+            skipped.push(skipped_commit);
+            let mut selected = None;
+            for index in (0..parent_count).rev() {
+                let parent = current
+                    .parent(index)
+                    .context("failed to load parent while following merge origin")?;
+                if !commit_is_mechanical(repo, &parent, config)? {
+                    selected = Some(parent);
+                    break;
+                }
+                selected.get_or_insert(parent);
+            }
+            current = selected.context("merge commit had no parents to follow")?;
+            chain_depth += 1;
             continue;
         }
 
-        let coverage_score = owned_lines as f32 / total_target_lines as f32;
-        let mut evidence = load_commit_evidence(repo, oid, coverage_score, config)?;
-        evidence.relevance_score = compute_relevance_score(&evidence, config);
-        commits.push(evidence);
-    }
+        if commit_is_mechanical(repo, &current, config)? {
+            if parent_count == 0 {
+                let mut origin_commit =
+                    finalize_chain_commit(repo, &current, coverage_score, config)?;
+                origin_commit.relevance_score = compute_relevance_score(&origin_commit, config);
+                return Ok(BlameChainTrace {
+                    starting_commit,
+                    noise_commits_skipped: skipped,
+                    origin_commit,
+                    chain_depth,
+                });
+            }
 
-    Ok(select_top_commits(commits, config.git.max_commits))
+            let skipped_commit = finalize_chain_commit(repo, &current, coverage_score, config)?;
+            skipped.push(skipped_commit);
+            current = current
+                .parent(0)
+                .context("failed to load parent while following merge origin")?;
+            chain_depth += 1;
+            continue;
+        }
+
+        let mut origin_commit = finalize_chain_commit(repo, &current, coverage_score, config)?;
+        origin_commit.relevance_score = compute_relevance_score(&origin_commit, config);
+        return Ok(BlameChainTrace {
+            starting_commit,
+            noise_commits_skipped: skipped,
+            origin_commit,
+            chain_depth,
+        });
+    }
 }
 
-pub fn analyze_team(target: &QueryTarget, cwd: &Path, since_days: Option<u64>) -> Result<TeamReport> {
+pub fn analyze_blame_chain(
+    target: &QueryTarget,
+    cwd: &Path,
+    since_days: Option<u64>,
+) -> Result<BlameChainResult> {
+    let resolved = resolve_target(target, cwd)?;
+    let config = load_config(cwd)?;
+    let target_path = cwd.join(&resolved.path);
+    let repo = discover_repository(&target_path)?;
+    let relative_path = relative_repo_path(&repo, &target_path)?;
+    let local_context = extract_local_context(
+        &target_path,
+        resolved.start_line,
+        resolved.end_line,
+        &config,
+    )?;
+    let risk_level = infer_risk_level(
+        &blame_commit_evidence(
+            &repo,
+            &relative_path,
+            resolved.start_line,
+            resolved.end_line,
+            &config,
+            since_days,
+        )?,
+        &local_context,
+        &config,
+    );
+
+    let chain = blame_chain(
+        &repo,
+        &relative_path,
+        resolved.start_line,
+        resolved.end_line,
+        &config,
+        since_days,
+    )?;
+
+    Ok(BlameChainResult {
+        target: OutputTarget {
+            path: relative_path,
+            start_line: resolved.start_line,
+            end_line: resolved.end_line,
+            query_kind: resolved.query_kind,
+        },
+        starting_commit: chain.starting_commit,
+        noise_commits_skipped: chain.noise_commits_skipped,
+        origin_commit: chain.origin_commit,
+        chain_depth: chain.chain_depth,
+        risk_level,
+        risk_summary: risk_level.summary(),
+        change_guidance: risk_level.change_guidance(),
+        local_context,
+        mode: "blame-chain",
+        notes: vec![
+            "Blame-chain mode walks past mechanical commits to surface a truer origin",
+            "Evidence and inference should be kept separate when presenting this result",
+        ],
+    })
+}
+
+pub fn analyze_team(
+    target: &QueryTarget,
+    cwd: &Path,
+    since_days: Option<u64>,
+) -> Result<TeamReport> {
     let resolved = resolve_target(target, cwd)?;
     let config = load_config(cwd)?;
     let target_path = cwd.join(&resolved.path);
@@ -521,6 +697,15 @@ fn load_commit_evidence(
     config: &WhyConfig,
 ) -> Result<CommitEvidence> {
     let commit = explainable_commit(repo, oid, config)?;
+    finalize_chain_commit(repo, &commit, coverage_score, config)
+}
+
+fn finalize_chain_commit(
+    repo: &Repository,
+    commit: &git2::Commit<'_>,
+    coverage_score: f32,
+    config: &WhyConfig,
+) -> Result<CommitEvidence> {
     let author = commit.author();
     let author_name = author.name().unwrap_or("unknown").to_string();
     let email = author.email().unwrap_or("unknown").to_string();
@@ -532,7 +717,7 @@ fn load_commit_evidence(
     let summary = commit.summary().unwrap_or("(no summary)").to_string();
     let time = commit.time().seconds();
     let date = format_git_time(time)?;
-    let oid_text = oid.to_string();
+    let oid_text = commit.id().to_string();
     let diff_excerpt = load_diff_excerpt(repo, &commit)?;
     let issue_refs = extract_issue_refs(&message);
     let is_mechanical = is_mechanical_commit(repo, &commit, &summary, &diff_excerpt, config)?;
@@ -926,10 +1111,11 @@ fn parse_default_risk_level(level: &str) -> RiskLevel {
 #[cfg(test)]
 mod tests {
     use super::{
-        CommitEvidence, LocalContext, RiskLevel, blame_commit_evidence, compute_relevance_score,
-        discover_repository, explainable_commit, extract_issue_refs, extract_local_context,
-        has_mechanical_summary, infer_risk_level, is_whitespace_only_diff_line,
-        parse_default_risk_level, relative_repo_path, select_top_commits, truncate_chars,
+        CommitEvidence, LocalContext, RiskLevel, blame_chain, blame_commit_evidence,
+        compute_relevance_score, discover_repository, explainable_commit, extract_issue_refs,
+        extract_local_context, has_mechanical_summary, infer_risk_level,
+        is_whitespace_only_diff_line, parse_default_risk_level, relative_repo_path,
+        select_top_commits, truncate_chars,
     };
     use anyhow::{Context, Result};
     use git2::Repository;
@@ -993,13 +1179,24 @@ mod tests {
             .current_dir(dir.path())
             .output()?;
         std::process::Command::new("git")
-            .args(["merge", "--no-ff", "feature", "-m", "Merge branch 'feature'"])
+            .args([
+                "merge",
+                "--no-ff",
+                "feature",
+                "-m",
+                "Merge branch 'feature'",
+            ])
             .current_dir(dir.path())
             .output()?;
 
         let head = repo.head()?.target().context("expected HEAD target")?;
         let explainable = explainable_commit(&repo, head, &WhyConfig::default())?;
-        assert!(explainable.summary().unwrap_or_default().contains("adjust helper"));
+        assert!(
+            explainable
+                .summary()
+                .unwrap_or_default()
+                .contains("adjust helper")
+        );
         Ok(())
     }
 
@@ -1014,6 +1211,64 @@ mod tests {
         assert!(!commits.is_empty());
         assert!(!commits[0].short_oid.is_empty());
         assert!(!commits[0].summary.is_empty());
+    }
+
+    #[test]
+    fn blame_chain_collects_mechanical_skip_and_origin() -> Result<()> {
+        let dir = TempDir::new()?;
+        let repo = Repository::init(dir.path())?;
+        {
+            let mut cfg = repo.config()?;
+            cfg.set_str("user.name", "Fixture Bot")?;
+            cfg.set_str("user.email", "test@example.com")?;
+        }
+
+        let path = dir.path().join("sample.rs");
+        fs::write(
+            &path,
+            "pub fn helper() {\n    // security: keep validation path intact\n    rate_limit_check();\n}\n",
+        )?;
+        std::process::Command::new("git")
+            .args(["add", "sample.rs"])
+            .current_dir(dir.path())
+            .output()?;
+        std::process::Command::new("git")
+            .args(["commit", "-m", "hotfix: add helper guard"])
+            .current_dir(dir.path())
+            .output()?;
+
+        fs::write(
+            &path,
+            "pub fn helper() {\n        // security: keep validation path intact\n        rate_limit_check();\n}\n",
+        )?;
+        std::process::Command::new("git")
+            .args(["add", "sample.rs"])
+            .current_dir(dir.path())
+            .output()?;
+        std::process::Command::new("git")
+            .args(["commit", "-m", "fmt: align helper indentation"])
+            .current_dir(dir.path())
+            .output()?;
+
+        let relative = relative_repo_path(&repo, &path)?;
+        let trace = blame_chain(&repo, &relative, 1, 4, &WhyConfig::default(), None)?;
+        assert_eq!(trace.chain_depth, 1);
+        assert_eq!(trace.noise_commits_skipped.len(), 1);
+        assert!(trace.noise_commits_skipped[0].is_mechanical);
+        assert!(
+            trace.noise_commits_skipped[0]
+                .summary
+                .contains("fmt: align helper indentation")
+        );
+        assert!(
+            trace
+                .origin_commit
+                .summary
+                .contains("hotfix: add helper guard")
+        );
+        assert!(!trace.origin_commit.is_mechanical);
+
+        Ok(())
     }
 
     #[test]

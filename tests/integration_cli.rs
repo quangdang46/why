@@ -113,9 +113,11 @@ fn hotfix_repo_since_filters_to_recent_commits() -> Result<()> {
         .as_array()
         .expect("commits should be an array");
     assert_eq!(commits.len(), 1);
-    assert!(commits[0]["summary"]
-        .as_str()
-        .is_some_and(|summary| summary.contains("hotfix")));
+    assert!(
+        commits[0]["summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("hotfix"))
+    );
 
     Ok(())
 }
@@ -391,6 +393,73 @@ fn coupling_queries_return_ranked_json_for_fixture_repo() -> Result<()> {
     assert_eq!(results[0]["shared_commits"], 5);
     assert_eq!(results[0]["target_commit_count"], 5);
     assert_eq!(results[0]["coupling_ratio"], 1.0);
+
+    Ok(())
+}
+
+#[test]
+fn blame_chain_queries_return_origin_and_skipped_commits_for_fixture_repo() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let output = repo.run_why(&[
+        "src/payment.rs:PaymentService::process_payment",
+        "--blame-chain",
+        "--json",
+    ])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    let parsed: Value = serde_json::from_str(&stdout)?;
+    assert_eq!(parsed["target"]["path"], "src/payment.rs");
+    assert_eq!(parsed["target"]["query_kind"], "qualified_symbol");
+    assert_eq!(parsed["mode"], "blame-chain");
+    assert_eq!(parsed["chain_depth"], 1);
+    assert_eq!(parsed["risk_level"], "HIGH");
+    assert!(
+        parsed["starting_commit"]["summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("align payment indentation"))
+    );
+    let skipped = parsed["noise_commits_skipped"]
+        .as_array()
+        .expect("noise commits should be an array");
+    assert_eq!(skipped.len(), 1);
+    assert!(skipped[0]["is_mechanical"].as_bool().unwrap_or(false));
+    assert!(
+        skipped[0]["summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("align payment indentation"))
+    );
+    assert!(
+        parsed["origin_commit"]["summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("hotfix: fix duplicate charge vulnerability"))
+    );
+    assert!(
+        parsed["origin_commit"]["issue_refs"]
+            .as_array()
+            .is_some_and(|refs| refs.iter().any(|r| r == "#4521"))
+    );
+
+    Ok(())
+}
+
+#[test]
+fn blame_chain_queries_render_terminal_output_for_fixture_repo() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let output = repo.run_why(&[
+        "src/payment.rs:PaymentService::process_payment",
+        "--blame-chain",
+    ])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    assert!(stdout.contains("Blame chain for src/payment.rs"));
+    assert!(stdout.contains("Starting blame tip:"));
+    assert!(stdout.contains("Skipped (mechanical):"));
+    assert!(stdout.contains("fmt: align payment indentation"));
+    assert!(stdout.contains("True origin:"));
+    assert!(stdout.contains("hotfix: fix duplicate charge vulnerability"));
+    assert!(stdout.contains("Risk signals:"));
 
     Ok(())
 }

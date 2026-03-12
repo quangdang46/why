@@ -39,6 +39,10 @@ pub struct Cli {
     /// Show ownership and bus-factor information for the queried target.
     #[arg(long)]
     pub team: bool,
+
+    /// Walk past mechanical commits to show the likely true origin commit.
+    #[arg(long)]
+    pub blame_chain: bool,
 }
 
 #[derive(Debug, Subcommand, Clone, PartialEq, Eq)]
@@ -56,6 +60,7 @@ pub struct QueryRequest {
     pub coupled: bool,
     pub since_days: Option<u64>,
     pub team: bool,
+    pub blame_chain: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +81,7 @@ impl Cli {
                     || self.coupled
                     || self.since.is_some()
                     || self.team
+                    || self.blame_chain
                 {
                     bail!("the mcp subcommand does not accept query flags or a target");
                 }
@@ -96,6 +102,7 @@ impl Cli {
                     coupled: self.coupled,
                     since_days: self.since,
                     team: self.team,
+                    blame_chain: self.blame_chain,
                 }))
             }
         }
@@ -130,6 +137,7 @@ mod tests {
                 coupled: false,
                 since_days: None,
                 team: false,
+                blame_chain: false,
             })
         );
     }
@@ -162,6 +170,7 @@ mod tests {
                 coupled: false,
                 since_days: None,
                 team: false,
+                blame_chain: false,
             })
         );
     }
@@ -200,6 +209,7 @@ mod tests {
         assert!(request.coupled);
         assert_eq!(request.since_days, None);
         assert!(!request.team);
+        assert!(!request.blame_chain);
     }
 
     #[test]
@@ -215,6 +225,24 @@ mod tests {
         assert_eq!(request.target.query_kind, QueryKind::Symbol);
         assert_eq!(request.since_days, Some(30));
         assert!(request.team);
+        assert!(!request.blame_chain);
+    }
+
+    #[test]
+    fn parses_blame_chain_request() {
+        let cli = Cli::parse_from(["why", "src/lib.rs:authenticate", "--blame-chain"]);
+        let mode = cli.parse_mode().expect("blame-chain target should parse");
+        let Mode::Query(request) = mode else {
+            panic!("expected query mode");
+        };
+
+        assert_eq!(request.target.path, PathBuf::from("src/lib.rs"));
+        assert_eq!(request.target.symbol.as_deref(), Some("authenticate"));
+        assert_eq!(request.target.query_kind, QueryKind::Symbol);
+        assert!(request.blame_chain);
+        assert!(!request.team);
+        assert!(!request.coupled);
+        assert!(!request.split);
     }
 
     #[test]

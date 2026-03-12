@@ -3,7 +3,10 @@ mod cli;
 use anyhow::Result;
 use clap::Parser;
 use cli::{Cli, Mode, QueryRequest};
-use why_archaeologist::{ArchaeologyResult, TeamReport, analyze_target_with_options, analyze_team};
+use why_archaeologist::{
+    ArchaeologyResult, BlameChainResult, TeamReport, analyze_blame_chain,
+    analyze_target_with_options, analyze_team,
+};
 use why_locator::QueryKind;
 use why_scanner::CouplingReport;
 use why_splitter::SplitSuggestion;
@@ -54,6 +57,16 @@ fn run_query(request: QueryRequest) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&report)?);
         } else {
             render_team_terminal(&report);
+        }
+        return Ok(());
+    }
+
+    if request.blame_chain {
+        let report = analyze_blame_chain(&request.target, &cwd, request.since_days)?;
+        if request.json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            render_blame_chain_terminal(&report);
         }
         return Ok(());
     }
@@ -123,7 +136,11 @@ fn render_team_terminal(report: &TeamReport) {
 
     for (index, owner) in report.owners.iter().enumerate() {
         let primary = if index == 0 { "  [primary owner]" } else { "" };
-        let commits_label = if owner.commit_count == 1 { "commit" } else { "commits" };
+        let commits_label = if owner.commit_count == 1 {
+            "commit"
+        } else {
+            "commits"
+        };
         println!(
             "  {}    {} {} ({:>2}%)  Last: {}{}",
             owner.author,
@@ -138,6 +155,68 @@ fn render_team_terminal(report: &TeamReport) {
     println!();
     println!("Bus factor: {}", report.bus_factor);
     println!("Risk: {}", report.risk_summary);
+}
+
+fn render_blame_chain_terminal(report: &BlameChainResult) {
+    let heading = match report.target.query_kind {
+        QueryKind::Symbol | QueryKind::QualifiedSymbol => {
+            format!("Blame chain for {}", report.target.path.display())
+        }
+        QueryKind::Range => format!(
+            "Blame chain for {} (lines {}-{})",
+            report.target.path.display(),
+            report.target.start_line,
+            report.target.end_line
+        ),
+        QueryKind::Line => format!(
+            "Blame chain for {}:{}",
+            report.target.path.display(),
+            report.target.start_line
+        ),
+    };
+    println!("{heading}");
+    println!();
+    println!(
+        "Starting blame tip: {}  {}  {}  {}",
+        report.starting_commit.short_oid,
+        report.starting_commit.author,
+        report.starting_commit.date,
+        report.starting_commit.summary
+    );
+    println!();
+
+    if report.noise_commits_skipped.is_empty() {
+        println!("  Skipped (mechanical): none");
+    } else {
+        println!("  Skipped (mechanical):");
+        for commit in &report.noise_commits_skipped {
+            println!(
+                "    {}  {} ({})",
+                commit.short_oid, commit.summary, commit.date
+            );
+        }
+    }
+
+    println!();
+    println!("  True origin:");
+    println!(
+        "    {}  {} ({})",
+        report.origin_commit.short_oid, report.origin_commit.summary, report.origin_commit.date
+    );
+    println!("              Author: {}", report.origin_commit.email);
+    if report.local_context.risk_flags.is_empty() {
+        println!("              Risk signals: none in local context");
+    } else {
+        println!(
+            "              Risk signals: {}",
+            report.local_context.risk_flags.join(", ")
+        );
+    }
+    println!();
+    println!("Chain depth: {}", report.chain_depth);
+    println!("Heuristic risk: {}.", report.risk_level.as_str());
+    println!("{}", report.risk_summary);
+    println!("{}", report.change_guidance);
 }
 
 fn render_coupling_terminal(report: &CouplingReport) {
