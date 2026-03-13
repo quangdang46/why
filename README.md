@@ -64,7 +64,7 @@ Current repo state:
 - GitHub release packaging is checked in via `.github/workflows/release.yml`
 - A curl-friendly installer is checked in at `./install.sh`
 - The published binary name is `why`
-- Crates.io installation is **not** ready yet because the checked-in Rust package is `why-core` and currently has `publish = false` in `crates/core/Cargo.toml`
+- Crates.io installation is **not** ready yet because the chosen shipping package is `why-core`, but it still has `publish = false` in `crates/core/Cargo.toml`
 
 Current install paths:
 
@@ -89,11 +89,10 @@ Checked in today:
 - Installer script with checksum verification and source-build fallback in `install.sh`
 
 Still required before `cargo install ...` is a supported path:
-- Decide whether the publishable crates.io package will be `why-core` (current Cargo package) or `why-cli` (the name used in `PLAN.md`), then align docs and automation around that single name
-- Remove `publish = false` from the shipping package once metadata is ready
-- Add the missing crates.io-facing package metadata for the shipping crate (at minimum: description, repository, homepage/documentation, keywords/categories, and readme linkage)
-- Verify `cargo install <published-package>` produces the `why` binary cleanly
-- Keep the README installation instructions, release workflow package name, and installer/source-build path aligned with the actual shipped package
+- Publish the existing shipping package name `why-core` consistently anywhere older planning docs still say `why-cli`
+- Remove `publish = false` from the shipping package once crates.io publication is intended
+- Verify `cargo install why-core` produces the `why` binary cleanly
+- Keep the README installation instructions, release workflow package name, and installer/source-build path aligned with the shipped package
 
 ## Usage
 

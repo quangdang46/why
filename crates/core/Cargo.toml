@@ -5,6 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
+description = "Ask your codebase why a function, file, or line exists using git history and optional LLM synthesis"
+repository = "https://github.com/quangdang46/why"
+homepage = "https://github.com/quangdang46/why"
+documentation = "https://github.com/quangdang46/why#readme"
+readme = "../../README.md"
+keywords = ["git", "cli", "history", "analysis", "llm"]
+categories = ["command-line-utilities", "development-tools"]
 publish = false
 
 [[bin]]
