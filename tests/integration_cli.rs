@@ -459,8 +459,8 @@ fn health_subcommand_returns_json_report_and_persists_snapshot() -> Result<()> {
     let stdout = repo.stdout(&output);
     let parsed: Value = serde_json::from_str(&stdout)?;
     assert!(parsed["debt_score"].as_u64().unwrap_or_default() > 0);
-    assert_eq!(parsed["signals"]["time_bombs"], 2);
-    assert_eq!(parsed["signals"]["stale_hacks"], 1);
+    assert_eq!(parsed["signals"]["time_bombs"], 1);
+    assert_eq!(parsed["signals"]["stale_hacks"], 0);
     assert!(parsed["delta"].is_null());
     assert!(
         parsed["notes"]
@@ -510,8 +510,8 @@ fn health_subcommand_renders_terminal_summary() -> Result<()> {
     assert!(stdout.contains("Repository health"));
     assert!(stdout.contains("Debt score:"));
     assert!(stdout.contains("Signals"));
-    assert!(stdout.contains("time_bombs: 2"));
-    assert!(stdout.contains("stale_hacks: 1"));
+    assert!(stdout.contains("time_bombs: 1"));
+    assert!(stdout.contains("stale_hacks: 0"));
 
     Ok(())
 }

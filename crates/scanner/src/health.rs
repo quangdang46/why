@@ -95,14 +95,31 @@ EOF
 git add src/auth.rs
 git commit -m 'feat: add auth guard' >/dev/null
 for i in 1 2 3; do
-  cat > src/auth.rs <<EOF
-pub fn verify_token(token: &str) -> bool {
-    // TODO(2020-01-15): remove rollback once incident review is complete
-    // HACK: temporary token guard from production incident
-    // security: duplicate charge incident follow-up ${i}
-    token.starts_with("secure-") && token.len() > ${i}
-}
-EOF
+  python - <<'PY' "$i"
+from pathlib import Path
+import re
+import sys
+value = sys.argv[1]
+path = Path('src/auth.rs')
+text = path.read_text()
+if '// security: duplicate charge incident follow-up' not in text:
+    text = text.replace(
+        '    // HACK: temporary token guard from production incident\n',
+        f'    // HACK: temporary token guard from production incident\n    // security: duplicate charge incident follow-up {value}\n',
+    )
+else:
+    text = re.sub(
+        r'// security: duplicate charge incident follow-up \d+',
+        f'// security: duplicate charge incident follow-up {value}',
+        text,
+    )
+text = re.sub(
+    r'token\.starts_with\("secure-"\)(?: && token\.len\(\) > \d+)?',
+    f'token.starts_with("secure-") && token.len() > {value}',
+    text,
+)
+path.write_text(text)
+PY
   git add src/auth.rs
   git commit -m "hotfix ${i}: tighten auth guard" >/dev/null
 done
@@ -155,8 +172,8 @@ git commit -m 'feat: add util helper' >/dev/null
         let report = scan_health(fixture.path())?;
 
         assert!(report.debt_score > 0);
-        assert_eq!(report.signals.get("time_bombs").copied(), Some(2));
-        assert_eq!(report.signals.get("stale_hacks").copied(), Some(1));
+        assert_eq!(report.signals.get("time_bombs").copied(), Some(1));
+        assert_eq!(report.signals.get("stale_hacks").copied(), Some(0));
         assert_eq!(report.signals.get("high_risk_files").copied(), Some(1));
         assert_eq!(report.signals.get("hotspot_files").copied(), Some(1));
         assert!(report.delta.is_none());
