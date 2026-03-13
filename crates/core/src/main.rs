@@ -586,9 +586,15 @@ mod tests {
         let json = serde_json::to_string_pretty(&report).expect("report should serialize");
 
         assert!(json.contains("\"summary\""));
+        assert!(json.contains("\"evidence\""));
+        assert!(json.contains("\"inference\""));
+        assert!(json.contains("\"unknowns\""));
         assert!(json.contains("\"risk_level\": \"HIGH\""));
+        assert!(json.contains("\"risk_summary\""));
+        assert!(json.contains("\"change_guidance\""));
         assert!(json.contains("\"confidence\": \"medium-high\""));
         assert!(json.contains("\"mode\": \"synthesized\""));
+        assert!(json.contains("\"notes\""));
         assert!(json.contains("\"cost_usd\": 0.0008"));
     }
 }

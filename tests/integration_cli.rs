@@ -22,8 +22,12 @@ fn hotfix_repo_json_output_has_phase_one_shape() -> Result<()> {
     assert_eq!(parsed["confidence"], "low");
     assert!(parsed["summary"].as_str().is_some_and(|summary| summary.contains("Heuristic analysis of src/payment.rs:6")));
     assert!(parsed["evidence"].as_array().is_some_and(|items| !items.is_empty()));
+    assert!(parsed["inference"].as_array().is_some_and(|items| items.is_empty()));
     assert!(parsed["unknowns"].as_array().is_some_and(|items| !items.is_empty()));
+    assert!(parsed["risk_summary"].as_str().is_some_and(|text| text.contains("security sensitivity") || text.contains("migration") || text.contains("available history")));
+    assert!(parsed["change_guidance"].as_str().is_some_and(|text| !text.is_empty()));
     assert!(parsed["notes"].as_array().is_some_and(|items| items.iter().any(|note| note.as_str().is_some_and(|text| text.contains("No LLM synthesis")))));
+    assert!(parsed["cost_usd"].is_null());
 
     Ok(())
 }

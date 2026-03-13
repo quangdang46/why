@@ -172,6 +172,8 @@ A richer narrative explanation for symbol-level queries is planned for later pha
 
 ### Confidence guidance
 
+`why` models confidence internally as an enum and serializes it as one of these JSON/string values:
+
 - **low** — Thin history, weak commit messages, or little corroborating context.
 - **medium** — Some useful historical signal, but limited direct evidence.
 - **medium-high** — Clear historical intent such as a hotfix, incident, or compatibility trail.
@@ -230,9 +232,25 @@ For GitHub enrichment work, set `GITHUB_TOKEN` in the environment when available
 
 See `.why.toml.example` for a fully documented example of the currently implemented config surface.
 
+## Cache and `.why/` directory semantics
+
+Current repo state:
+- query results are cached in `.why/cache.json` at the repository root
+- cache keys include the target identity plus the current `HEAD` hash prefix, so changing history invalidates prior entries naturally
+- terminal output shows `[cached]` when a stored `WhyReport` is reused
+- `--no-cache` bypasses cache reads and forces a fresh query
+- the cache file also stores rolling health snapshots for future trend-oriented reporting
+- up to 52 health snapshots are retained
+
+Operator expectations:
+- treat `.why/` as local runtime state, not source-controlled project state
+- `.why/` should be ignored by git for normal development workflows
+- on Unix, the cache directory and file are written with owner-only permissions (`0700` for `.why/`, `0600` for `cache.json`)
+- deleting `.why/cache.json` is safe if you want to clear local cached results; `why` will recreate it on the next cached run
+
 ## Index Location
 
-No persistent index — `why` reads git history on demand.  
+No persistent index — `why` reads git history on demand.
 Fast enough for interactive use (~1–3 seconds per query).
 
 ---

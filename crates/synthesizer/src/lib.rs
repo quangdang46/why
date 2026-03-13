@@ -581,8 +581,39 @@ mod tests {
     fn exposes_prompt_contract_requirements() {
         let contract = prompt_contract();
         assert!(contract.response_format.contains("JSON object"));
-        assert!(contract.required_fields.contains(&"summary"));
-        assert!(contract.grounding_rules.iter().any(|rule| rule.contains("Do not invent")));
+        assert_eq!(
+            contract.required_fields,
+            [
+                "summary",
+                "evidence",
+                "inference",
+                "unknowns",
+                "risk_level",
+                "confidence",
+            ]
+        );
+        assert!(contract
+            .grounding_rules
+            .iter()
+            .any(|rule| rule.contains("Do not invent")));
+    }
+
+    #[test]
+    fn heuristic_report_uses_current_contract_shape() {
+        let report = heuristic_report(
+            "Heuristic analysis of src/auth.rs:authenticate based on 2 relevant commit(s).",
+            RiskLevel::MEDIUM,
+            vec!["compat shim added for legacy clients (2024-02-10)".into()],
+            vec!["No LLM synthesis in phase 4".into()],
+        );
+
+        assert_eq!(report.mode, ReportMode::Heuristic);
+        assert_eq!(report.confidence, ConfidenceLevel::Low);
+        assert_eq!(report.inference, Vec::<String>::new());
+        assert_eq!(report.risk_summary, RiskLevel::MEDIUM.summary());
+        assert_eq!(report.change_guidance, RiskLevel::MEDIUM.change_guidance());
+        assert_eq!(report.notes, vec!["No LLM synthesis in phase 4"]);
+        assert_eq!(report.cost_usd, None);
     }
 
     #[test]

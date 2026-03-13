@@ -245,7 +245,7 @@ why src/auth/session.rs:authenticate
   ├─ 8. Extract context from ±20 lines (comments, markers)
   ├─ 9. Build evidence pack (compressed JSON, token-bounded)
   ├─ 10. Call Claude Haiku (or return heuristic report if no key)
-  ├─ 11. Parse WhyReport (summary, risk, evidence, confidence, unknowns)
+  ├─ 11. Parse WhyReport (summary, risk, evidence, inference, confidence, unknowns)
   ├─ 12. Store in cache
   └─ 13. Format and print to terminal (or --json)
 ```
@@ -1431,24 +1431,24 @@ Your response MUST be a valid JSON object with exactly these fields and no other
 
 {
   "summary": "One paragraph (3-5 sentences) explaining why this code exists.",
-  "why_it_exists": ["bullet 1", "bullet 2", "bullet 3"],
+  "evidence": ["directly cited commit or local-context facts"],
+  "inference": ["short conclusions drawn from the evidence"],
+  "unknowns": ["ambiguities, sparse history, or unresolved gaps"],
   "risk_level": "HIGH" | "MEDIUM" | "LOW",
-  "likely_breakage": ["what could break if this is removed or changed"],
-  "evidence": ["cited commit OID + summary", "nearby comment text"],
   "confidence": "low" | "medium" | "medium-high" | "high",
-  "unknowns": ["things inferred without direct evidence"]
+  "notes": ["optional operator-facing notes"]
 }
 
 RULES:
 1. Base ALL claims on the evidence provided. Do not invent history.
-2. Clearly distinguish between direct evidence (commit messages, comments)
-   and inference (your reasoning about why something might exist).
-3. Put inferences in the "unknowns" field, not in "evidence".
-4. Risk level should reflect: security concerns, backward compat, incident
+2. Use `evidence` only for direct facts from commit messages, diffs, comments, or markers.
+3. Use `inference` for conclusions drawn from those facts.
+4. Use `unknowns` for ambiguity, thin history, and what cannot be established from the evidence pack.
+5. Risk level should reflect: security concerns, backward compat, incident
    history, how many things depend on it, how recently changed for critical reasons.
-5. If evidence is thin (1-2 commits, no issue refs), say so in confidence.
-6. Keep summary under 100 words. Keep each bullet under 80 characters.
-7. Respond ONLY with the JSON object. No preamble, no markdown fences.
+6. If evidence is thin (1-2 commits, no issue refs), lower confidence accordingly.
+7. Keep summary under 100 words. Keep each bullet under 80 characters.
+8. Respond ONLY with the JSON object. No preamble, no markdown fences.
 ```
 
 #### Evolution mode prompt
@@ -1481,24 +1481,32 @@ This is the canonical phase-4 synthesis contract. The model response, parser, JS
 ```rust
 pub struct WhyReport {
     pub summary: String,
-    pub why_it_exists: Vec<String>,
-    pub risk_level: RiskLevel,
-    pub likely_breakage: Vec<String>,
     pub evidence: Vec<String>,
-    pub confidence: String,
+    pub inference: Vec<String>,
     pub unknowns: Vec<String>,
-    pub estimated_cost_usd: Option<f64>,
+    pub risk_level: RiskLevel,
+    pub risk_summary: String,
+    pub change_guidance: String,
+    pub confidence: ConfidenceLevel,
+    pub mode: ReportMode,
+    pub notes: Vec<String>,
+    pub cost_usd: Option<f64>,
 }
 ```
 
+This is the canonical serialized/runtime contract emitted by the current Rust CLI. The model returns the core analytical fields (`summary`, `evidence`, `inference`, `unknowns`, `risk_level`, `confidence`, and optional `notes`), while the Rust layer derives stable display metadata (`risk_summary`, `change_guidance`), records the output origin in `mode`, and attaches `cost_usd` after transport.
+
 Contract rules:
 - `summary` is a concise historical explanation, not a restatement of runtime behavior.
-- `why_it_exists` contains short, scannable bullets.
-- `risk_level` must be exactly `HIGH`, `MEDIUM`, or `LOW`.
 - `evidence` contains only directly cited facts from the evidence pack.
-- `confidence` communicates evidence quality rather than certainty theater.
-- `unknowns` holds inference, ambiguity, and unstated assumptions.
-- `estimated_cost_usd` is transport metadata and must never affect synthesis semantics.
+- `inference` contains short conclusions drawn from the evidence.
+- `unknowns` holds ambiguity, sparse-history caveats, and unresolved gaps.
+- `risk_level` must be exactly `HIGH`, `MEDIUM`, or `LOW`.
+- `risk_summary` and `change_guidance` are deterministic Rust-derived guidance, not model-authored facts.
+- `confidence` is modeled internally as an enum and serialized as one of `low`, `medium`, `medium-high`, or `high`.
+- `mode` distinguishes `heuristic` from `synthesized` output.
+- `notes` carries optional operator-facing notes.
+- `cost_usd` is transport metadata and must never affect synthesis semantics.
 
 #### Cost calculation
 
@@ -1526,13 +1534,18 @@ Give up   → return error with clear message
 
 When the configured provider API key is not set, builds a `WhyReport` from the evidence pack
 without any LLM call:
-- summary = "Heuristic analysis: N commits found. Risk flags: X, Y."
-- why_it_exists = top 3 commit summaries
-- risk_level = heuristic_risk from context extractor
-- confidence = "low (heuristic only — set a provider API key for full analysis)"
-- unknowns = ["Full analysis requires LLM synthesis"]
+- `summary` = heuristic explanation of the target and commit count
+- `evidence` = top commit summaries with dates
+- `inference` = empty
+- `risk_level` = heuristic risk from the context extractor
+- `risk_summary` / `change_guidance` = derived from `risk_level`
+- `confidence` = `low`
+- `mode` = `heuristic`
+- `unknowns` = ["No model synthesis was available for this query."]
+- `notes` = pass-through operational notes from archaeology
+- `cost_usd` = `None`
 
-This ensures the tool is useful offline and without credentials.
+This ensures the tool is useful offline and without credentials while keeping the serialized output shape identical between heuristic and synthesized runs.
 
 ---
 
