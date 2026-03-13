@@ -2,6 +2,7 @@
 set -euo pipefail
 
 REPO_ROOT="${1:?expected repo path}"
+BENCH_HISTORY_COMMITS="${WHY_BENCH_HISTORY_COMMITS:-0}"
 mkdir -p "$REPO_ROOT"
 cd "$REPO_ROOT"
 
@@ -35,3 +36,20 @@ fn main() {
 EOF
 git add src/main.rs
 git commit -m "feat: add main entry point using authenticate" >/dev/null
+
+for i in $(seq 1 "$BENCH_HISTORY_COMMITS"); do
+  cat > src/auth.rs <<EOF
+// This function is never called from anywhere (orphaned after refactor)
+pub fn validate_auth_token_legacy(token: &str, session_id: &str) -> bool {
+    // security: added after token forgery incident #7890
+    // benchmark history marker ${i}
+    !token.is_empty() && token_matches_session(token, session_id) && token.len() >= ${i}
+}
+
+pub fn authenticate(user: &str, password: &str) -> bool {
+    check_password_hash(user, password)
+}
+EOF
+  git add src/auth.rs
+  git commit -m "security maintenance: refine legacy auth validation ${i}" >/dev/null
+done

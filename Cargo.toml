@@ -57,8 +57,19 @@ criterion = "0.5"
 serde.workspace = true
 serde_json.workspace = true
 tempfile = "3"
+why-archaeologist = { path = "crates/archaeologist" }
 why-cache = { path = "crates/cache" }
+why-locator = { path = "crates/locator" }
+why-scanner = { path = "crates/scanner" }
 
 [[bench]]
 name = "cache_bench"
+harness = false
+
+[[bench]]
+name = "archaeology_bench"
+harness = false
+
+[[bench]]
+name = "scanner_bench"
 harness = false
