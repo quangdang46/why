@@ -50,4 +50,7 @@ remote = "origin"
 
 # Prefer GITHUB_TOKEN in the environment; this fallback is optional.
 # Environment variables win when both are present, and blank values are ignored.
-# token = "ghp_..."
+# Security note: storing tokens in .why.toml is less safe than using environment
+# variables because the file can be committed, copied, or left readable on disk.
+# Only use the fallback for local development in a trusted repository.
+# token = "your_github_token_here"

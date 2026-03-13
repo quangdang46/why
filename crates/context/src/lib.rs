@@ -91,12 +91,25 @@ impl Default for CacheConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Deserialize, PartialEq, Eq)]
 pub struct GitHubConfig {
     #[serde(default = "default_github_remote")]
     pub remote: String,
     #[serde(default)]
     pub token: Option<String>,
+}
+
+impl core::fmt::Debug for GitHubConfig {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("GitHubConfig")
+            .field("remote", &self.remote)
+            .field(
+                "token",
+                &self.token.as_ref().map(|_| "[redacted]"),
+            )
+            .finish()
+    }
 }
 
 impl Default for GitHubConfig {
@@ -344,16 +357,16 @@ remote = "upstream"
 
     #[test]
     fn github_token_prefers_environment_over_config() {
-        let _guard = EnvGuard::set("GITHUB_TOKEN", Some("ghp_env"));
+        let _guard = EnvGuard::set("GITHUB_TOKEN", Some("github_env_token"));
         let config = WhyConfig {
             github: super::GitHubConfig {
                 remote: "origin".into(),
-                token: Some("config_token".into()),
+                token: Some("github_config_token".into()),
             },
             ..WhyConfig::default()
         };
 
-        assert_eq!(config.github_token().as_deref(), Some("ghp_env"));
+        assert_eq!(config.github_token().as_deref(), Some("github_env_token"));
     }
 
     #[test]
@@ -362,12 +375,12 @@ remote = "upstream"
         let config = WhyConfig {
             github: super::GitHubConfig {
                 remote: "origin".into(),
-                token: Some("config_token".into()),
+                token: Some("github_config_token".into()),
             },
             ..WhyConfig::default()
         };
 
-        assert_eq!(config.github_token().as_deref(), Some("config_token"));
+        assert_eq!(config.github_token().as_deref(), Some("github_config_token"));
     }
 
     #[test]
@@ -382,6 +395,22 @@ remote = "upstream"
         };
 
         assert_eq!(config.github_token(), None);
+    }
+
+    #[test]
+    fn github_config_debug_redacts_token_values() {
+        let config = WhyConfig {
+            github: super::GitHubConfig {
+                remote: "origin".into(),
+                token: Some("github_debug_token".into()),
+            },
+            ..WhyConfig::default()
+        };
+
+        let debug = format!("{:?}", config.github);
+        assert!(debug.contains("origin"));
+        assert!(debug.contains("[redacted]"));
+        assert!(!debug.contains("github_debug_token"));
     }
 
     struct EnvGuard {

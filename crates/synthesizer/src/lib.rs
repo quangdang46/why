@@ -171,12 +171,24 @@ pub fn prompt_contract() -> PromptContract {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AnthropicConfig {
     pub api_key: String,
     pub model: String,
     pub max_tokens: u32,
     pub timeout_secs: u64,
+}
+
+impl core::fmt::Debug for AnthropicConfig {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("AnthropicConfig")
+            .field("api_key", &"[redacted]")
+            .field("model", &self.model)
+            .field("max_tokens", &self.max_tokens)
+            .field("timeout_secs", &self.timeout_secs)
+            .finish()
+    }
 }
 
 impl AnthropicConfig {
@@ -576,12 +588,12 @@ mod tests {
     #[test]
     fn anthropic_config_defaults_match_plan() {
         let config = AnthropicConfig {
-            api_key: "sk-ant-test".into(),
+            api_key: "anthropic_test_token".into(),
             model: "claude-haiku-4-5".into(),
             max_tokens: 500,
             timeout_secs: 30,
         };
-        assert_eq!(config.api_key, "sk-ant-test");
+        assert_eq!(config.api_key, "anthropic_test_token");
         assert_eq!(config.model, "claude-haiku-4-5");
         assert_eq!(config.max_tokens, 500);
         assert_eq!(config.timeout_secs, 30);
@@ -590,7 +602,7 @@ mod tests {
     #[test]
     fn anthropic_request_builder_sets_required_headers() {
         let client = AnthropicClient::new(AnthropicConfig {
-            api_key: "sk-ant-test".into(),
+            api_key: "anthropic_test_token".into(),
             model: "claude-haiku-4-5".into(),
             max_tokens: 500,
             timeout_secs: 30,
@@ -610,7 +622,7 @@ mod tests {
         assert_eq!(built.url().as_str(), "https://api.anthropic.com/v1/messages");
         assert_eq!(
             built.headers().get("x-api-key").and_then(|value| value.to_str().ok()),
-            Some("sk-ant-test")
+            Some("anthropic_test_token")
         );
         assert_eq!(
             built.headers()
@@ -666,6 +678,20 @@ mod tests {
         assert_eq!(retry_delay(1).as_secs(), 2);
         assert_eq!(retry_delay(2).as_secs(), 4);
         assert_eq!(retry_delay(3).as_secs(), 4);
+    }
+
+    #[test]
+    fn anthropic_config_debug_redacts_api_key() {
+        let config = AnthropicConfig {
+            api_key: "anthropic_debug_token".into(),
+            model: "claude-haiku-4-5".into(),
+            max_tokens: 500,
+            timeout_secs: 30,
+        };
+
+        let debug = format!("{:?}", config);
+        assert!(debug.contains("[redacted]"));
+        assert!(!debug.contains("anthropic_debug_token"));
     }
 
 }

@@ -109,11 +109,24 @@ pub struct GitHubItem {
     pub html_url: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct GitHubClient {
     repo: GitHubRepo,
     auth_value: Option<String>,
     client: Client,
+}
+
+impl core::fmt::Debug for GitHubClient {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("GitHubClient")
+            .field("repo", &self.repo)
+            .field(
+                "auth_value",
+                &self.auth_value.as_ref().map(|_| "[redacted]"),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl GitHubClient {
@@ -488,7 +501,7 @@ mod tests {
         let config = WhyConfig {
             github: GitHubConfig {
                 remote: "origin".into(),
-                token: Some("test-placeholder".into()),
+                token: Some("github_test_token".into()),
             },
             ..WhyConfig::default()
         };
@@ -503,5 +516,25 @@ mod tests {
             endpoint,
             "https://api.github.com/repos/anthropics/why/issues/42"
         );
+    }
+
+    #[test]
+    fn test_github_client_debug_redacts_auth_token() {
+        let config = WhyConfig {
+            github: GitHubConfig {
+                remote: "origin".into(),
+                token: Some("github_debug_token".into()),
+            },
+            ..WhyConfig::default()
+        };
+
+        let client = GitHubClient::from_config(&config, "https://github.com/anthropics/why.git")
+            .expect("client should build from config");
+        let debug = format!("{:?}", client);
+
+        assert!(debug.contains("anthropics"));
+        assert!(debug.contains("why"));
+        assert!(debug.contains("[redacted]"));
+        assert!(!debug.contains("github_debug_token"));
     }
 }

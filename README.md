@@ -60,12 +60,40 @@ Only **one LLM call per query**, with structured git data as input.
 
 ## Installation
 
-```bash
-cargo install why-cli
+Current repo state:
+- GitHub release packaging is checked in via `.github/workflows/release.yml`
+- A curl-friendly installer is checked in at `./install.sh`
+- The published binary name is `why`
+- Crates.io installation is **not** ready yet because the checked-in Rust package is `why-core` and currently has `publish = false` in `crates/core/Cargo.toml`
 
-# Set your API key once
-export ANTHROPIC_API_KEY=sk-ant-...
+Current install paths:
+
+```bash
+# Install from a GitHub release
+curl -sSL https://raw.githubusercontent.com/quangdang46/why/main/install.sh | bash
+
+# Or build locally from this checkout
+cargo run -q -p why-core -- --help
+cargo build -p why-core --release
+./target/release/why --help
+
+# Set your API key once when you want synthesis
+export ANTHROPIC_API_KEY=your_anthropic_api_key_here
 ```
+
+### Release and publishing readiness checklist
+
+Checked in today:
+- CI workflow for fmt, clippy, build, test, audit, and optional benches in `.github/workflows/ci.yml`
+- Tagged GitHub release workflow with cross-platform archives in `.github/workflows/release.yml`
+- Installer script with checksum verification and source-build fallback in `install.sh`
+
+Still required before `cargo install ...` is a supported path:
+- Rename or expose the publishable crate/package name intended for crates.io
+- Remove `publish = false` from the shipping package once metadata is ready
+- Add crates.io metadata that matches the shipped package name and install story
+- Verify `cargo install <published-package>` produces the `why` binary cleanly
+- Keep the README installation instructions aligned with the actual shipped path
 
 ## Usage
 
@@ -172,7 +200,7 @@ Typical cost: **~$0.001 per query** (one Haiku call with ~2k token input).
 
 Set via environment variable:
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
+export ANTHROPIC_API_KEY=your_anthropic_api_key_here
 ```
 
 Or in `.why.toml` at project root:
@@ -198,7 +226,7 @@ remote = "origin"
 
 `[risk.keywords]` extends the built-in heuristic vocabulary with team- or domain-specific terms. Matches are case-insensitive and can affect both ranked evidence relevance and the heuristic risk level.
 
-For GitHub enrichment work, set `GITHUB_TOKEN` in the environment when available; `.why.toml` can also carry an optional `[github]` fallback token and remote name. Environment variables take precedence over `.why.toml`, and blank values are ignored.
+For GitHub enrichment work, set `GITHUB_TOKEN` in the environment when available; `.why.toml` can also carry an optional `[github]` fallback token and remote name. Environment variables take precedence over `.why.toml`, and blank values are ignored. Prefer the environment-variable path because a token stored in `.why.toml` is easier to commit accidentally or leave readable on disk.
 
 See `.why.toml.example` for a fully documented example of the currently implemented config surface.
 

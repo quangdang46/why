@@ -8,6 +8,9 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 const CACHE_DIR_NAME: &str = ".why";
 const CACHE_FILE_NAME: &str = "cache.json";
 const HEALTH_SNAPSHOT_LIMIT: usize = 52;
@@ -45,8 +48,7 @@ pub struct Cache {
 impl Cache {
     pub fn open(repo_root: &Path, max_entries: usize) -> Result<Self> {
         let dir = repo_root.join(CACHE_DIR_NAME);
-        fs::create_dir_all(&dir)
-            .with_context(|| format!("failed to create cache directory {}", dir.display()))?;
+        ensure_cache_dir(&dir)?;
 
         let path = dir.join(CACHE_FILE_NAME);
         let data = if path.exists() {
@@ -143,14 +145,12 @@ impl Cache {
             .path
             .parent()
             .context("cache path has no parent directory")?;
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create cache directory {}", parent.display()))?;
+        ensure_cache_dir(parent)?;
 
         let tmp_path = self.path.with_extension("json.tmp");
         let payload =
             serde_json::to_vec_pretty(&self.data).context("failed to encode cache file")?;
-        fs::write(&tmp_path, payload)
-            .with_context(|| format!("failed to write cache temp file {}", tmp_path.display()))?;
+        write_cache_file(&tmp_path, &payload)?;
         fs::rename(&tmp_path, &self.path).with_context(|| {
             format!(
                 "failed to replace cache file {} with {}",
@@ -169,10 +169,35 @@ fn now_ts() -> i64 {
         .as_secs() as i64
 }
 
+fn ensure_cache_dir(path: &Path) -> Result<()> {
+    fs::create_dir_all(path)
+        .with_context(|| format!("failed to create cache directory {}", path.display()))?;
+    set_owner_only_permissions(path, 0o700)
+}
+
+fn write_cache_file(path: &Path, payload: &[u8]) -> Result<()> {
+    fs::write(path, payload)
+        .with_context(|| format!("failed to write cache temp file {}", path.display()))?;
+    set_owner_only_permissions(path, 0o600)
+}
+
+#[cfg(unix)]
+fn set_owner_only_permissions(path: &Path, mode: u32) -> Result<()> {
+    let permissions = fs::Permissions::from_mode(mode);
+    fs::set_permissions(path, permissions)
+        .with_context(|| format!("failed to set permissions on {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn set_owner_only_permissions(_path: &Path, _mode: u32) -> Result<()> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Cache, HealthSnapshot};
     use std::collections::HashMap;
+    use std::fs;
 
     use anyhow::Result;
     use serde::{Deserialize, Serialize};
@@ -293,6 +318,30 @@ mod tests {
             snapshots.last().map(|snapshot| snapshot.timestamp),
             Some(52)
         );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cache_uses_owner_only_permissions() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir()?;
+        let mut cache = Cache::open(dir.path(), 10)?;
+        let key = Cache::make_key("src/auth.rs", "verify_token", "abcdef1234567890");
+        cache.set(
+            key,
+            FakeReport {
+                summary: "auth hotfix".into(),
+                risk_level: "HIGH".into(),
+            },
+            "abcdef1234567890",
+        )?;
+
+        let cache_dir = dir.path().join(".why");
+        let cache_file = cache_dir.join("cache.json");
+        assert_eq!(fs::metadata(cache_dir)?.permissions().mode() & 0o777, 0o700);
+        assert_eq!(fs::metadata(cache_file)?.permissions().mode() & 0o777, 0o600);
         Ok(())
     }
 }
