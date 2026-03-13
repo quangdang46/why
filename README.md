@@ -89,11 +89,11 @@ Checked in today:
 - Installer script with checksum verification and source-build fallback in `install.sh`
 
 Still required before `cargo install ...` is a supported path:
-- Rename or expose the publishable crate/package name intended for crates.io
+- Decide whether the publishable crates.io package will be `why-core` (current Cargo package) or `why-cli` (the name used in `PLAN.md`), then align docs and automation around that single name
 - Remove `publish = false` from the shipping package once metadata is ready
-- Add crates.io metadata that matches the shipped package name and install story
+- Add the missing crates.io-facing package metadata for the shipping crate (at minimum: description, repository, homepage/documentation, keywords/categories, and readme linkage)
 - Verify `cargo install <published-package>` produces the `why` binary cleanly
-- Keep the README installation instructions aligned with the actual shipped path
+- Keep the README installation instructions, release workflow package name, and installer/source-build path aligned with the actual shipped package
 
 ## Usage
 
