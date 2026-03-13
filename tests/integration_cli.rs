@@ -4,7 +4,7 @@ use anyhow::Result;
 use common::{
     assert_json_golden, assert_terminal_golden, ensure_success, setup_compat_shim_repo,
     setup_coupling_repo, setup_hotfix_repo, setup_javascript_repo, setup_python_repo,
-    setup_sparse_repo, setup_split_repo, setup_typescript_repo,
+    setup_sparse_repo, setup_split_repo, setup_timebomb_repo, setup_typescript_repo,
 };
 use serde_json::Value;
 
@@ -446,6 +446,72 @@ fn hotspots_subcommand_renders_terminal_summary() -> Result<()> {
 
     let stdout = repo.stdout(&output);
     assert_terminal_golden("cli_hotspots_hotfix_repo", &stdout)?;
+
+    Ok(())
+}
+
+#[test]
+fn health_subcommand_returns_json_report_and_persists_snapshot() -> Result<()> {
+    let repo = setup_timebomb_repo()?;
+    let output = repo.run_why(&["health", "--json"])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    let parsed: Value = serde_json::from_str(&stdout)?;
+    assert!(parsed["debt_score"].as_u64().unwrap_or_default() > 0);
+    assert_eq!(parsed["signals"]["time_bombs"], 2);
+    assert_eq!(parsed["signals"]["stale_hacks"], 1);
+    assert!(parsed["delta"].is_null());
+    assert!(
+        parsed["notes"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
+
+    let cache_path = repo.path.join(".why").join("cache.json");
+    let cache_value: Value = serde_json::from_str(&std::fs::read_to_string(cache_path)?)?;
+    assert_eq!(
+        cache_value["health_snapshots"].as_array().map(|v| v.len()),
+        Some(1)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn repeated_health_subcommand_reports_trend_from_previous_snapshot() -> Result<()> {
+    let repo = setup_timebomb_repo()?;
+
+    let first = repo.run_why(&["health", "--json"])?;
+    ensure_success(&first)?;
+
+    let second = repo.run_why(&["health", "--json"])?;
+    ensure_success(&second)?;
+    let parsed: Value = serde_json::from_str(&repo.stdout(&second))?;
+    assert_eq!(parsed["delta"]["direction"], "→");
+    assert_eq!(parsed["delta"]["amount"], 0);
+    assert!(
+        parsed["delta"]["previous_score"]
+            .as_u64()
+            .unwrap_or_default()
+            > 0
+    );
+
+    Ok(())
+}
+
+#[test]
+fn health_subcommand_renders_terminal_summary() -> Result<()> {
+    let repo = setup_timebomb_repo()?;
+    let output = repo.run_why(&["health"])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    assert!(stdout.contains("Repository health"));
+    assert!(stdout.contains("Debt score:"));
+    assert!(stdout.contains("Signals"));
+    assert!(stdout.contains("time_bombs: 2"));
+    assert!(stdout.contains("stale_hacks: 1"));
 
     Ok(())
 }

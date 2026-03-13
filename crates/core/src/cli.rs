@@ -63,6 +63,20 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Aggregate repo-wide scanner signals into a health dashboard.
+    Health {
+        /// Emit machine-readable output.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Install managed git hooks that warn on high-risk changes.
+    InstallHooks {
+        /// Warn instead of blocking when high-risk changes are detected.
+        #[arg(long)]
+        warn_only: bool,
+    },
+    /// Remove managed git hooks and restore backups when present.
+    UninstallHooks,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +97,9 @@ pub enum Mode {
     Query(QueryRequest),
     Mcp,
     Hotspots { limit: usize, json: bool },
+    Health { json: bool },
+    InstallHooks { warn_only: bool },
+    UninstallHooks,
 }
 
 impl Cli {
@@ -121,6 +138,53 @@ impl Cli {
                     bail!("--limit must be greater than zero");
                 }
                 Ok(Mode::Hotspots { limit, json })
+            }
+            Some(Command::Health { json }) => {
+                if self.target.is_some()
+                    || self.lines.is_some()
+                    || self.no_llm
+                    || self.no_cache
+                    || self.split
+                    || self.coupled
+                    || self.since.is_some()
+                    || self.team
+                    || self.blame_chain
+                {
+                    bail!("the health subcommand does not accept query flags or a target");
+                }
+                Ok(Mode::Health { json })
+            }
+            Some(Command::InstallHooks { warn_only }) => {
+                if self.target.is_some()
+                    || self.lines.is_some()
+                    || self.json
+                    || self.no_llm
+                    || self.no_cache
+                    || self.split
+                    || self.coupled
+                    || self.since.is_some()
+                    || self.team
+                    || self.blame_chain
+                {
+                    bail!("the install-hooks subcommand does not accept query flags or a target");
+                }
+                Ok(Mode::InstallHooks { warn_only })
+            }
+            Some(Command::UninstallHooks) => {
+                if self.target.is_some()
+                    || self.lines.is_some()
+                    || self.json
+                    || self.no_llm
+                    || self.no_cache
+                    || self.split
+                    || self.coupled
+                    || self.since.is_some()
+                    || self.team
+                    || self.blame_chain
+                {
+                    bail!("the uninstall-hooks subcommand does not accept query flags or a target");
+                }
+                Ok(Mode::UninstallHooks)
             }
             None => {
                 let target = self.target.ok_or_else(|| {
@@ -307,6 +371,33 @@ mod tests {
     }
 
     #[test]
+    fn parses_health_subcommand() {
+        let cli = Cli::parse_from(["why", "health", "--json"]);
+        assert_eq!(
+            cli.parse_mode().expect("health should parse"),
+            Mode::Health { json: true }
+        );
+    }
+
+    #[test]
+    fn parses_install_hooks_subcommand() {
+        let cli = Cli::parse_from(["why", "install-hooks", "--warn-only"]);
+        assert_eq!(
+            cli.parse_mode().expect("install-hooks should parse"),
+            Mode::InstallHooks { warn_only: true }
+        );
+    }
+
+    #[test]
+    fn parses_uninstall_hooks_subcommand() {
+        let cli = Cli::parse_from(["why", "uninstall-hooks"]);
+        assert_eq!(
+            cli.parse_mode().expect("uninstall-hooks should parse"),
+            Mode::UninstallHooks
+        );
+    }
+
+    #[test]
     fn parses_no_cache_request() {
         let cli = Cli::parse_from(["why", "src/lib.rs:42", "--no-cache"]);
         let mode = cli.parse_mode().expect("no-cache target should parse");
@@ -361,6 +452,39 @@ mod tests {
             error
                 .to_string()
                 .contains("unexpected argument '--json' found")
+        );
+    }
+
+    #[test]
+    fn rejects_query_flags_for_health() {
+        let error = Cli::try_parse_from(["why", "health", "--no-cache"])
+            .expect_err("clap should reject query flags for health");
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--no-cache' found")
+        );
+    }
+
+    #[test]
+    fn rejects_query_flags_for_install_hooks() {
+        let error = Cli::try_parse_from(["why", "install-hooks", "--json"])
+            .expect_err("clap should reject query flags for install-hooks");
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--json' found")
+        );
+    }
+
+    #[test]
+    fn rejects_query_flags_for_uninstall_hooks() {
+        let error = Cli::try_parse_from(["why", "uninstall-hooks", "--no-cache"])
+            .expect_err("clap should reject query flags for uninstall-hooks");
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--no-cache' found")
         );
     }
 }

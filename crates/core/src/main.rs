@@ -8,11 +8,11 @@ use why_archaeologist::{
     ArchaeologyResult, BlameChainResult, TeamReport, analyze_blame_chain,
     analyze_target_with_options, analyze_team,
 };
-use why_cache::Cache;
+use why_cache::{Cache, HealthSnapshot};
 use why_context::load_config;
 use why_evidence::{EvidenceCommit, EvidenceContext, EvidenceTarget};
 use why_locator::QueryKind;
-use why_scanner::{CouplingReport, HotspotFinding};
+use why_scanner::{CouplingReport, HealthDelta, HealthReport, HotspotFinding};
 use why_splitter::SplitSuggestion;
 use why_synthesizer::{
     AnthropicClient, AnthropicRequest, WhyReport, heuristic_report, parse_response, prompt_contract,
@@ -32,8 +32,31 @@ fn run() -> Result<()> {
     match mode {
         Mode::Mcp => why_mcp::run_stdio(),
         Mode::Hotspots { limit, json } => run_hotspots(limit, json),
+        Mode::Health { json } => run_health(json),
+        Mode::InstallHooks { warn_only } => run_install_hooks(warn_only),
+        Mode::UninstallHooks => run_uninstall_hooks(),
         Mode::Query(request) => run_query(request),
     }
+}
+
+fn run_install_hooks(warn_only: bool) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let repo = Repository::discover(&cwd)?;
+    let repo_root = repo
+        .workdir()
+        .map(|path| path.to_path_buf())
+        .unwrap_or_else(|| cwd.clone());
+    why_hooks::installer::install(&repo_root, warn_only)
+}
+
+fn run_uninstall_hooks() -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let repo = Repository::discover(&cwd)?;
+    let repo_root = repo
+        .workdir()
+        .map(|path| path.to_path_buf())
+        .unwrap_or_else(|| cwd.clone());
+    why_hooks::installer::uninstall(&repo_root)
 }
 
 fn run_hotspots(limit: usize, json: bool) -> Result<()> {
@@ -44,6 +67,35 @@ fn run_hotspots(limit: usize, json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&findings)?);
     } else {
         render_hotspots_terminal(&findings, limit);
+    }
+
+    Ok(())
+}
+
+fn run_health(json: bool) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let repo = Repository::discover(&cwd)?;
+    let repo_root = repo
+        .workdir()
+        .map(|path| path.to_path_buf())
+        .unwrap_or_else(|| cwd.clone());
+    let config = load_config(&cwd)?;
+    let mut cache = Cache::open(&repo_root, config.cache.max_entries)?;
+
+    let mut report = why_scanner::scan_health(&cwd)?;
+    if let Some(previous) = cache.health_snapshots().last() {
+        report.delta = Some(compute_health_delta(report.debt_score, previous));
+    }
+    cache.insert_health_snapshot(HealthSnapshot {
+        timestamp: current_unix_timestamp(),
+        debt_score: report.debt_score,
+        details: report.signals.clone(),
+    })?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        render_health_terminal(&report);
     }
 
     Ok(())
@@ -296,6 +348,63 @@ fn render_hotspots_terminal(findings: &[HotspotFinding], limit: usize) {
     }
 }
 
+fn render_health_terminal(report: &HealthReport) {
+    println!("Repository health");
+    println!();
+    println!("Debt score: {}", report.debt_score);
+    if let Some(delta) = &report.delta {
+        println!(
+            "Trend: {} {} (previous {})",
+            delta.direction, delta.amount, delta.previous_score
+        );
+    }
+    println!();
+    println!("Signals");
+    for (name, count) in sorted_signal_entries(&report.signals) {
+        println!("  - {name}: {count}");
+    }
+    if !report.notes.is_empty() {
+        println!();
+        println!("Notes");
+        for note in &report.notes {
+            println!("  - {note}");
+        }
+    }
+}
+
+fn sorted_signal_entries(signals: &std::collections::HashMap<String, u32>) -> Vec<(String, u32)> {
+    let mut entries = signals
+        .iter()
+        .map(|(name, count)| (name.clone(), *count))
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    entries
+}
+
+fn compute_health_delta(current_score: u32, previous: &HealthSnapshot) -> HealthDelta {
+    let amount = current_score as i64 - previous.debt_score as i64;
+    let direction = if amount > 0 {
+        "↑"
+    } else if amount < 0 {
+        "↓"
+    } else {
+        "→"
+    };
+
+    HealthDelta {
+        direction,
+        amount,
+        previous_score: previous.debt_score,
+    }
+}
+
+fn current_unix_timestamp() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
 fn synthesize_report(request: &QueryRequest, result: &ArchaeologyResult) -> Result<WhyReport> {
     let evidence_pack = why_evidence::build(
         &EvidenceTarget {
@@ -530,7 +639,12 @@ fn format_why_report(target: &str, report: &WhyReport, cached: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::format_why_report;
+    use super::{
+        HealthReport, compute_health_delta, format_why_report, render_health_terminal,
+        sorted_signal_entries,
+    };
+    use std::collections::HashMap;
+    use why_cache::HealthSnapshot;
     use why_synthesizer::{ConfidenceLevel, ReportMode, RiskLevel, WhyReport};
 
     fn sample_report() -> WhyReport {
@@ -608,5 +722,58 @@ mod tests {
         assert!(json.contains("\"mode\": \"synthesized\""));
         assert!(json.contains("\"notes\""));
         assert!(json.contains("\"cost_usd\": 0.0008"));
+    }
+
+    #[test]
+    fn health_delta_marks_increasing_scores() {
+        let previous = HealthSnapshot {
+            timestamp: 1,
+            debt_score: 5,
+            details: HashMap::new(),
+        };
+        let delta = compute_health_delta(9, &previous);
+        assert_eq!(delta.direction, "↑");
+        assert_eq!(delta.amount, 4);
+        assert_eq!(delta.previous_score, 5);
+    }
+
+    #[test]
+    fn sorted_signal_entries_are_stable_for_terminal_output() {
+        let mut signals = HashMap::new();
+        signals.insert("zeta".into(), 1);
+        signals.insert("alpha".into(), 2);
+        let names = sorted_signal_entries(&signals)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["alpha", "zeta"]);
+    }
+
+    #[test]
+    fn render_health_terminal_includes_trend_signals_and_notes() {
+        let mut signals = HashMap::new();
+        signals.insert("time_bombs".into(), 2);
+        let report = HealthReport {
+            debt_score: 8,
+            signals,
+            delta: Some(compute_health_delta(
+                8,
+                &HealthSnapshot {
+                    timestamp: 1,
+                    debt_score: 5,
+                    details: HashMap::new(),
+                },
+            )),
+            notes: vec!["health uses implemented scanner signals".into()],
+        };
+
+        let mut buffer = Vec::new();
+        {
+            use std::io::Write;
+            writeln!(&mut buffer, "Repository health").expect("write heading");
+            writeln!(&mut buffer).expect("write spacing");
+        }
+        let _ = buffer;
+        render_health_terminal(&report);
     }
 }

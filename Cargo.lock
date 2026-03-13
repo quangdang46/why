@@ -1614,6 +1614,7 @@ dependencies = [
  "why-cache",
  "why-context",
  "why-evidence",
+ "why-hooks",
  "why-locator",
  "why-mcp",
  "why-scanner",

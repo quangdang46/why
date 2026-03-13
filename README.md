@@ -117,6 +117,10 @@ why src/auth.js:verifyToken --json
 
 # Repo-wide danger hotspots ranked by churn × heuristic risk
 why hotspots --limit 10
+
+# Install or remove managed git hooks for high-risk change warnings
+why install-hooks --warn-only
+why uninstall-hooks
 ```
 
 Current Rust CLI notes:
