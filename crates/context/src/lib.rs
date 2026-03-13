@@ -104,10 +104,7 @@ impl core::fmt::Debug for GitHubConfig {
         formatter
             .debug_struct("GitHubConfig")
             .field("remote", &self.remote)
-            .field(
-                "token",
-                &self.token.as_ref().map(|_| "[redacted]"),
-            )
+            .field("token", &self.token.as_ref().map(|_| "[redacted]"))
             .finish()
     }
 }
@@ -204,15 +201,14 @@ fn default_github_remote() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_COUPLING_RATIO_THRESHOLD,
-        DEFAULT_COUPLING_SCAN_COMMITS, DEFAULT_MAX_COMMITS,
-        DEFAULT_MECHANICAL_THRESHOLD_FILES, DEFAULT_RECENCY_WINDOW_DAYS, DEFAULT_RISK_LEVEL,
-        WhyConfig, find_config_path, load_config, load_config_from_path,
+        DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_COUPLING_RATIO_THRESHOLD, DEFAULT_COUPLING_SCAN_COMMITS,
+        DEFAULT_MAX_COMMITS, DEFAULT_MECHANICAL_THRESHOLD_FILES, DEFAULT_RECENCY_WINDOW_DAYS,
+        DEFAULT_RISK_LEVEL, WhyConfig, find_config_path, load_config, load_config_from_path,
     };
-    use std::path::Path;
     use anyhow::Result;
     use std::env;
     use std::fs;
+    use std::path::Path;
     use tempfile::TempDir;
 
     #[test]
@@ -329,7 +325,10 @@ remote = "upstream"
         let config = load_config_from_path(&config_path)?;
 
         assert_eq!(config.risk.default_level, DEFAULT_RISK_LEVEL);
-        assert_eq!(config.risk.keywords.high, vec!["pci", "reconciliation", "ledger"]);
+        assert_eq!(
+            config.risk.keywords.high,
+            vec!["pci", "reconciliation", "ledger"]
+        );
         assert_eq!(
             config.risk.keywords.medium,
             vec!["terraform", "webhook", "idempotency"]
@@ -380,7 +379,10 @@ remote = "upstream"
             ..WhyConfig::default()
         };
 
-        assert_eq!(config.github_token().as_deref(), Some("github_config_token"));
+        assert_eq!(
+            config.github_token().as_deref(),
+            Some("github_config_token")
+        );
     }
 
     #[test]

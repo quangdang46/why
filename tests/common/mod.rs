@@ -113,7 +113,10 @@ fn why_binary_path() -> Result<PathBuf> {
             .status()
             .context("failed to build why binary for integration tests")?;
         if !status.success() {
-            bail!("building why binary for integration tests failed with status {:?}", status.code());
+            bail!(
+                "building why binary for integration tests failed with status {:?}",
+                status.code()
+            );
         }
 
         let exe_name = if cfg!(windows) { "why.exe" } else { "why" };
@@ -228,6 +231,10 @@ pub fn assert_terminal_golden(name: &str, text: &str) -> Result<()> {
     let golden_path = golden_path(name, "txt");
     let expected = fs::read_to_string(&golden_path)
         .with_context(|| format!("failed to read terminal golden {}", golden_path.display()))?;
+    let actual = actual.trim_end().to_string();
+    let expected = normalize_terminal_snapshot(&expected)
+        .trim_end()
+        .to_string();
 
     if actual == expected {
         return Ok(());
@@ -273,6 +280,7 @@ pub fn normalize_terminal_snapshot(text: &str) -> String {
     text.lines()
         .map(|line| line.replace('\\', "/"))
         .map(|line| normalize_paths(&line))
+        .map(|line| normalize_dynamic_text(&line))
         .map(|line| normalize_terminal_line(&line))
         .collect::<Vec<_>>()
         .join("\n")
@@ -305,7 +313,7 @@ pub fn normalize_json_snapshot(value: &Value) -> Value {
             Value::Object(normalized)
         }
         Value::Array(items) => Value::Array(items.iter().map(normalize_json_snapshot).collect()),
-        Value::String(text) => Value::String(normalize_paths(text)),
+        Value::String(text) => Value::String(normalize_dynamic_text(&normalize_paths(text))),
         other => other.clone(),
     }
 }
@@ -361,4 +369,36 @@ fn normalize_paths(text: &str) -> String {
     text.replace("\\r\\n", "\n")
         .replace(env!("CARGO_MANIFEST_DIR"), "<repo>")
         .replace("/tmp/", "<tmp>/")
+}
+
+#[allow(dead_code)]
+fn normalize_dynamic_text(text: &str) -> String {
+    let text = text.replace("Ã", "×").replace("â", "—");
+    let bytes = text.as_bytes();
+    let mut normalized = String::with_capacity(text.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if index + 10 <= bytes.len()
+            && bytes[index].is_ascii_digit()
+            && bytes[index + 1].is_ascii_digit()
+            && bytes[index + 2].is_ascii_digit()
+            && bytes[index + 3].is_ascii_digit()
+            && bytes[index + 4] == b'-'
+            && bytes[index + 5].is_ascii_digit()
+            && bytes[index + 6].is_ascii_digit()
+            && bytes[index + 7] == b'-'
+            && bytes[index + 8].is_ascii_digit()
+            && bytes[index + 9].is_ascii_digit()
+        {
+            normalized.push_str("<date>");
+            index += 10;
+            continue;
+        }
+
+        normalized.push(bytes[index] as char);
+        index += 1;
+    }
+
+    normalized
 }

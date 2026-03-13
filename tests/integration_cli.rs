@@ -20,13 +20,43 @@ fn hotfix_repo_json_output_has_phase_one_shape() -> Result<()> {
     assert_eq!(parsed["mode"], "heuristic");
     assert_eq!(parsed["risk_level"], "HIGH");
     assert_eq!(parsed["confidence"], "low");
-    assert!(parsed["summary"].as_str().is_some_and(|summary| summary.contains("Heuristic analysis of src/payment.rs:6")));
-    assert!(parsed["evidence"].as_array().is_some_and(|items| !items.is_empty()));
-    assert!(parsed["inference"].as_array().is_some_and(|items| items.is_empty()));
-    assert!(parsed["unknowns"].as_array().is_some_and(|items| !items.is_empty()));
-    assert!(parsed["risk_summary"].as_str().is_some_and(|text| text.contains("security sensitivity") || text.contains("migration") || text.contains("available history")));
-    assert!(parsed["change_guidance"].as_str().is_some_and(|text| !text.is_empty()));
-    assert!(parsed["notes"].as_array().is_some_and(|items| items.iter().any(|note| note.as_str().is_some_and(|text| text.contains("No LLM synthesis")))));
+    assert!(
+        parsed["summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("Heuristic analysis of src/payment.rs:6"))
+    );
+    assert!(
+        parsed["evidence"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
+    assert!(
+        parsed["inference"]
+            .as_array()
+            .is_some_and(|items| items.is_empty())
+    );
+    assert!(
+        parsed["unknowns"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
+    assert!(parsed["risk_summary"].as_str().is_some_and(
+        |text| text.contains("security sensitivity")
+            || text.contains("migration")
+            || text.contains("available history")
+    ));
+    assert!(
+        parsed["change_guidance"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty())
+    );
+    assert!(
+        parsed["notes"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|note| note
+                .as_str()
+                .is_some_and(|text| text.contains("No LLM synthesis"))))
+    );
     assert!(parsed["cost_usd"].is_null());
 
     Ok(())
@@ -40,7 +70,11 @@ fn hotfix_repo_since_filters_to_recent_evidence() -> Result<()> {
 
     let stdout = repo.stdout(&output);
     let parsed: Value = serde_json::from_str(&stdout)?;
-    assert!(parsed["summary"].as_str().is_some_and(|summary| summary.contains("Heuristic analysis")));
+    assert!(
+        parsed["summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("Heuristic analysis"))
+    );
     let evidence = parsed["evidence"]
         .as_array()
         .expect("evidence should be an array");
@@ -88,6 +122,20 @@ fn hotfix_repo_terminal_output_lists_summary_evidence_and_risk() -> Result<()> {
     assert!(stdout.contains("Evidence"));
     assert!(stdout.contains("Unknowns"));
     assert!(!stdout.contains("[cached]"));
+    assert_terminal_golden("cli_why_hotfix_repo", &stdout)?;
+
+    Ok(())
+}
+
+#[test]
+fn hotfix_repo_json_output_matches_golden_snapshot() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let output = repo.run_why(&["src/payment.rs:6", "--json", "--no-llm"])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    let parsed: Value = serde_json::from_str(&stdout)?;
+    assert_json_golden("cli_why_hotfix_repo", &parsed)?;
 
     Ok(())
 }
@@ -134,7 +182,11 @@ fn range_query_works_for_compat_fixture() -> Result<()> {
     let parsed: Value = serde_json::from_str(&stdout)?;
     assert_eq!(parsed["mode"], "heuristic");
     assert_eq!(parsed["risk_level"], "MEDIUM");
-    assert!(parsed["summary"].as_str().is_some_and(|summary| summary.contains("src/http.rs:1-6")));
+    assert!(
+        parsed["summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("src/http.rs:1-6"))
+    );
     let evidence = parsed["evidence"]
         .as_array()
         .expect("evidence should be an array");
@@ -156,11 +208,17 @@ fn sparse_repo_yields_non_high_risk() -> Result<()> {
     let stdout = repo.stdout(&output);
     let parsed: Value = serde_json::from_str(&stdout)?;
     assert_ne!(parsed["risk_level"], "HIGH");
-    assert!(parsed["evidence"].as_array().is_some_and(|items| !items.is_empty()));
+    assert!(
+        parsed["evidence"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
     assert!(
         parsed["unknowns"]
             .as_array()
-            .is_some_and(|items| items.iter().any(|item| item.as_str().is_some_and(|text| text.contains("No model synthesis"))))
+            .is_some_and(|items| items.iter().any(|item| item
+                .as_str()
+                .is_some_and(|text| text.contains("No model synthesis"))))
     );
 
     Ok(())
@@ -177,8 +235,16 @@ fn rust_symbol_queries_emit_why_report_json() -> Result<()> {
     assert_eq!(parsed["mode"], "heuristic");
     assert_eq!(parsed["risk_level"], "HIGH");
     assert_eq!(parsed["confidence"], "low");
-    assert!(parsed["summary"].as_str().is_some_and(|summary| summary.contains("src/payment.rs:process_payment")));
-    assert!(parsed["evidence"].as_array().is_some_and(|items| !items.is_empty()));
+    assert!(
+        parsed["summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("src/payment.rs:process_payment"))
+    );
+    assert!(
+        parsed["evidence"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
 
     Ok(())
 }
@@ -200,7 +266,11 @@ fn rust_qualified_symbol_queries_emit_why_report_json() -> Result<()> {
     assert!(parsed["summary"].as_str().is_some_and(|summary| {
         summary.contains("src/payment.rs:PaymentService::process_payment")
     }));
-    assert!(parsed["evidence"].as_array().is_some_and(|items| !items.is_empty()));
+    assert!(
+        parsed["evidence"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
 
     Ok(())
 }
@@ -215,8 +285,16 @@ fn typescript_symbol_queries_emit_why_report_json() -> Result<()> {
     let parsed: Value = serde_json::from_str(&stdout)?;
     assert_eq!(parsed["mode"], "heuristic");
     assert_eq!(parsed["risk_level"], "HIGH");
-    assert!(parsed["summary"].as_str().is_some_and(|summary| summary.contains("src/auth.ts:authenticate")));
-    assert!(parsed["evidence"].as_array().is_some_and(|items| !items.is_empty()));
+    assert!(
+        parsed["summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("src/auth.ts:authenticate"))
+    );
+    assert!(
+        parsed["evidence"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
 
     Ok(())
 }
@@ -231,8 +309,16 @@ fn typescript_class_symbol_queries_emit_why_report_json() -> Result<()> {
     let parsed: Value = serde_json::from_str(&stdout)?;
     assert_eq!(parsed["mode"], "heuristic");
     assert_eq!(parsed["risk_level"], "HIGH");
-    assert!(parsed["summary"].as_str().is_some_and(|summary| summary.contains("src/auth.ts:AuthService")));
-    assert!(parsed["evidence"].as_array().is_some_and(|items| !items.is_empty()));
+    assert!(
+        parsed["summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("src/auth.ts:AuthService"))
+    );
+    assert!(
+        parsed["evidence"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
 
     Ok(())
 }
@@ -247,8 +333,16 @@ fn javascript_symbol_queries_emit_why_report_json() -> Result<()> {
     let parsed: Value = serde_json::from_str(&stdout)?;
     assert_eq!(parsed["mode"], "heuristic");
     assert_eq!(parsed["risk_level"], "HIGH");
-    assert!(parsed["summary"].as_str().is_some_and(|summary| summary.contains("src/auth.js:login")));
-    assert!(parsed["evidence"].as_array().is_some_and(|items| !items.is_empty()));
+    assert!(
+        parsed["summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("src/auth.js:login"))
+    );
+    assert!(
+        parsed["evidence"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
 
     Ok(())
 }
@@ -263,8 +357,16 @@ fn javascript_class_symbol_queries_emit_why_report_json() -> Result<()> {
     let parsed: Value = serde_json::from_str(&stdout)?;
     assert_eq!(parsed["mode"], "heuristic");
     assert_eq!(parsed["risk_level"], "HIGH");
-    assert!(parsed["summary"].as_str().is_some_and(|summary| summary.contains("src/auth.js:AuthService")));
-    assert!(parsed["evidence"].as_array().is_some_and(|items| !items.is_empty()));
+    assert!(
+        parsed["summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("src/auth.js:AuthService"))
+    );
+    assert!(
+        parsed["evidence"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
 
     Ok(())
 }
@@ -279,8 +381,16 @@ fn python_symbol_queries_emit_why_report_json() -> Result<()> {
     let parsed: Value = serde_json::from_str(&stdout)?;
     assert_eq!(parsed["mode"], "heuristic");
     assert_eq!(parsed["risk_level"], "HIGH");
-    assert!(parsed["summary"].as_str().is_some_and(|summary| summary.contains("src/auth.py:authenticate")));
-    assert!(parsed["evidence"].as_array().is_some_and(|items| !items.is_empty()));
+    assert!(
+        parsed["summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("src/auth.py:authenticate"))
+    );
+    assert!(
+        parsed["evidence"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
 
     Ok(())
 }

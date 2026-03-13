@@ -47,13 +47,15 @@ fn hotspots_golden_view(payload: &[Value]) -> Value {
     Value::Array(
         payload
             .iter()
-            .map(|finding| serde_json::json!({
-                "path": finding["path"],
-                "churn_commits": finding["churn_commits"],
-                "risk_level": finding["risk_level"],
-                "hotspot_score": finding["hotspot_score"],
-                "top_commit_summaries": finding["top_commit_summaries"]
-            }))
+            .map(|finding| {
+                serde_json::json!({
+                    "path": finding["path"],
+                    "churn_commits": finding["churn_commits"],
+                    "risk_level": finding["risk_level"],
+                    "hotspot_score": finding["hotspot_score"],
+                    "top_commit_summaries": finding["top_commit_summaries"]
+                })
+            })
             .collect(),
     )
 }
@@ -62,13 +64,15 @@ fn time_bombs_golden_view(payload: &[Value]) -> Value {
     Value::Array(
         payload
             .iter()
-            .map(|finding| serde_json::json!({
-                "path": finding["path"],
-                "line": finding["line"],
-                "kind": finding["kind"],
-                "marker": finding["marker"],
-                "severity": finding["severity"]
-            }))
+            .map(|finding| {
+                serde_json::json!({
+                    "path": finding["path"],
+                    "line": finding["line"],
+                    "kind": finding["kind"],
+                    "marker": finding["marker"],
+                    "severity": finding["severity"]
+                })
+            })
             .collect(),
     )
 }
@@ -203,7 +207,10 @@ fn mcp_why_time_bombs_returns_findings() -> Result<()> {
             .iter()
             .any(|finding| finding["kind"] == "PastDueTodo")
     );
-    assert_json_golden("mcp_why_time_bombs_timebomb_repo", &time_bombs_golden_view(payload))?;
+    assert_json_golden(
+        "mcp_why_time_bombs_timebomb_repo",
+        &time_bombs_golden_view(payload),
+    )?;
 
     Ok(())
 }
@@ -225,7 +232,10 @@ fn mcp_why_hotspots_returns_ranked_findings() -> Result<()> {
     assert!(payload[0]["path"].is_string());
     assert!(payload[0]["churn_commits"].as_u64().unwrap_or_default() >= 1);
     assert!(payload[0]["hotspot_score"].as_f64().unwrap_or_default() >= 1.0);
-    assert_json_golden("mcp_why_hotspots_hotfix_repo", &hotspots_golden_view(payload))?;
+    assert_json_golden(
+        "mcp_why_hotspots_hotfix_repo",
+        &hotspots_golden_view(payload),
+    )?;
 
     Ok(())
 }
@@ -250,7 +260,10 @@ fn mcp_why_coupling_returns_ranked_findings() -> Result<()> {
     assert_eq!(results[0]["path"], "src/data.rs");
     assert_eq!(results[0]["shared_commits"], 5);
     assert_eq!(results[0]["coupling_ratio"], 1.0);
-    assert_json_golden("mcp_why_coupling_coupling_repo", &coupling_golden_view(payload))?;
+    assert_json_golden(
+        "mcp_why_coupling_coupling_repo",
+        &coupling_golden_view(payload),
+    )?;
 
     Ok(())
 }

@@ -1,0 +1,20 @@
+{
+  "summary": "Heuristic analysis of src/payment.rs:6 based on 1 relevant commit(s).",
+  "evidence": [
+    "hotfix: fix duplicate charge vulnerability, closes #4521 (<date>)"
+  ],
+  "inference": [],
+  "unknowns": [
+    "No model synthesis was available for this query."
+  ],
+  "risk_level": "HIGH",
+  "risk_summary": "The history suggests security sensitivity, incident context, or non-routine compatibility risk.",
+  "change_guidance": "Stop and investigate before deleting or heavily refactoring this target.",
+  "confidence": "low",
+  "mode": "heuristic",
+  "notes": [
+    "No LLM synthesis in phase 1",
+    "Evidence and inference should be kept separate when presenting this result"
+  ],
+  "cost_usd": null
+}

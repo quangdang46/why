@@ -341,7 +341,10 @@ mod tests {
         let cache_dir = dir.path().join(".why");
         let cache_file = cache_dir.join("cache.json");
         assert_eq!(fs::metadata(cache_dir)?.permissions().mode() & 0o777, 0o700);
-        assert_eq!(fs::metadata(cache_file)?.permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            fs::metadata(cache_file)?.permissions().mode() & 0o777,
+            0o600
+        );
         Ok(())
     }
 }

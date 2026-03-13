@@ -1,0 +1,18 @@
+why: src/payment.rs:6
+
+Summary
+Heuristic analysis of src/payment.rs:6 based on 1 relevant commit(s).
+
+Risk: HIGH (low)
+The history suggests security sensitivity, incident context, or non-routine compatibility risk.
+Stop and investigate before deleting or heavily refactoring this target.
+
+Evidence
+  - hotfix: fix duplicate charge vulnerability, closes #4521 (<date>)
+
+Unknowns
+  - No model synthesis was available for this query.
+
+Notes
+  - No LLM synthesis in phase 1
+  - Evidence and inference should be kept separate when presenting this result

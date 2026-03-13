@@ -335,7 +335,11 @@ mod tests {
         let error = cli
             .parse_mode()
             .expect_err("hotspots should reject a zero limit");
-        assert!(error.to_string().contains("--limit must be greater than zero"));
+        assert!(
+            error
+                .to_string()
+                .contains("--limit must be greater than zero")
+        );
     }
 
     #[test]

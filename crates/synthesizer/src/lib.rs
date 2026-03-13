@@ -51,7 +51,9 @@ impl RiskLevel {
 
     pub fn change_guidance(self) -> &'static str {
         match self {
-            Self::HIGH => "Stop and investigate before deleting or heavily refactoring this target.",
+            Self::HIGH => {
+                "Stop and investigate before deleting or heavily refactoring this target."
+            }
             Self::MEDIUM => {
                 "Change only after reviewing surrounding code and validating the behavior you might disturb."
             }
@@ -197,7 +199,11 @@ impl AnthropicConfig {
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| anyhow!("ANTHROPIC_API_KEY is not set; rerun with --no-llm or configure credentials"))?;
+            .ok_or_else(|| {
+                anyhow!(
+                    "ANTHROPIC_API_KEY is not set; rerun with --no-llm or configure credentials"
+                )
+            })?;
 
         Ok(Self {
             api_key,
@@ -285,7 +291,12 @@ struct HttpStatusError {
 
 impl core::fmt::Display for HttpStatusError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(formatter, "{} (HTTP {})", self.message, self.status.as_u16())
+        write!(
+            formatter,
+            "{} (HTTP {})",
+            self.message,
+            self.status.as_u16()
+        )
     }
 }
 
@@ -416,7 +427,10 @@ pub fn estimate_cost_usd(input_tokens: u64, output_tokens: u64) -> f64 {
 
 fn build_http_client(timeout_secs: u64) -> Result<Client> {
     let mut headers = HeaderMap::new();
-    headers.insert("anthropic-version", HeaderValue::from_static(ANTHROPIC_VERSION));
+    headers.insert(
+        "anthropic-version",
+        HeaderValue::from_static(ANTHROPIC_VERSION),
+    );
     Client::builder()
         .default_headers(headers)
         .timeout(Duration::from_secs(timeout_secs))
@@ -497,10 +511,9 @@ fn strip_markdown_fences(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ANTHROPIC_VERSION, AnthropicClient, AnthropicConfig, AnthropicRequest,
-        ConfidenceLevel, HttpStatusError, ReportMode, RiskLevel, StatusCode,
-        estimate_cost_usd, heuristic_report, is_retryable_error, parse_message_response,
-        parse_response, prompt_contract, retry_delay,
+        ANTHROPIC_VERSION, AnthropicClient, AnthropicConfig, AnthropicRequest, ConfidenceLevel,
+        HttpStatusError, ReportMode, RiskLevel, StatusCode, estimate_cost_usd, heuristic_report,
+        is_retryable_error, parse_message_response, parse_response, prompt_contract, retry_delay,
     };
 
     #[test]
@@ -518,7 +531,10 @@ mod tests {
         )
         .expect("response should parse");
 
-        assert_eq!(report.summary, "Token expiry logic comes from a logout hotfix.");
+        assert_eq!(
+            report.summary,
+            "Token expiry logic comes from a logout hotfix."
+        );
         assert_eq!(report.risk_level, RiskLevel::HIGH);
         assert_eq!(report.confidence, ConfidenceLevel::MediumHigh);
         assert_eq!(report.mode, ReportMode::Synthesized);
@@ -568,7 +584,10 @@ mod tests {
         assert_eq!(report.mode, ReportMode::Heuristic);
         assert_eq!(report.confidence, ConfidenceLevel::Low);
         assert_eq!(report.cost_usd, None);
-        assert_eq!(report.unknowns, vec!["No model synthesis was available for this query."]);
+        assert_eq!(
+            report.unknowns,
+            vec!["No model synthesis was available for this query."]
+        );
     }
 
     #[test]
@@ -592,10 +611,12 @@ mod tests {
                 "confidence",
             ]
         );
-        assert!(contract
-            .grounding_rules
-            .iter()
-            .any(|rule| rule.contains("Do not invent")));
+        assert!(
+            contract
+                .grounding_rules
+                .iter()
+                .any(|rule| rule.contains("Do not invent"))
+        );
     }
 
     #[test]
@@ -650,13 +671,20 @@ mod tests {
             .expect("request should build");
 
         assert_eq!(built.method().as_str(), "POST");
-        assert_eq!(built.url().as_str(), "https://api.anthropic.com/v1/messages");
         assert_eq!(
-            built.headers().get("x-api-key").and_then(|value| value.to_str().ok()),
+            built.url().as_str(),
+            "https://api.anthropic.com/v1/messages"
+        );
+        assert_eq!(
+            built
+                .headers()
+                .get("x-api-key")
+                .and_then(|value| value.to_str().ok()),
             Some("anthropic_test_token")
         );
         assert_eq!(
-            built.headers()
+            built
+                .headers()
                 .get("anthropic-version")
                 .and_then(|value| value.to_str().ok()),
             Some(ANTHROPIC_VERSION)
@@ -724,5 +752,4 @@ mod tests {
         assert!(debug.contains("[redacted]"));
         assert!(!debug.contains("anthropic_debug_token"));
     }
-
 }

@@ -14,7 +14,9 @@ use why_evidence::{EvidenceCommit, EvidenceContext, EvidenceTarget};
 use why_locator::QueryKind;
 use why_scanner::{CouplingReport, HotspotFinding};
 use why_splitter::SplitSuggestion;
-use why_synthesizer::{AnthropicClient, AnthropicRequest, WhyReport, heuristic_report, parse_response, prompt_contract};
+use why_synthesizer::{
+    AnthropicClient, AnthropicRequest, WhyReport, heuristic_report, parse_response, prompt_contract,
+};
 
 fn main() {
     if let Err(error) = run() {
@@ -126,7 +128,10 @@ fn run_query(request: QueryRequest) -> Result<()> {
             if request.json {
                 println!("{}", serde_json::to_string_pretty(&cached)?);
             } else {
-                println!("{}", format_why_report(&format_target_label(&request.target), &cached, true));
+                println!(
+                    "{}",
+                    format_why_report(&format_target_label(&request.target), &cached, true)
+                );
             }
             return Ok(());
         }
@@ -139,7 +144,10 @@ fn run_query(request: QueryRequest) -> Result<()> {
     if request.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
-        println!("{}", format_why_report(&format_target_label(&request.target), &report, false));
+        println!(
+            "{}",
+            format_why_report(&format_target_label(&request.target), &report, false)
+        );
     }
 
     Ok(())
@@ -293,7 +301,10 @@ fn synthesize_report(request: &QueryRequest, result: &ArchaeologyResult) -> Resu
         &EvidenceTarget {
             file: result.target.path.display().to_string(),
             symbol: request.target.symbol.clone(),
-            lines: (result.target.start_line as usize, result.target.end_line as usize),
+            lines: (
+                result.target.start_line as usize,
+                result.target.end_line as usize,
+            ),
             language: infer_language(&result.target.path),
         },
         &result
@@ -524,7 +535,8 @@ mod tests {
 
     fn sample_report() -> WhyReport {
         WhyReport {
-            summary: "This guard exists because a logout hotfix preserved token invalidation.".into(),
+            summary: "This guard exists because a logout hotfix preserved token invalidation."
+                .into(),
             evidence: vec![
                 "fix: tokens not expiring on logout".into(),
                 "comment references incident #4521".into(),
