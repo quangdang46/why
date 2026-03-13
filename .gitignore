@@ -3,4 +3,5 @@
 poc/node_modules/
 poc/package-lock.json
 
+.why/
 target/
