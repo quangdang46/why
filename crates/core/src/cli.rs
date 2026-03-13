@@ -69,6 +69,16 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Find high-risk functions that appear uncalled under static analysis.
+    Ghost {
+        /// Maximum number of findings to return.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+
+        /// Emit machine-readable output.
+        #[arg(long)]
+        json: bool,
+    },
     /// Install managed git hooks that warn on high-risk changes.
     InstallHooks {
         /// Warn instead of blocking when high-risk changes are detected.
@@ -98,6 +108,7 @@ pub enum Mode {
     Mcp,
     Hotspots { limit: usize, json: bool },
     Health { json: bool },
+    Ghost { limit: usize, json: bool },
     InstallHooks { warn_only: bool },
     UninstallHooks,
 }
@@ -153,6 +164,24 @@ impl Cli {
                     bail!("the health subcommand does not accept query flags or a target");
                 }
                 Ok(Mode::Health { json })
+            }
+            Some(Command::Ghost { limit, json }) => {
+                if self.target.is_some()
+                    || self.lines.is_some()
+                    || self.no_llm
+                    || self.no_cache
+                    || self.split
+                    || self.coupled
+                    || self.since.is_some()
+                    || self.team
+                    || self.blame_chain
+                {
+                    bail!("the ghost subcommand does not accept query flags or a target");
+                }
+                if limit == 0 {
+                    bail!("--limit must be greater than zero");
+                }
+                Ok(Mode::Ghost { limit, json })
             }
             Some(Command::InstallHooks { warn_only }) => {
                 if self.target.is_some()
@@ -380,6 +409,18 @@ mod tests {
     }
 
     #[test]
+    fn parses_ghost_subcommand() {
+        let cli = Cli::parse_from(["why", "ghost", "--limit", "7", "--json"]);
+        assert_eq!(
+            cli.parse_mode().expect("ghost should parse"),
+            Mode::Ghost {
+                limit: 7,
+                json: true,
+            }
+        );
+    }
+
+    #[test]
     fn parses_install_hooks_subcommand() {
         let cli = Cli::parse_from(["why", "install-hooks", "--warn-only"]);
         assert_eq!(
@@ -459,6 +500,17 @@ mod tests {
     fn rejects_query_flags_for_health() {
         let error = Cli::try_parse_from(["why", "health", "--no-cache"])
             .expect_err("clap should reject query flags for health");
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--no-cache' found")
+        );
+    }
+
+    #[test]
+    fn rejects_query_flags_for_ghost() {
+        let error = Cli::try_parse_from(["why", "ghost", "--no-cache"])
+            .expect_err("clap should reject query flags for ghost");
         assert!(
             error
                 .to_string()

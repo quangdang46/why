@@ -135,6 +135,25 @@ pub struct BlameChainResult {
     pub notes: Vec<&'static str>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EvolutionCommit {
+    pub commit: CommitEvidence,
+    pub path_at_commit: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EvolutionHistoryResult {
+    pub target: OutputTarget,
+    pub commits: Vec<EvolutionCommit>,
+    pub paths_seen: Vec<PathBuf>,
+    pub risk_level: RiskLevel,
+    pub risk_summary: String,
+    pub change_guidance: String,
+    pub local_context: LocalContext,
+    pub mode: &'static str,
+    pub notes: Vec<&'static str>,
+}
+
 pub fn discover_repository(starting_dir: &Path) -> Result<Repository> {
     Repository::discover(starting_dir).with_context(|| {
         format!(
@@ -552,6 +571,59 @@ pub fn analyze_team(
     })
 }
 
+pub fn analyze_evolution_history(
+    target: &QueryTarget,
+    cwd: &Path,
+    since_days: Option<u64>,
+) -> Result<EvolutionHistoryResult> {
+    let resolved = resolve_target(target, cwd)?;
+    let config = load_config(cwd)?;
+    let target_path = cwd.join(&resolved.path);
+    let repo = discover_repository(&target_path)?;
+    let relative_path = relative_repo_path(&repo, &target_path)?;
+    let commits = collect_evolution_history(&repo, &relative_path, &config, since_days)?;
+    let local_context = extract_local_context(
+        &target_path,
+        resolved.start_line,
+        resolved.end_line,
+        &config,
+    )?;
+
+    let plain_commits = commits
+        .iter()
+        .map(|entry| entry.commit.clone())
+        .collect::<Vec<_>>();
+    let risk_level = infer_risk_level(&plain_commits, &local_context, &config);
+
+    let mut seen_paths = HashSet::new();
+    let mut paths_seen = Vec::new();
+    for entry in &commits {
+        if seen_paths.insert(entry.path_at_commit.clone()) {
+            paths_seen.push(entry.path_at_commit.clone());
+        }
+    }
+
+    Ok(EvolutionHistoryResult {
+        target: OutputTarget {
+            path: relative_path,
+            start_line: resolved.start_line,
+            end_line: resolved.end_line,
+            query_kind: resolved.query_kind,
+        },
+        commits,
+        paths_seen,
+        risk_level,
+        risk_summary: risk_level.summary().to_string(),
+        change_guidance: risk_level.change_guidance().to_string(),
+        local_context,
+        mode: "evolution-history",
+        notes: vec![
+            "Evolution-history mode follows git log renames to preserve pre-move context",
+            "This backend result is intended as raw material for a later timeline presentation",
+        ],
+    })
+}
+
 pub fn extract_local_context(
     path: &Path,
     start_line: u32,
@@ -689,6 +761,139 @@ fn push_risk_flag(risk_flags: &mut Vec<String>, seen_flags: &mut HashSet<String>
     if seen_flags.insert(flag.clone()) {
         risk_flags.push(flag);
     }
+}
+
+fn collect_evolution_history(
+    repo: &Repository,
+    relative_path: &Path,
+    config: &WhyConfig,
+    since_days: Option<u64>,
+) -> Result<Vec<EvolutionCommit>> {
+    let mut revwalk = repo.revwalk().context("failed to create revwalk")?;
+    revwalk.push_head().context("failed to walk HEAD")?;
+    revwalk
+        .set_sorting(Sort::TOPOLOGICAL | Sort::TIME)
+        .context("failed to set revwalk ordering")?;
+
+    let since_ts =
+        since_days.map(|days| OffsetDateTime::now_utc().unix_timestamp() - days as i64 * 86_400);
+
+    let mut commits = Vec::new();
+    let mut seen = HashSet::new();
+    let mut current_path = relative_path.to_path_buf();
+
+    for oid in revwalk {
+        let oid = oid.context("failed to read commit from revwalk")?;
+        let commit = repo
+            .find_commit(oid)
+            .with_context(|| format!("failed to load commit {oid}"))?;
+        if let Some(since_ts) = since_ts {
+            if commit.time().seconds() < since_ts {
+                continue;
+            }
+        }
+
+        let touched_path = commit_touches_path(repo, &commit, &current_path)?;
+        if !touched_path {
+            continue;
+        }
+
+        let path_at_commit = path_for_commit(repo, &commit, &current_path)?;
+        let mut evidence = finalize_chain_commit(repo, &commit, 1.0, config)?;
+        evidence.relevance_score = compute_relevance_score(&evidence, config);
+
+        if seen.insert(commit.id()) {
+            commits.push(EvolutionCommit {
+                commit: evidence,
+                path_at_commit: path_at_commit.clone(),
+            });
+        }
+
+        current_path = path_at_commit;
+    }
+
+    commits.sort_by(|left, right| right.commit.time.cmp(&left.commit.time));
+    Ok(commits)
+}
+
+fn commit_touches_path(repo: &Repository, commit: &git2::Commit<'_>, path: &Path) -> Result<bool> {
+    let tree = commit.tree().context("failed to load commit tree")?;
+    let parent_tree = if commit.parent_count() > 0 {
+        Some(
+            commit
+                .parent(0)
+                .context("failed to load commit parent")?
+                .tree()
+                .context("failed to load parent tree")?,
+        )
+    } else {
+        None
+    };
+
+    let mut diff_options = DiffOptions::new();
+    diff_options.pathspec(path);
+    let diff = repo
+        .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut diff_options))
+        .context("failed to inspect commit diff")?;
+    if diff.deltas().len() > 0 {
+        return Ok(true);
+    }
+
+    if let Some(previous_path) = rename_source_path(repo, commit, path)? {
+        let mut old_path_diff_options = DiffOptions::new();
+        old_path_diff_options.pathspec(&previous_path);
+        let old_path_diff = repo
+            .diff_tree_to_tree(
+                parent_tree.as_ref(),
+                Some(&tree),
+                Some(&mut old_path_diff_options),
+            )
+            .context("failed to inspect commit diff for previous path")?;
+        return Ok(old_path_diff.deltas().len() > 0);
+    }
+
+    Ok(false)
+}
+
+fn path_for_commit(repo: &Repository, commit: &git2::Commit<'_>, path: &Path) -> Result<PathBuf> {
+    rename_source_path(repo, commit, path).map(|previous| previous.unwrap_or_else(|| path.to_path_buf()))
+}
+
+fn rename_source_path(
+    repo: &Repository,
+    commit: &git2::Commit<'_>,
+    path: &Path,
+) -> Result<Option<PathBuf>> {
+    if commit.parent_count() == 0 {
+        return Ok(None);
+    }
+
+    let tree = commit.tree().context("failed to load commit tree")?;
+    let parent_tree = commit
+        .parent(0)
+        .context("failed to load commit parent")?
+        .tree()
+        .context("failed to load parent tree")?;
+
+    let mut diff = repo
+        .diff_tree_to_tree(Some(&parent_tree), Some(&tree), None)
+        .context("failed to inspect commit diff for rename source")?;
+    diff.find_similar(None)
+        .context("failed to detect renames in commit diff")?;
+
+    for delta in diff.deltas() {
+        let Some(new_file) = delta.new_file().path() else {
+            continue;
+        };
+        if new_file == path {
+            let old_path = delta.old_file().path().map(PathBuf::from);
+            if old_path.as_deref() != Some(path) {
+                return Ok(old_path);
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 fn load_commit_evidence(
@@ -1113,10 +1318,10 @@ fn parse_default_risk_level(level: &str) -> RiskLevel {
 mod tests {
     use super::{
         CommitEvidence, LocalContext, RiskLevel, blame_chain, blame_commit_evidence,
-        compute_relevance_score, discover_repository, explainable_commit, extract_issue_refs,
-        extract_local_context, has_mechanical_summary, infer_risk_level,
-        is_whitespace_only_diff_line, parse_default_risk_level, relative_repo_path,
-        select_top_commits, truncate_chars,
+        collect_evolution_history, compute_relevance_score, discover_repository,
+        explainable_commit, extract_issue_refs, extract_local_context,
+        has_mechanical_summary, infer_risk_level, is_whitespace_only_diff_line,
+        parse_default_risk_level, relative_repo_path, select_top_commits, truncate_chars,
     };
     use anyhow::{Context, Result};
     use git2::Repository;
@@ -1629,5 +1834,64 @@ mod tests {
             selected.last().map(|commit| commit.relevance_score),
             Some(2.0)
         );
+    }
+
+    #[test]
+    fn collect_evolution_history_follows_git_mv_renames() -> Result<()> {
+        let dir = TempDir::new()?;
+        let repo = Repository::init(dir.path())?;
+        {
+            let mut cfg = repo.config()?;
+            cfg.set_str("user.name", "Fixture Bot")?;
+            cfg.set_str("user.email", "test@example.com")?;
+        }
+
+        let src_dir = dir.path().join("src");
+        fs::create_dir_all(&src_dir)?;
+        let old_path = src_dir.join("legacy.rs");
+        fs::write(&old_path, "pub fn helper() {\n    old_logic();\n}\n")?;
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir.path())
+            .output()?;
+        std::process::Command::new("git")
+            .args(["commit", "-m", "feat: add legacy helper"])
+            .current_dir(dir.path())
+            .output()?;
+
+        let new_path = src_dir.join("modern.rs");
+        std::process::Command::new("git")
+            .args(["mv", "src/legacy.rs", "src/modern.rs"])
+            .current_dir(dir.path())
+            .output()?;
+        std::process::Command::new("git")
+            .args(["commit", "-m", "refactor: rename helper module"])
+            .current_dir(dir.path())
+            .output()?;
+
+        fs::write(&new_path, "pub fn helper() {\n    new_logic();\n}\n")?;
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir.path())
+            .output()?;
+        std::process::Command::new("git")
+            .args(["commit", "-m", "fix: update helper behavior"])
+            .current_dir(dir.path())
+            .output()?;
+
+        let relative = relative_repo_path(&repo, &new_path)?;
+        let history = collect_evolution_history(&repo, &relative, &WhyConfig::default(), None)?;
+
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].path_at_commit, Path::new("src/modern.rs"));
+        assert_eq!(history[1].path_at_commit, Path::new("src/legacy.rs"));
+        assert_eq!(history[2].path_at_commit, Path::new("src/legacy.rs"));
+        assert!(history
+            .iter()
+            .any(|entry| entry.commit.summary.contains("rename helper module")));
+        assert!(history
+            .iter()
+            .any(|entry| entry.commit.summary.contains("add legacy helper")));
+        Ok(())
     }
 }

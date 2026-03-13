@@ -2642,7 +2642,7 @@ $ GITHUB_TOKEN=ghp_... why src/auth/session.rs:authenticate
 - [ ] `--team`: bus factor report (commit ownership by author)
 - [ ] Better merge commit handling (skip to real origin commit)
 - [ ] `CLAUDE.md` snippet generator / documenter in README
-- [ ] `cargo install why-core` working (crates.io preparation)
+- [ ] Crates.io readiness for `why-core` documented and validated before claiming `cargo install why-core` support
 - [ ] man page generation via `clap_mangen`
 - [ ] Shell completion scripts (bash, zsh, fish) via `clap_complete`
 
@@ -3295,7 +3295,7 @@ jobs:
         with:
           fetch-depth: 0   # need full history for why
 
-      - name: Install why
+      - name: Install why (once crates.io publication is enabled)
         run: cargo install why-core
 
       - name: Run risk review
@@ -3515,7 +3515,7 @@ and a heuristic risk level.
 
 **Day 8:** Phase 7 — Polish + packaging
 - `--since`, `--team`, merge commit handling
-- `cargo install why-core` ready
+- crates.io publication path for `why-core` ready
 
 ### Exit criteria
 

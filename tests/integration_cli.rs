@@ -3,8 +3,9 @@ mod common;
 use anyhow::Result;
 use common::{
     assert_json_golden, assert_terminal_golden, ensure_success, setup_compat_shim_repo,
-    setup_coupling_repo, setup_hotfix_repo, setup_javascript_repo, setup_python_repo,
-    setup_sparse_repo, setup_split_repo, setup_timebomb_repo, setup_typescript_repo,
+    setup_coupling_repo, setup_ghost_repo, setup_hotfix_repo, setup_javascript_repo,
+    setup_python_repo, setup_sparse_repo, setup_split_repo, setup_timebomb_repo,
+    setup_typescript_repo,
 };
 use serde_json::Value;
 
@@ -512,6 +513,45 @@ fn health_subcommand_renders_terminal_summary() -> Result<()> {
     assert!(stdout.contains("Signals"));
     assert!(stdout.contains("time_bombs: 1"));
     assert!(stdout.contains("stale_hacks: 0"));
+
+    Ok(())
+}
+
+#[test]
+fn ghost_subcommand_returns_ranked_json_for_fixture_repo() -> Result<()> {
+    let repo = setup_ghost_repo()?;
+    let output = repo.run_why(&["ghost", "--limit", "5", "--json"])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    let parsed: Value = serde_json::from_str(&stdout)?;
+    let findings = parsed
+        .as_array()
+        .expect("ghost output should be an array");
+    assert!(!findings.is_empty());
+    assert_eq!(findings[0]["path"], "src/auth.rs");
+    assert_eq!(findings[0]["symbol"], "validate_auth_token_legacy");
+    assert_eq!(findings[0]["risk_level"], "HIGH");
+    assert_eq!(findings[0]["call_site_count"], 1);
+    assert!(findings[0]["notes"].as_array().is_some_and(|items| items
+        .iter()
+        .any(|note| note.as_str().is_some_and(|text| text.contains("static analysis")))));
+
+    Ok(())
+}
+
+#[test]
+fn ghost_subcommand_renders_terminal_summary() -> Result<()> {
+    let repo = setup_ghost_repo()?;
+    let output = repo.run_why(&["ghost", "--limit", "5"])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    assert!(stdout.contains("Top 5 ghost functions by risk-aware archaeology"));
+    assert!(stdout.contains("validate_auth_token_legacy"));
+    assert!(stdout.contains("risk: HIGH"));
+    assert!(stdout.contains("call-sites  1") || stdout.contains("call-sites 1"));
+    assert!(stdout.contains("WARNING: ghost detection uses static analysis"));
 
     Ok(())
 }

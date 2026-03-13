@@ -12,7 +12,7 @@ use why_cache::{Cache, HealthSnapshot};
 use why_context::load_config;
 use why_evidence::{EvidenceCommit, EvidenceContext, EvidenceTarget};
 use why_locator::QueryKind;
-use why_scanner::{CouplingReport, HealthDelta, HealthReport, HotspotFinding};
+use why_scanner::{CouplingReport, GhostFinding, HealthDelta, HealthReport, HotspotFinding};
 use why_splitter::SplitSuggestion;
 use why_synthesizer::{
     AnthropicClient, AnthropicRequest, WhyReport, heuristic_report, parse_response, prompt_contract,
@@ -33,6 +33,7 @@ fn run() -> Result<()> {
         Mode::Mcp => why_mcp::run_stdio(),
         Mode::Hotspots { limit, json } => run_hotspots(limit, json),
         Mode::Health { json } => run_health(json),
+        Mode::Ghost { limit, json } => run_ghost(limit, json),
         Mode::InstallHooks { warn_only } => run_install_hooks(warn_only),
         Mode::UninstallHooks => run_uninstall_hooks(),
         Mode::Query(request) => run_query(request),
@@ -96,6 +97,19 @@ fn run_health(json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         render_health_terminal(&report);
+    }
+
+    Ok(())
+}
+
+fn run_ghost(limit: usize, json: bool) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let findings = why_scanner::scan_ghosts(&cwd, limit)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&findings)?);
+    } else {
+        render_ghost_terminal(&findings, limit);
     }
 
     Ok(())
@@ -368,6 +382,39 @@ fn render_health_terminal(report: &HealthReport) {
         println!("Notes");
         for note in &report.notes {
             println!("  - {note}");
+        }
+    }
+}
+
+fn render_ghost_terminal(findings: &[GhostFinding], limit: usize) {
+    println!("Top {limit} ghost functions by risk-aware archaeology");
+    println!();
+    if findings.is_empty() {
+        println!("No high-risk ghost functions were found in the current repository.");
+        return;
+    }
+
+    for (index, finding) in findings.iter().enumerate() {
+        println!(
+            "  {:>2}. {}:{}-{}  {}  commits {:>2}  call-sites {:>2}",
+            index + 1,
+            finding.path.display(),
+            finding.start_line,
+            finding.end_line,
+            finding.symbol,
+            finding.commit_count,
+            finding.call_site_count
+        );
+        println!("      risk: {}", finding.risk_level.as_str());
+        println!("      summary: {}", finding.summary);
+        if !finding.top_commit_summaries.is_empty() {
+            println!(
+                "      top history: {}",
+                finding.top_commit_summaries.join(" | ")
+            );
+        }
+        for note in &finding.notes {
+            println!("      note: {note}");
         }
     }
 }

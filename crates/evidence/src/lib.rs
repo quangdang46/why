@@ -1,6 +1,7 @@
 //! Evidence pack construction.
 
 use anyhow::{Context, Result, anyhow, bail};
+use reqwest::StatusCode;
 use reqwest::blocking::{Client, RequestBuilder};
 use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT};
 use serde::{Deserialize, Serialize};
@@ -109,6 +110,17 @@ pub struct GitHubItem {
     pub html_url: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GitHubFetchOutcome {
+    Item(GitHubItem),
+    Degraded { note: String },
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubApiErrorEnvelope {
+    message: String,
+}
+
 #[derive(Clone)]
 pub struct GitHubClient {
     repo: GitHubRepo,
@@ -163,6 +175,36 @@ impl GitHubClient {
             None => builder,
         }
     }
+
+    pub fn fetch_issue(&self, issue: &GitHubRef) -> Result<GitHubFetchOutcome> {
+        self.fetch_issue_from_response(self.request_issue(issue).send(), issue)
+    }
+
+    fn fetch_issue_from_response(
+        &self,
+        response: reqwest::Result<reqwest::blocking::Response>,
+        issue: &GitHubRef,
+    ) -> Result<GitHubFetchOutcome> {
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                return Ok(GitHubFetchOutcome::Degraded {
+                    note: format!(
+                        "GitHub issue #{} enrichment unavailable: {}",
+                        issue.number,
+                        error
+                    ),
+                });
+            }
+        };
+
+        let status = response.status();
+        let body = response
+            .text()
+            .with_context(|| format!("failed to read GitHub issue #{} response", issue.number))?;
+
+        parse_github_issue_response(issue.number, status, &body)
+    }
 }
 
 pub fn parse_github_remote(remote_url: &str) -> Result<GitHubRepo> {
@@ -195,6 +237,78 @@ fn build_http_client() -> Result<Client> {
         .default_headers(headers)
         .build()
         .context("failed to build GitHub client")
+}
+
+fn parse_github_issue_response(
+    issue_number: u64,
+    status: StatusCode,
+    body: &str,
+) -> Result<GitHubFetchOutcome> {
+    if status.is_success() {
+        let item: GitHubItem = serde_json::from_str(body)
+            .with_context(|| format!("failed to parse GitHub issue #{} response", issue_number))?;
+        return Ok(GitHubFetchOutcome::Item(item));
+    }
+
+    Ok(GitHubFetchOutcome::Degraded {
+        note: format_github_degradation_note(issue_number, status, body),
+    })
+}
+
+fn format_github_degradation_note(issue_number: u64, status: StatusCode, body: &str) -> String {
+    let message = parse_github_api_error_message(body)
+        .unwrap_or_else(|| format!("GitHub returned HTTP {}", status.as_u16()));
+
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        return format!(
+            "GitHub issue #{} enrichment skipped due to rate limiting (HTTP 429): {}",
+            issue_number, message
+        );
+    }
+
+    if status == StatusCode::FORBIDDEN {
+        let lower = message.to_ascii_lowercase();
+        if lower.contains("rate limit") {
+            return format!(
+                "GitHub issue #{} enrichment skipped due to rate limiting (HTTP 403): {}",
+                issue_number, message
+            );
+        }
+        return format!(
+            "GitHub issue #{} enrichment skipped because access was denied (HTTP 403): {}",
+            issue_number, message
+        );
+    }
+
+    if status == StatusCode::UNAUTHORIZED {
+        return format!(
+            "GitHub issue #{} enrichment skipped because authentication failed (HTTP 401): {}",
+            issue_number, message
+        );
+    }
+
+    if status.is_server_error() {
+        return format!(
+            "GitHub issue #{} enrichment temporarily unavailable (HTTP {}): {}",
+            issue_number,
+            status.as_u16(),
+            message
+        );
+    }
+
+    format!(
+        "GitHub issue #{} enrichment skipped (HTTP {}): {}",
+        issue_number,
+        status.as_u16(),
+        message
+    )
+}
+
+fn parse_github_api_error_message(body: &str) -> Option<String> {
+    serde_json::from_str::<GitHubApiErrorEnvelope>(body)
+        .ok()
+        .map(|envelope| envelope.message.trim().to_string())
+        .filter(|message| !message.is_empty())
 }
 
 pub fn build(
@@ -548,5 +662,57 @@ mod tests {
         assert!(debug.contains("why"));
         assert!(debug.contains("[redacted]"));
         assert!(!debug.contains("github_debug_token"));
+    }
+
+    #[test]
+    fn test_parse_github_issue_response_parses_successful_responses() {
+        let outcome = parse_github_issue_response(
+            42,
+            StatusCode::OK,
+            r#"{"number":42,"title":"Fix auth","body":"Context","html_url":"https://github.com/anthropics/why/issues/42"}"#,
+        )
+        .expect("response should parse");
+
+        assert_eq!(
+            outcome,
+            GitHubFetchOutcome::Item(GitHubItem {
+                number: 42,
+                title: "Fix auth".into(),
+                body: "Context".into(),
+                html_url: "https://github.com/anthropics/why/issues/42".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_format_github_degradation_note_mentions_rate_limit() {
+        let note = format_github_degradation_note(
+            42,
+            StatusCode::TOO_MANY_REQUESTS,
+            r#"{"message":"API rate limit exceeded"}"#,
+        );
+
+        assert!(note.contains("issue #42"));
+        assert!(note.contains("rate limiting"));
+        assert!(note.contains("HTTP 429"));
+    }
+
+    #[test]
+    fn test_format_github_degradation_note_distinguishes_auth_failures() {
+        let note = format_github_degradation_note(
+            7,
+            StatusCode::UNAUTHORIZED,
+            r#"{"message":"Bad credentials"}"#,
+        );
+
+        assert!(note.contains("issue #7"));
+        assert!(note.contains("authentication failed"));
+        assert!(note.contains("HTTP 401"));
+    }
+
+    #[test]
+    fn test_parse_github_api_error_message_reads_message_field() {
+        let message = parse_github_api_error_message(r#"{"message":"secondary rate limit"}"#);
+        assert_eq!(message.as_deref(), Some("secondary rate limit"));
     }
 }
