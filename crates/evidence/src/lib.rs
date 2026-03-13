@@ -191,6 +191,7 @@ fn build_http_client() -> Result<Client> {
     let mut headers = HeaderMap::new();
     headers.insert(USER_AGENT, HeaderValue::from_static("why-cli/0.1"));
     Client::builder()
+        .https_only(true)
         .default_headers(headers)
         .build()
         .context("failed to build GitHub client")
@@ -494,6 +495,17 @@ mod tests {
             .expect_err("non-GitHub remote should fail");
 
         assert!(error.to_string().contains("unsupported GitHub remote"));
+    }
+
+    #[test]
+    fn test_github_client_enforces_https_only_transport() {
+        let client = build_http_client().expect("client should build");
+        let error = client
+            .get("http://api.github.com/repos/anthropics/why/issues/42")
+            .send()
+            .expect_err("http requests should be rejected");
+
+        assert!(error.to_string().contains("HTTPS") || error.to_string().contains("http://"));
     }
 
     #[test]

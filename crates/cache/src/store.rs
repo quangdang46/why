@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -9,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 const CACHE_DIR_NAME: &str = ".why";
 const CACHE_FILE_NAME: &str = "cache.json";
@@ -176,9 +177,25 @@ fn ensure_cache_dir(path: &Path) -> Result<()> {
 }
 
 fn write_cache_file(path: &Path, payload: &[u8]) -> Result<()> {
-    fs::write(path, payload)
-        .with_context(|| format!("failed to write cache temp file {}", path.display()))?;
-    set_owner_only_permissions(path, 0o600)
+    #[cfg(unix)]
+    {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+            .with_context(|| format!("failed to create cache temp file {}", path.display()))?;
+        file.write_all(payload)
+            .with_context(|| format!("failed to write cache temp file {}", path.display()))?;
+        return Ok(());
+    }
+
+    #[cfg(not(unix))]
+    {
+        fs::write(path, payload)
+            .with_context(|| format!("failed to write cache temp file {}", path.display()))?;
+        set_owner_only_permissions(path, 0o600)
+    }
 }
 
 #[cfg(unix)]
