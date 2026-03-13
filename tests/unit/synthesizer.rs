@@ -12,6 +12,7 @@ pub const TEST_CASES: &[(&str, &str)] = &[
     ("test_anthropic_request_shape", "Anthropic requests include required headers and payload fields"),
     ("test_anthropic_usage_costs", "usage tokens are converted into approximate dollar cost"),
     ("test_retry_policy", "429 and 5xx errors retry with bounded backoff while 4xx errors do not"),
+    ("test_why_report_json_output", "serialized WhyReport fields stay aligned with the terminal output contract"),
 ];
 
 #[test]
@@ -27,6 +28,7 @@ fn synthesizer_test_matrix_covers_plan_inventory() {
         "test_anthropic_request_shape",
         "test_anthropic_usage_costs",
         "test_retry_policy",
+        "test_why_report_json_output",
     ];
 
     let actual: Vec<_> = TEST_CASES.iter().map(|(name, _)| *name).collect();

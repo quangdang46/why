@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use git2::{Delta, DiffOptions, Repository, Sort};
+use git2::{DiffOptions, Repository, Sort};
 use serde::Serialize;
 use why_archaeologist::{
     RiskLevel, blame_commit_evidence, discover_repository, extract_local_context, infer_risk_level,
@@ -172,9 +172,7 @@ fn delta_matches_path(delta: &git2::DiffDelta<'_>, relative_path: &Path) -> bool
     [delta.new_file().path(), delta.old_file().path()]
         .into_iter()
         .flatten()
-        .any(|path| {
-            path == relative_path || (delta.status() == Delta::Renamed && path == relative_path)
-        })
+        .any(|path| path == relative_path)
 }
 
 fn is_source_file(path: &Path) -> bool {

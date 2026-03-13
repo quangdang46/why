@@ -10,8 +10,8 @@
       "coupling_ratio": 1.0,
       "top_commit_summaries": [
         "migration: schema v5 + data migration",
-        "migration: schema v1 + data migration",
-        "migration: schema v2 + data migration"
+        "migration: schema v4 + data migration",
+        "migration: schema v3 + data migration"
       ]
     }
   ]

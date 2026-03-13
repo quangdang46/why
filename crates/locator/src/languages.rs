@@ -201,18 +201,8 @@ mod tests {
             SupportedLanguage::Python,
         ] {
             let query = language.load_symbol_query().expect("query should compile");
-            assert!(
-                query
-                    .capture_names()
-                    .iter()
-                    .any(|name| *name == "symbol.name")
-            );
-            assert!(
-                query
-                    .capture_names()
-                    .iter()
-                    .any(|name| *name == "symbol.definition")
-            );
+            assert!(query.capture_names().contains(&"symbol.name"));
+            assert!(query.capture_names().contains(&"symbol.definition"));
         }
     }
 }

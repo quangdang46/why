@@ -35,5 +35,74 @@ jobs:
       - name: Run clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+      - name: Build workspace
+        run: cargo build --workspace --all-features
+
       - name: Run tests
         run: cargo test --workspace --all-features
+
+  snapshots:
+    name: Snapshot tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run snapshot tests when present
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f tests/snapshot_reports.rs ]; then
+            cargo test --test snapshot_reports
+          else
+            echo "tests/snapshot_reports.rs is not present yet; skipping snapshot job"
+          fi
+
+  security:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit dependencies
+        run: cargo audit
+
+  bench:
+    name: Benchmark smoke check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run benchmarks when present
+        shell: bash
+        run: |
+          set -euo pipefail
+          if compgen -G 'benches/*.rs' > /dev/null; then
+            cargo bench --workspace -- --output-format bencher | tee bench-output.txt
+          else
+            echo "No benchmark targets are present yet; skipping benchmark job"
+          fi

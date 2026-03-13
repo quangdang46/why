@@ -307,15 +307,15 @@ mod tests {
                 is_mechanical: false,
             }],
             risk_level: RiskLevel::HIGH,
-            risk_summary: RiskLevel::HIGH.summary(),
-            change_guidance: RiskLevel::HIGH.change_guidance(),
+            risk_summary: RiskLevel::HIGH.summary().to_string(),
+            change_guidance: RiskLevel::HIGH.change_guidance().to_string(),
             local_context: why_archaeologist::LocalContext {
                 comments: vec!["temporary auth safeguard".into()],
                 markers: vec!["TODO: remove after rollout".into()],
                 risk_flags: vec!["auth".into(), "token".into()],
             },
-            mode: "heuristic",
-            notes: vec!["No LLM synthesis in phase 1"],
+            mode: "heuristic".to_string(),
+            notes: vec!["No LLM synthesis in phase 1".to_string()],
         }
     }
 }

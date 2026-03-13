@@ -23,3 +23,5 @@ why-locator = { path = "../locator" }
 why-mcp = { path = "../mcp" }
 why-scanner = { path = "../scanner" }
 why-splitter = { path = "../splitter" }
+why-synthesizer = { path = "../synthesizer" }
+why-evidence = { path = "../evidence" }

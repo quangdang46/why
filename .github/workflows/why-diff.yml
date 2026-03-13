@@ -1,0 +1,50 @@
+name: why diff PR review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  risk-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Detect diff-review support
+        id: support
+        shell: bash
+        run: |
+          set -euo pipefail
+          HELP_OUTPUT="$(cargo run -q -p why-core -- --help)"
+          if printf '%s' "$HELP_OUTPUT" | grep -q -- '--diff'; then
+            echo "supported=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "supported=false" >> "$GITHUB_OUTPUT"
+            echo "Current why CLI does not support --diff yet; skipping PR risk review."
+          fi
+
+      - name: Run PR risk review
+        if: steps.support.outputs.supported == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cargo run -q -p why-core -- \
+            --diff "${{ github.event.pull_request.base.sha }}..${{ github.sha }}" \
+            --github-comment

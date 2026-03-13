@@ -9,7 +9,10 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::Mutex;
 use tempfile::TempDir;
+
+static WHY_BINARY: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 pub struct FixtureRepo {
     _dir: TempDir,
@@ -29,22 +32,9 @@ impl FixtureRepo {
     }
 
     pub fn run_why(&self, args: &[&str]) -> Result<Output> {
-        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let manifest_path = workspace_root.join("Cargo.toml");
-        let mut command = if let Ok(why_binary) = std::env::var("CARGO_BIN_EXE_why") {
-            let mut cmd = Command::new(why_binary);
-            cmd.args(args);
-            cmd.current_dir(&self.path);
-            cmd
-        } else {
-            let mut cmd = Command::new("cargo");
-            cmd.args(["run", "-q", "--manifest-path"]);
-            cmd.arg(&manifest_path);
-            cmd.args(["-p", "why-core", "--bin", "why", "--"]);
-            cmd.args(args);
-            cmd.current_dir(&self.path);
-            cmd
-        };
+        let mut command = Command::new(why_binary_path()?);
+        command.args(args);
+        command.current_dir(&self.path);
 
         let output = command
             .env("ANTHROPIC_API_KEY", "")
@@ -69,22 +59,9 @@ impl FixtureRepo {
     }
 
     pub fn run_why_with_stdin(&self, args: &[&str], stdin: &str) -> Result<Output> {
-        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let manifest_path = workspace_root.join("Cargo.toml");
-        let mut command = if let Ok(why_binary) = std::env::var("CARGO_BIN_EXE_why") {
-            let mut cmd = Command::new(why_binary);
-            cmd.args(args);
-            cmd.current_dir(&self.path);
-            cmd
-        } else {
-            let mut cmd = Command::new("cargo");
-            cmd.args(["run", "-q", "--manifest-path"]);
-            cmd.arg(&manifest_path);
-            cmd.args(["-p", "why-core", "--bin", "why", "--"]);
-            cmd.args(args);
-            cmd.current_dir(&self.path);
-            cmd
-        };
+        let mut command = Command::new(why_binary_path()?);
+        command.args(args);
+        command.current_dir(&self.path);
 
         let mut child = command
             .env("ANTHROPIC_API_KEY", "")
@@ -112,6 +89,39 @@ impl FixtureRepo {
     pub fn stderr(&self, output: &Output) -> String {
         String::from_utf8_lossy(&output.stderr).into_owned()
     }
+}
+
+fn why_binary_path() -> Result<PathBuf> {
+    let mut cached = WHY_BINARY
+        .lock()
+        .map_err(|_| anyhow!("why binary cache lock poisoned"))?;
+    if let Some(path) = cached.as_ref() {
+        return Ok(path.clone());
+    }
+
+    let path = if let Ok(why_binary) = std::env::var("CARGO_BIN_EXE_why") {
+        PathBuf::from(why_binary)
+    } else {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest_path = workspace_root.join("Cargo.toml");
+        let target_dir = workspace_root.join("target").join("integration-bin");
+        let status = Command::new("cargo")
+            .env("CARGO_TARGET_DIR", &target_dir)
+            .args(["build", "-q", "--manifest-path"])
+            .arg(&manifest_path)
+            .args(["-p", "why-core", "--bin", "why"])
+            .status()
+            .context("failed to build why binary for integration tests")?;
+        if !status.success() {
+            bail!("building why binary for integration tests failed with status {:?}", status.code());
+        }
+
+        let exe_name = if cfg!(windows) { "why.exe" } else { "why" };
+        target_dir.join("debug").join(exe_name)
+    };
+
+    *cached = Some(path.clone());
+    Ok(path)
 }
 
 pub fn setup_fixture(name: &str) -> Result<FixtureRepo> {
@@ -154,18 +164,22 @@ pub fn setup_hotfix_repo() -> Result<FixtureRepo> {
     setup_fixture("hotfix_repo")
 }
 
+#[allow(dead_code)]
 pub fn setup_compat_shim_repo() -> Result<FixtureRepo> {
     setup_fixture("compat_shim_repo")
 }
 
+#[allow(dead_code)]
 pub fn setup_sparse_repo() -> Result<FixtureRepo> {
     setup_fixture("sparse_repo")
 }
 
+#[allow(dead_code)]
 pub fn setup_typescript_repo() -> Result<FixtureRepo> {
     setup_fixture("typescript_repo")
 }
 
+#[allow(dead_code)]
 pub fn setup_javascript_repo() -> Result<FixtureRepo> {
     setup_fixture("javascript_repo")
 }

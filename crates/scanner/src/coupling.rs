@@ -74,11 +74,7 @@ pub fn scan_coupling(
             }
             let entry = candidates.entry(path).or_default();
             entry.shared_commits += 1;
-            if entry.top_commit_summaries.len() < 3
-                && !entry.top_commit_summaries.contains(&summary)
-            {
-                entry.top_commit_summaries.push(summary.clone());
-            }
+            entry.commit_summaries.push(summary.clone());
         }
     }
 
@@ -92,12 +88,17 @@ pub fn scan_coupling(
             if coupling_ratio < config.git.coupling_ratio_threshold {
                 return None;
             }
+            let mut top_commit_summaries = stats.commit_summaries;
+            top_commit_summaries.sort();
+            top_commit_summaries.dedup();
+            top_commit_summaries.reverse();
+            top_commit_summaries.truncate(3);
             Some(CouplingFinding {
                 path,
                 shared_commits: stats.shared_commits,
                 target_commit_count,
                 coupling_ratio,
-                top_commit_summaries: stats.top_commit_summaries,
+                top_commit_summaries,
             })
         })
         .collect::<Vec<_>>();
@@ -123,7 +124,7 @@ pub fn scan_coupling(
 #[derive(Debug, Default)]
 struct CandidateStats {
     shared_commits: usize,
-    top_commit_summaries: Vec<String>,
+    commit_summaries: Vec<String>,
 }
 
 fn commit_touched_source_paths(

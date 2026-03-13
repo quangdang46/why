@@ -1613,10 +1613,12 @@ dependencies = [
  "why-archaeologist",
  "why-cache",
  "why-context",
+ "why-evidence",
  "why-locator",
  "why-mcp",
  "why-scanner",
  "why-splitter",
+ "why-synthesizer",
 ]
 
 [[package]]

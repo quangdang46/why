@@ -10,9 +10,11 @@ use why_archaeologist::{
 };
 use why_cache::Cache;
 use why_context::load_config;
+use why_evidence::{EvidenceCommit, EvidenceContext, EvidenceTarget};
 use why_locator::QueryKind;
 use why_scanner::{CouplingReport, HotspotFinding};
 use why_splitter::SplitSuggestion;
+use why_synthesizer::{AnthropicClient, AnthropicRequest, WhyReport, heuristic_report, parse_response, prompt_contract};
 
 fn main() {
     if let Err(error) = run() {
@@ -120,73 +122,27 @@ fn run_query(request: QueryRequest) -> Result<()> {
     let mut cache = Cache::open(&repo_root, config.cache.max_entries)?;
 
     if !request.no_cache {
-        if let Some(cached) = cache.get::<ArchaeologyResult>(&cache_key) {
+        if let Some(cached) = cache.get::<WhyReport>(&cache_key) {
             if request.json {
                 println!("{}", serde_json::to_string_pretty(&cached)?);
             } else {
-                render_terminal(&cached, true);
+                println!("{}", format_why_report(&format_target_label(&request.target), &cached, true));
             }
             return Ok(());
         }
     }
 
     let result = analyze_target_with_options(&request.target, &cwd, request.since_days)?;
-    cache.set(cache_key, &result, &head_hash)?;
+    let report = synthesize_report(&request, &result)?;
+    cache.set(cache_key, &report, &head_hash)?;
 
     if request.json {
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
-        render_terminal(&result, false);
+        println!("{}", format_why_report(&format_target_label(&request.target), &report, false));
     }
 
     Ok(())
-}
-
-fn render_terminal(result: &ArchaeologyResult, cached: bool) {
-    match result.target.query_kind {
-        QueryKind::Line => {
-            println!(
-                "why: {} (line {})",
-                result.target.path.display(),
-                result.target.start_line
-            );
-            println!();
-            println!("Commits touching this line:");
-        }
-        QueryKind::Range => {
-            println!(
-                "why: {} (lines {}-{})",
-                result.target.path.display(),
-                result.target.start_line,
-                result.target.end_line
-            );
-            println!();
-            println!("Commits touching this range:");
-        }
-        QueryKind::Symbol | QueryKind::QualifiedSymbol => {
-            println!("why: {}", result.target.path.display());
-            println!();
-            println!("Commits touching this target:");
-        }
-    }
-
-    for commit in &result.commits {
-        println!(
-            "  {}  {}  {}  {}",
-            commit.short_oid, commit.author, commit.date, commit.summary
-        );
-    }
-
-    println!();
-    if cached {
-        println!("[cached]");
-    }
-    println!(
-        "No LLM synthesis (--no-llm or no API key). Heuristic risk: {}.",
-        result.risk_level.as_str()
-    );
-    println!("{}", result.risk_summary);
-    println!("{}", result.change_guidance);
 }
 
 fn render_team_terminal(report: &TeamReport) {
@@ -332,6 +288,128 @@ fn render_hotspots_terminal(findings: &[HotspotFinding], limit: usize) {
     }
 }
 
+fn synthesize_report(request: &QueryRequest, result: &ArchaeologyResult) -> Result<WhyReport> {
+    let evidence_pack = why_evidence::build(
+        &EvidenceTarget {
+            file: result.target.path.display().to_string(),
+            symbol: request.target.symbol.clone(),
+            lines: (result.target.start_line as usize, result.target.end_line as usize),
+            language: infer_language(&result.target.path),
+        },
+        &result
+            .commits
+            .iter()
+            .map(|commit| EvidenceCommit {
+                oid: commit.oid.clone(),
+                date: commit.date.clone(),
+                author: commit.author.clone(),
+                summary: commit.summary.clone(),
+                diff_excerpt: commit.diff_excerpt.clone(),
+                coverage_score: commit.coverage_score,
+                issue_refs: commit.issue_refs.clone(),
+            })
+            .collect::<Vec<_>>(),
+        &EvidenceContext {
+            comments: result.local_context.comments.clone(),
+            markers: result.local_context.markers.clone(),
+            risk_flags: result.local_context.risk_flags.clone(),
+            heuristic_risk: result.risk_level.as_str().to_string(),
+        },
+    );
+
+    let fallback = || {
+        heuristic_report(
+            format!(
+                "Heuristic analysis of {} based on {} relevant commit(s).",
+                format_target_label(&request.target),
+                result.commits.len()
+            ),
+            parse_synth_risk(result.risk_level.as_str()),
+            result
+                .commits
+                .iter()
+                .map(|commit| format!("{} ({})", commit.summary, commit.date))
+                .collect(),
+            result.notes.clone(),
+        )
+    };
+
+    if request.no_llm {
+        return Ok(fallback());
+    }
+
+    let client = match AnthropicClient::from_env() {
+        Ok(client) => client,
+        Err(_) => return Ok(fallback()),
+    };
+
+    let contract = prompt_contract();
+    let evidence_json = serde_json::to_string_pretty(&evidence_pack)?;
+    let response = match client.send(&AnthropicRequest {
+        system_prompt: format!(
+            "You are a careful code archaeology assistant. {} Required fields: {}. Grounding rules: {}",
+            contract.response_format,
+            contract.required_fields.join(", "),
+            contract.grounding_rules.join(" ")
+        ),
+        user_prompt: format!(
+            "Use this evidence pack to explain why the target exists and the risk of changing it.\n\nEvidence pack:\n{}",
+            evidence_json
+        ),
+    }) {
+        Ok(response) => response,
+        Err(_) => return Ok(fallback()),
+    };
+
+    match parse_response(&response.text) {
+        Ok(mut report) => {
+            report.cost_usd = Some(response.cost_usd);
+            Ok(report)
+        }
+        Err(_) => Ok(fallback()),
+    }
+}
+
+fn parse_synth_risk(value: &str) -> why_synthesizer::RiskLevel {
+    match value {
+        "HIGH" => why_synthesizer::RiskLevel::HIGH,
+        "MEDIUM" => why_synthesizer::RiskLevel::MEDIUM,
+        _ => why_synthesizer::RiskLevel::LOW,
+    }
+}
+
+fn infer_language(path: &std::path::Path) -> String {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some("rs") => "rust",
+        Some("js") => "javascript",
+        Some("ts") => "typescript",
+        Some("py") => "python",
+        _ => "unknown",
+    }
+    .to_string()
+}
+
+fn format_target_label(target: &why_locator::QueryTarget) -> String {
+    match target.query_kind {
+        QueryKind::Line => format!(
+            "{}:{}",
+            target.path.display(),
+            target.start_line.unwrap_or_default()
+        ),
+        QueryKind::Range => format!(
+            "{}:{}-{}",
+            target.path.display(),
+            target.start_line.unwrap_or_default(),
+            target.end_line.unwrap_or_default()
+        ),
+        QueryKind::Symbol | QueryKind::QualifiedSymbol => format!(
+            "{}:{}",
+            target.path.display(),
+            target.symbol.as_deref().unwrap_or("symbol")
+        ),
+    }
+}
+
 fn render_split_terminal(target: &why_locator::QueryTarget, suggestion: Option<&SplitSuggestion>) {
     match suggestion {
         Some(suggestion) => {
@@ -376,5 +454,141 @@ fn render_split_terminal(target: &why_locator::QueryTarget, suggestion: Option<&
                 "No split suggested for {symbol}. The target appears archaeologically cohesive."
             );
         }
+    }
+}
+
+fn format_why_report(target: &str, report: &WhyReport, cached: bool) -> String {
+    let mut lines = vec![format!("why: {target}"), String::new()];
+
+    if cached {
+        lines.push("[cached]".to_string());
+        lines.push(String::new());
+    }
+
+    lines.push("Summary".to_string());
+    lines.push(report.summary.clone());
+    lines.push(String::new());
+
+    lines.push(format!(
+        "Risk: {} ({})",
+        report.risk_level.as_str(),
+        report.confidence.as_str()
+    ));
+    lines.push(report.risk_summary.clone());
+    lines.push(report.change_guidance.clone());
+    lines.push(String::new());
+
+    if !report.evidence.is_empty() {
+        lines.push("Evidence".to_string());
+        for item in &report.evidence {
+            lines.push(format!("  - {item}"));
+        }
+        lines.push(String::new());
+    }
+
+    if !report.inference.is_empty() {
+        lines.push("Inference".to_string());
+        for item in &report.inference {
+            lines.push(format!("  - {item}"));
+        }
+        lines.push(String::new());
+    }
+
+    if !report.unknowns.is_empty() {
+        lines.push("Unknowns".to_string());
+        for item in &report.unknowns {
+            lines.push(format!("  - {item}"));
+        }
+        lines.push(String::new());
+    }
+
+    if !report.notes.is_empty() {
+        lines.push("Notes".to_string());
+        for item in &report.notes {
+            lines.push(format!("  - {item}"));
+        }
+        lines.push(String::new());
+    }
+
+    if let Some(cost_usd) = report.cost_usd {
+        lines.push(format!("Estimated cost: ~${cost_usd:.4}"));
+    }
+
+    lines.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_why_report;
+    use why_synthesizer::{ConfidenceLevel, ReportMode, RiskLevel, WhyReport};
+
+    fn sample_report() -> WhyReport {
+        WhyReport {
+            summary: "This guard exists because a logout hotfix preserved token invalidation.".into(),
+            evidence: vec![
+                "fix: tokens not expiring on logout".into(),
+                "comment references incident #4521".into(),
+            ],
+            inference: vec!["Removing the guard could reopen session invalidation bugs.".into()],
+            unknowns: vec!["No incident postmortem was linked in history.".into()],
+            risk_level: RiskLevel::HIGH,
+            risk_summary: RiskLevel::HIGH.summary().into(),
+            change_guidance: RiskLevel::HIGH.change_guidance().into(),
+            confidence: ConfidenceLevel::MediumHigh,
+            mode: ReportMode::Synthesized,
+            notes: vec!["Keep evidence separate from inference.".into()],
+            cost_usd: Some(0.0008),
+        }
+    }
+
+    #[test]
+    fn why_report_terminal_output_includes_all_sections() {
+        let output = format_why_report("src/auth.rs:verify_token", &sample_report(), false);
+
+        assert!(output.contains("why: src/auth.rs:verify_token"));
+        assert!(output.contains("Summary"));
+        assert!(output.contains("Risk: HIGH (medium-high)"));
+        assert!(output.contains("Evidence"));
+        assert!(output.contains("Inference"));
+        assert!(output.contains("Unknowns"));
+        assert!(output.contains("Notes"));
+        assert!(output.contains("Estimated cost: ~$0.0008"));
+    }
+
+    #[test]
+    fn why_report_terminal_output_shows_cached_marker_when_requested() {
+        let output = format_why_report("src/auth.rs:verify_token", &sample_report(), true);
+        assert!(output.contains("[cached]"));
+    }
+
+    #[test]
+    fn why_report_terminal_output_omits_empty_optional_sections() {
+        let report = WhyReport {
+            evidence: Vec::new(),
+            inference: Vec::new(),
+            unknowns: Vec::new(),
+            notes: Vec::new(),
+            cost_usd: None,
+            ..sample_report()
+        };
+        let output = format_why_report("src/auth.rs:verify_token", &report, false);
+
+        assert!(!output.contains("Evidence\n"));
+        assert!(!output.contains("Inference\n"));
+        assert!(!output.contains("Unknowns\n"));
+        assert!(!output.contains("Notes\n"));
+        assert!(!output.contains("Estimated cost:"));
+    }
+
+    #[test]
+    fn why_report_json_output_round_trips_expected_fields() {
+        let report = sample_report();
+        let json = serde_json::to_string_pretty(&report).expect("report should serialize");
+
+        assert!(json.contains("\"summary\""));
+        assert!(json.contains("\"risk_level\": \"HIGH\""));
+        assert!(json.contains("\"confidence\": \"medium-high\""));
+        assert!(json.contains("\"mode\": \"synthesized\""));
+        assert!(json.contains("\"cost_usd\": 0.0008"));
     }
 }

@@ -719,9 +719,9 @@ fn finalize_chain_commit(
     let time = commit.time().seconds();
     let date = format_git_time(time)?;
     let oid_text = commit.id().to_string();
-    let diff_excerpt = load_diff_excerpt(repo, &commit)?;
+    let diff_excerpt = load_diff_excerpt(repo, commit)?;
     let issue_refs = extract_issue_refs(&message);
-    let is_mechanical = is_mechanical_commit(repo, &commit, &summary, &diff_excerpt, config)?;
+    let is_mechanical = is_mechanical_commit(repo, commit, &summary, &diff_excerpt, config)?;
 
     Ok(CommitEvidence {
         short_oid: oid_text.chars().take(8).collect(),
@@ -1361,7 +1361,7 @@ mod tests {
 
         assert_eq!(
             infer_risk_level(
-                &[commit.clone()],
+                std::slice::from_ref(&commit),
                 &LocalContext {
                     comments: Vec::new(),
                     markers: Vec::new(),
