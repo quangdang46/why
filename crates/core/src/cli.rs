@@ -4,7 +4,10 @@ use why_locator::{QueryTarget, parse_target};
 
 #[derive(Debug, Parser)]
 #[command(name = "why")]
-#[command(about = "Ask your codebase why a line exists")]
+#[command(
+    about = "Ask your codebase why a line, range, symbol, or repo hotspot exists",
+    after_help = "Examples:\n  why src/auth.rs:42\n  why src/auth.rs --lines 40:45 --no-llm\n  why src/auth.rs:verify_token --json\n  why src/auth.rs:AuthService::login --team\n  why src/auth.rs:verify_token --blame-chain\n  why hotspots --limit 10\n  why health\n  why health --ci 80\n  why pr-template\n  why ghost --limit 10"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -68,6 +71,16 @@ pub enum Command {
         /// Emit machine-readable output.
         #[arg(long)]
         json: bool,
+
+        /// Exit with code 3 when the debt score exceeds this threshold.
+        #[arg(long, value_name = "THRESHOLD", value_parser = clap::value_parser!(u32).range(0..=100))]
+        ci: Option<u32>,
+    },
+    /// Generate a reviewer-friendly PR template from the staged diff.
+    PrTemplate {
+        /// Emit machine-readable output.
+        #[arg(long)]
+        json: bool,
     },
     /// Find high-risk functions that appear uncalled under static analysis.
     Ghost {
@@ -107,7 +120,8 @@ pub enum Mode {
     Query(QueryRequest),
     Mcp,
     Hotspots { limit: usize, json: bool },
-    Health { json: bool },
+    Health { json: bool, ci: Option<u32> },
+    PrTemplate { json: bool },
     Ghost { limit: usize, json: bool },
     InstallHooks { warn_only: bool },
     UninstallHooks,
@@ -150,7 +164,7 @@ impl Cli {
                 }
                 Ok(Mode::Hotspots { limit, json })
             }
-            Some(Command::Health { json }) => {
+            Some(Command::Health { json, ci }) => {
                 if self.target.is_some()
                     || self.lines.is_some()
                     || self.no_llm
@@ -163,7 +177,22 @@ impl Cli {
                 {
                     bail!("the health subcommand does not accept query flags or a target");
                 }
-                Ok(Mode::Health { json })
+                Ok(Mode::Health { json, ci })
+            }
+            Some(Command::PrTemplate { json }) => {
+                if self.target.is_some()
+                    || self.lines.is_some()
+                    || self.no_llm
+                    || self.no_cache
+                    || self.split
+                    || self.coupled
+                    || self.since.is_some()
+                    || self.team
+                    || self.blame_chain
+                {
+                    bail!("the pr-template subcommand does not accept query flags or a target");
+                }
+                Ok(Mode::PrTemplate { json })
             }
             Some(Command::Ghost { limit, json }) => {
                 if self.target.is_some()
@@ -404,7 +433,31 @@ mod tests {
         let cli = Cli::parse_from(["why", "health", "--json"]);
         assert_eq!(
             cli.parse_mode().expect("health should parse"),
-            Mode::Health { json: true }
+            Mode::Health {
+                json: true,
+                ci: None,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_health_ci_subcommand() {
+        let cli = Cli::parse_from(["why", "health", "--ci", "80", "--json"]);
+        assert_eq!(
+            cli.parse_mode().expect("health ci should parse"),
+            Mode::Health {
+                json: true,
+                ci: Some(80),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_pr_template_subcommand() {
+        let cli = Cli::parse_from(["why", "pr-template", "--json"]);
+        assert_eq!(
+            cli.parse_mode().expect("pr-template should parse"),
+            Mode::PrTemplate { json: true }
         );
     }
 
@@ -516,6 +569,24 @@ mod tests {
                 .to_string()
                 .contains("unexpected argument '--no-cache' found")
         );
+    }
+
+    #[test]
+    fn rejects_query_flags_for_pr_template() {
+        let error = Cli::try_parse_from(["why", "pr-template", "--no-cache"])
+            .expect_err("clap should reject query flags for pr-template");
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--no-cache' found")
+        );
+    }
+
+    #[test]
+    fn rejects_out_of_range_health_ci_threshold() {
+        let error = Cli::try_parse_from(["why", "health", "--ci", "101"])
+            .expect_err("health ci should reject thresholds above 100");
+        assert!(error.to_string().contains("101"));
     }
 
     #[test]

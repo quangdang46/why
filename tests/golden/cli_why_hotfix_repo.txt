@@ -16,3 +16,4 @@ Unknowns
 Notes
   - No LLM synthesis in phase 1
   - Evidence and inference should be kept separate when presenting this result
+  - GitHub enrichment skipped because remote 'origin' could not be read: remote 'origin' does not exist; class=Config (7); code=NotFound (-3)

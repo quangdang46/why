@@ -1928,6 +1928,7 @@ dependencies = [
  "anyhow",
  "git2",
  "serde",
+ "serde_json",
  "tempfile",
  "time",
  "why-archaeologist",
@@ -1974,7 +1975,10 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "why-archaeologist",
  "why-cache",
+ "why-locator",
+ "why-scanner",
 ]
 
 [[package]]

@@ -1,20 +1,21 @@
 {
-  "summary": "Heuristic analysis of src/payment.rs:6 based on 1 relevant commit(s).",
+  "change_guidance": "Stop and investigate before deleting or heavily refactoring this target.",
+  "confidence": "low",
+  "cost_usd": null,
   "evidence": [
     "hotfix: fix duplicate charge vulnerability, closes #4521 (<date>)"
   ],
   "inference": [],
-  "unknowns": [
-    "No model synthesis was available for this query."
-  ],
-  "risk_level": "HIGH",
-  "risk_summary": "The history suggests security sensitivity, incident context, or non-routine compatibility risk.",
-  "change_guidance": "Stop and investigate before deleting or heavily refactoring this target.",
-  "confidence": "low",
   "mode": "heuristic",
   "notes": [
     "No LLM synthesis in phase 1",
-    "Evidence and inference should be kept separate when presenting this result"
+    "Evidence and inference should be kept separate when presenting this result",
+    "GitHub enrichment skipped because remote 'origin' could not be read: remote 'origin' does not exist; class=Config (7); code=NotFound (-3)"
   ],
-  "cost_usd": null
+  "risk_level": "HIGH",
+  "risk_summary": "The history suggests security sensitivity, incident context, or non-routine compatibility risk.",
+  "summary": "Heuristic analysis of src/payment.rs:6 based on 1 relevant commit(s).",
+  "unknowns": [
+    "No model synthesis was available for this query."
+  ]
 }

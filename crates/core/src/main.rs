@@ -10,34 +10,74 @@ use why_archaeologist::{
 };
 use why_cache::{Cache, HealthSnapshot};
 use why_context::load_config;
-use why_evidence::{EvidenceCommit, EvidenceContext, EvidenceTarget};
+use why_evidence::{
+    EvidenceCommit, EvidenceContext, EvidenceTarget, GitHubClient, GitHubEnrichment,
+    enrich_github_refs,
+};
 use why_locator::QueryKind;
-use why_scanner::{CouplingReport, GhostFinding, HealthDelta, HealthReport, HotspotFinding};
+use why_scanner::{
+    CouplingReport, GhostFinding, HealthDelta, HealthReport, HotspotFinding, PrTemplateReport,
+};
 use why_splitter::SplitSuggestion;
 use why_synthesizer::{
     AnthropicClient, AnthropicRequest, WhyReport, heuristic_report, parse_response, prompt_contract,
 };
 
 fn main() {
-    if let Err(error) = run() {
-        eprintln!("why: {error}");
-        std::process::exit(1);
+    match run() {
+        Ok(ExitStatus::Success) => {}
+        Ok(ExitStatus::HealthCiFailure { message }) => {
+            eprintln!("why: {message}");
+            std::process::exit(3);
+        }
+        Err(error) => {
+            eprintln!("why: {error}");
+            std::process::exit(1);
+        }
     }
 }
 
-fn run() -> Result<()> {
+fn run() -> Result<ExitStatus> {
     let cli = Cli::parse();
     let mode = cli.parse_mode()?;
 
     match mode {
-        Mode::Mcp => why_mcp::run_stdio(),
-        Mode::Hotspots { limit, json } => run_hotspots(limit, json),
-        Mode::Health { json } => run_health(json),
-        Mode::Ghost { limit, json } => run_ghost(limit, json),
-        Mode::InstallHooks { warn_only } => run_install_hooks(warn_only),
-        Mode::UninstallHooks => run_uninstall_hooks(),
-        Mode::Query(request) => run_query(request),
+        Mode::Mcp => {
+            why_mcp::run_stdio()?;
+            Ok(ExitStatus::Success)
+        }
+        Mode::Hotspots { limit, json } => {
+            run_hotspots(limit, json)?;
+            Ok(ExitStatus::Success)
+        }
+        Mode::Health { json, ci } => run_health(json, ci),
+        Mode::PrTemplate { json } => {
+            run_pr_template(json)?;
+            Ok(ExitStatus::Success)
+        }
+        Mode::Ghost { limit, json } => {
+            run_ghost(limit, json)?;
+            Ok(ExitStatus::Success)
+        }
+        Mode::InstallHooks { warn_only } => {
+            run_install_hooks(warn_only)?;
+            Ok(ExitStatus::Success)
+        }
+        Mode::UninstallHooks => {
+            run_uninstall_hooks()?;
+            Ok(ExitStatus::Success)
+        }
+        Mode::Query(request) => {
+            run_query(request)?;
+            Ok(ExitStatus::Success)
+        }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ExitStatus {
+    Success,
+    HealthCiFailure { message: String },
 }
 
 fn run_install_hooks(warn_only: bool) -> Result<()> {
@@ -73,7 +113,27 @@ fn run_hotspots(limit: usize, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn run_health(json: bool) -> Result<()> {
+fn run_health(json: bool, ci: Option<u32>) -> Result<ExitStatus> {
+    let report = collect_health_report()?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        render_health_terminal(&report, ci);
+    }
+
+    Ok(match ci {
+        Some(threshold) if report.debt_score > threshold => ExitStatus::HealthCiFailure {
+            message: format!(
+                "health debt score {} exceeds CI threshold {}",
+                report.debt_score, threshold
+            ),
+        },
+        _ => ExitStatus::Success,
+    })
+}
+
+fn collect_health_report() -> Result<HealthReport> {
     let cwd = std::env::current_dir()?;
     let repo = Repository::discover(&cwd)?;
     let repo_root = repo
@@ -93,10 +153,17 @@ fn run_health(json: bool) -> Result<()> {
         details: report.signals.clone(),
     })?;
 
+    Ok(report)
+}
+
+fn run_pr_template(json: bool) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let report = why_scanner::scan_pr_template(&cwd)?;
+
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
-        render_health_terminal(&report);
+        print!("{}", render_pr_template_markdown(&report));
     }
 
     Ok(())
@@ -204,7 +271,7 @@ fn run_query(request: QueryRequest) -> Result<()> {
     }
 
     let result = analyze_target_with_options(&request.target, &cwd, request.since_days)?;
-    let report = synthesize_report(&request, &result)?;
+    let report = synthesize_report(&request, &result, &repo, &config)?;
     cache.set(cache_key, &report, &head_hash)?;
 
     if request.json {
@@ -362,7 +429,7 @@ fn render_hotspots_terminal(findings: &[HotspotFinding], limit: usize) {
     }
 }
 
-fn render_health_terminal(report: &HealthReport) {
+fn render_health_terminal(report: &HealthReport, ci: Option<u32>) {
     println!("Repository health");
     println!();
     println!("Debt score: {}", report.debt_score);
@@ -371,6 +438,14 @@ fn render_health_terminal(report: &HealthReport) {
             "Trend: {} {} (previous {})",
             delta.direction, delta.amount, delta.previous_score
         );
+    }
+    if let Some(threshold) = ci {
+        let status = if report.debt_score > threshold {
+            "FAIL"
+        } else {
+            "PASS"
+        };
+        println!("CI gate: {status} (threshold {threshold})");
     }
     println!();
     println!("Signals");
@@ -384,6 +459,40 @@ fn render_health_terminal(report: &HealthReport) {
             println!("  - {note}");
         }
     }
+}
+
+fn render_pr_template_markdown(report: &PrTemplateReport) -> String {
+    let mut lines = vec![format!("# {}", report.title_suggestion), String::new()];
+
+    lines.push("## Summary".into());
+    for item in &report.summary {
+        lines.push(format!("- {item}"));
+    }
+    lines.push(String::new());
+
+    lines.push("## Risk notes".into());
+    for item in &report.risk_notes {
+        lines.push(format!("- {item}"));
+    }
+    lines.push(String::new());
+
+    lines.push("## Test plan".into());
+    for item in &report.test_plan {
+        lines.push(format!("- {item}"));
+    }
+    lines.push(String::new());
+
+    lines.push("## Staged files".into());
+    for file in &report.staged_files {
+        lines.push(format!(
+            "- {} ({})",
+            file.path.display(),
+            file.change.as_str()
+        ));
+    }
+    lines.push(String::new());
+
+    lines.join("\n")
 }
 
 fn render_ghost_terminal(findings: &[GhostFinding], limit: usize) {
@@ -428,6 +537,56 @@ fn sorted_signal_entries(signals: &std::collections::HashMap<String, u32>) -> Ve
     entries
 }
 
+fn build_github_enrichment(
+    repo: &Repository,
+    config: &why_context::WhyConfig,
+    commits: &[why_archaeologist::CommitEvidence],
+) -> GitHubEnrichment {
+    let Some(remote_name) =
+        (!config.github.remote.trim().is_empty()).then(|| config.github.remote.trim())
+    else {
+        return GitHubEnrichment::default();
+    };
+
+    let remote_url = match repo.find_remote(remote_name) {
+        Ok(remote) => match remote.url() {
+            Some(url) if !url.trim().is_empty() => url.to_string(),
+            _ => {
+                return GitHubEnrichment {
+                    items: Vec::new(),
+                    notes: vec![format!(
+                        "GitHub enrichment skipped because remote '{remote_name}' has no URL"
+                    )],
+                };
+            }
+        },
+        Err(error) => {
+            return GitHubEnrichment {
+                items: Vec::new(),
+                notes: vec![format!(
+                    "GitHub enrichment skipped because remote '{remote_name}' could not be read: {error}"
+                )],
+            };
+        }
+    };
+
+    let client = match GitHubClient::from_config(config, &remote_url) {
+        Ok(client) => client,
+        Err(error) => {
+            return GitHubEnrichment {
+                items: Vec::new(),
+                notes: vec![format!("GitHub enrichment unavailable: {error}")],
+            };
+        }
+    };
+
+    let issue_refs = commits
+        .iter()
+        .flat_map(|commit| commit.issue_refs.iter().cloned())
+        .collect::<Vec<_>>();
+    enrich_github_refs(&client, &issue_refs)
+}
+
 fn compute_health_delta(current_score: u32, previous: &HealthSnapshot) -> HealthDelta {
     let amount = current_score as i64 - previous.debt_score as i64;
     let direction = if amount > 0 {
@@ -452,7 +611,13 @@ fn current_unix_timestamp() -> i64 {
         .as_secs() as i64
 }
 
-fn synthesize_report(request: &QueryRequest, result: &ArchaeologyResult) -> Result<WhyReport> {
+fn synthesize_report(
+    request: &QueryRequest,
+    result: &ArchaeologyResult,
+    repo: &Repository,
+    config: &why_context::WhyConfig,
+) -> Result<WhyReport> {
+    let github = build_github_enrichment(repo, config, &result.commits);
     let evidence_pack = why_evidence::build(
         &EvidenceTarget {
             file: result.target.path.display().to_string(),
@@ -482,9 +647,12 @@ fn synthesize_report(request: &QueryRequest, result: &ArchaeologyResult) -> Resu
             risk_flags: result.local_context.risk_flags.clone(),
             heuristic_risk: result.risk_level.as_str().to_string(),
         },
+        &github,
     );
 
     let fallback = || {
+        let mut notes = result.notes.clone();
+        notes.extend(github.notes.iter().cloned());
         heuristic_report(
             format!(
                 "Heuristic analysis of {} based on {} relevant commit(s).",
@@ -497,7 +665,7 @@ fn synthesize_report(request: &QueryRequest, result: &ArchaeologyResult) -> Resu
                 .iter()
                 .map(|commit| format!("{} ({})", commit.summary, commit.date))
                 .collect(),
-            result.notes.clone(),
+            notes,
         )
     };
 
@@ -687,11 +855,15 @@ fn format_why_report(target: &str, report: &WhyReport, cached: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        HealthReport, compute_health_delta, format_why_report, render_health_terminal,
-        sorted_signal_entries,
+        ExitStatus, HealthReport, build_github_enrichment, compute_health_delta, format_why_report,
+        render_health_terminal, render_pr_template_markdown, sorted_signal_entries,
     };
+    use git2::Repository;
     use std::collections::HashMap;
+    use std::fs;
+    use why_archaeologist::CommitEvidence;
     use why_cache::HealthSnapshot;
+    use why_context::{GitHubConfig, WhyConfig};
     use why_synthesizer::{ConfidenceLevel, ReportMode, RiskLevel, WhyReport};
 
     fn sample_report() -> WhyReport {
@@ -821,6 +993,103 @@ mod tests {
             writeln!(&mut buffer).expect("write spacing");
         }
         let _ = buffer;
-        render_health_terminal(&report);
+        render_health_terminal(&report, None);
+    }
+
+    #[test]
+    fn render_pr_template_markdown_includes_expected_sections() {
+        let markdown = render_pr_template_markdown(&why_scanner::PrTemplateReport {
+            title_suggestion: "update staged changes".into(),
+            summary: vec!["Touched crates/core and crates/scanner.".into()],
+            risk_notes: vec!["No existing hotspot warnings matched the staged files.".into()],
+            test_plan: vec!["[ ] Run targeted tests.".into()],
+            staged_files: vec![why_scanner::StagedFile {
+                path: std::path::PathBuf::from("crates/core/src/main.rs"),
+                change: why_scanner::StagedChange::Modified,
+            }],
+        });
+
+        assert!(markdown.contains("# update staged changes"));
+        assert!(markdown.contains("## Summary"));
+        assert!(markdown.contains("## Risk notes"));
+        assert!(markdown.contains("## Test plan"));
+        assert!(markdown.contains("## Staged files"));
+        assert!(markdown.contains("crates/core/src/main.rs (modified)"));
+    }
+
+    #[test]
+    fn health_ci_failure_exit_status_is_distinct() {
+        let status = ExitStatus::HealthCiFailure {
+            message: "health debt score 9 exceeds CI threshold 4".into(),
+        };
+        assert_eq!(
+            status,
+            ExitStatus::HealthCiFailure {
+                message: "health debt score 9 exceeds CI threshold 4".into()
+            }
+        );
+    }
+
+    fn unique_test_dir(name: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "why-core-{name}-{}-{}",
+            std::process::id(),
+            super::current_unix_timestamp()
+        ));
+        fs::create_dir_all(&path).expect("test dir should be created");
+        path
+    }
+
+    #[test]
+    fn build_github_enrichment_reports_missing_remote() {
+        let dir = unique_test_dir("missing-remote");
+        let repo = Repository::init(&dir).expect("repo should initialize");
+        let config = WhyConfig {
+            github: GitHubConfig {
+                remote: "origin".into(),
+                token: None,
+            },
+            ..WhyConfig::default()
+        };
+
+        let enrichment = build_github_enrichment(&repo, &config, &[]);
+        assert!(enrichment.items.is_empty());
+        assert_eq!(enrichment.notes.len(), 1);
+        assert!(enrichment.notes[0].contains("origin"));
+    }
+
+    #[test]
+    fn build_github_enrichment_reports_invalid_remote_url() {
+        let dir = unique_test_dir("invalid-remote");
+        let repo = Repository::init(&dir).expect("repo should initialize");
+        repo.remote("origin", "https://gitlab.com/acme/why.git")
+            .expect("remote should be created");
+        let config = WhyConfig {
+            github: GitHubConfig {
+                remote: "origin".into(),
+                token: None,
+            },
+            ..WhyConfig::default()
+        };
+        let commits = vec![CommitEvidence {
+            short_oid: "abcdef12".into(),
+            oid: "abcdef1234567890".into(),
+            author: "alice".into(),
+            email: "alice@example.com".into(),
+            time: 0,
+            date: "2026-03-13".into(),
+            summary: "fix: close auth hole (#42)".into(),
+            message: "fix: close auth hole (#42)".into(),
+            diff_excerpt: String::new(),
+            coverage_score: 1.0,
+            relevance_score: 0.0,
+            issue_refs: vec!["#42".into()],
+            is_mechanical: false,
+        }];
+
+        let enrichment = build_github_enrichment(&repo, &config, &commits);
+        assert!(enrichment.items.is_empty());
+        assert_eq!(enrichment.notes.len(), 1);
+        assert!(enrichment.notes[0].contains("unsupported GitHub remote"));
     }
 }

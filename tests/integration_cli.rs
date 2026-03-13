@@ -1,13 +1,27 @@
 mod common;
 
 use anyhow::Result;
+use anyhow::bail;
 use common::{
-    assert_json_golden, assert_terminal_golden, ensure_success, setup_compat_shim_repo,
-    setup_coupling_repo, setup_ghost_repo, setup_hotfix_repo, setup_javascript_repo,
-    setup_python_repo, setup_sparse_repo, setup_split_repo, setup_timebomb_repo,
-    setup_typescript_repo,
+    assert_json_golden, assert_terminal_golden, setup_compat_shim_repo, setup_coupling_repo,
+    setup_ghost_repo, setup_hotfix_repo, setup_javascript_repo, setup_python_repo,
+    setup_sparse_repo, setup_split_repo, setup_timebomb_repo, setup_typescript_repo,
 };
 use serde_json::Value;
+use std::fs;
+
+fn ensure_success(output: &std::process::Output) -> Result<()> {
+    if output.status.success() {
+        return Ok(());
+    }
+
+    bail!(
+        "command failed with status {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
 
 #[test]
 fn hotfix_repo_json_output_has_phase_one_shape() -> Result<()> {
@@ -518,6 +532,104 @@ fn health_subcommand_renders_terminal_summary() -> Result<()> {
 }
 
 #[test]
+fn health_ci_subcommand_succeeds_when_score_is_within_threshold() -> Result<()> {
+    let repo = setup_timebomb_repo()?;
+    let output = repo.run_why(&["health", "--ci", "100"])?;
+    ensure_success(&output)?;
+    assert_eq!(output.status.code(), Some(0));
+    assert!(
+        repo.stdout(&output)
+            .contains("CI gate: PASS (threshold 100)")
+    );
+    Ok(())
+}
+
+#[test]
+fn health_ci_subcommand_fails_with_exit_code_three_when_threshold_is_exceeded() -> Result<()> {
+    let repo = setup_timebomb_repo()?;
+    let output = repo.run_why(&["health", "--ci", "0"])?;
+    assert_eq!(output.status.code(), Some(3));
+    assert!(repo.stdout(&output).contains("CI gate: FAIL (threshold 0)"));
+    assert!(repo.stderr(&output).contains("exceeds CI threshold 0"));
+    Ok(())
+}
+
+#[test]
+fn health_ci_json_subcommand_emits_json_even_on_failure() -> Result<()> {
+    let repo = setup_timebomb_repo()?;
+    let output = repo.run_why(&["health", "--json", "--ci", "0"])?;
+    assert_eq!(output.status.code(), Some(3));
+
+    let parsed: Value = serde_json::from_str(&repo.stdout(&output))?;
+    assert!(parsed["debt_score"].as_u64().unwrap_or_default() > 0);
+    assert!(repo.stderr(&output).contains("exceeds CI threshold 0"));
+    Ok(())
+}
+
+#[test]
+fn pr_template_subcommand_reports_when_no_staged_changes_exist() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let output = repo.run_why(&["pr-template", "--json"])?;
+    ensure_success(&output)?;
+
+    let parsed: Value = serde_json::from_str(&repo.stdout(&output))?;
+    assert_eq!(
+        parsed["staged_files"].as_array().map(|items| items.len()),
+        Some(0)
+    );
+    assert!(
+        parsed["summary"][0]
+            .as_str()
+            .is_some_and(|text| text.contains("No staged changes were found"))
+    );
+    Ok(())
+}
+
+#[test]
+fn pr_template_subcommand_summarizes_staged_diff() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let payment_path = repo.path.join("src").join("payment.rs");
+    let original = fs::read_to_string(&payment_path)?;
+    fs::write(
+        &payment_path,
+        original.replace(
+            "        charge_stripe(amount)\n",
+            "        // staged follow-up: preserve charge path while tightening reviewer guidance\n        charge_stripe(amount)\n",
+        )
+    )?;
+    repo.run_command("git", &["add", "src/payment.rs"])?;
+
+    let output = repo.run_why(&["pr-template", "--json"])?;
+    ensure_success(&output)?;
+
+    let parsed: Value = serde_json::from_str(&repo.stdout(&output))?;
+    assert_eq!(parsed["title_suggestion"], "update src/payment.rs");
+    assert_eq!(parsed["staged_files"][0]["path"], "src/payment.rs");
+    assert_eq!(parsed["staged_files"][0]["change"], "Modified");
+    assert!(
+        parsed["summary"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
+    assert!(
+        parsed["risk_notes"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
+    assert!(
+        parsed["test_plan"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
+    assert_json_golden("cli_pr_template_hotfix_repo", &parsed)?;
+
+    let terminal = repo.run_why(&["pr-template"])?;
+    ensure_success(&terminal)?;
+    assert_terminal_golden("cli_pr_template_hotfix_repo", &repo.stdout(&terminal))?;
+    Ok(())
+}
+
+#[test]
 fn ghost_subcommand_returns_ranked_json_for_fixture_repo() -> Result<()> {
     let repo = setup_ghost_repo()?;
     let output = repo.run_why(&["ghost", "--limit", "5", "--json"])?;
@@ -525,17 +637,19 @@ fn ghost_subcommand_returns_ranked_json_for_fixture_repo() -> Result<()> {
 
     let stdout = repo.stdout(&output);
     let parsed: Value = serde_json::from_str(&stdout)?;
-    let findings = parsed
-        .as_array()
-        .expect("ghost output should be an array");
+    let findings = parsed.as_array().expect("ghost output should be an array");
     assert!(!findings.is_empty());
     assert_eq!(findings[0]["path"], "src/auth.rs");
     assert_eq!(findings[0]["symbol"], "validate_auth_token_legacy");
     assert_eq!(findings[0]["risk_level"], "HIGH");
     assert_eq!(findings[0]["call_site_count"], 1);
-    assert!(findings[0]["notes"].as_array().is_some_and(|items| items
-        .iter()
-        .any(|note| note.as_str().is_some_and(|text| text.contains("static analysis")))));
+    assert!(
+        findings[0]["notes"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|note| note
+                .as_str()
+                .is_some_and(|text| text.contains("static analysis"))))
+    );
 
     Ok(())
 }

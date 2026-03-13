@@ -1,0 +1,21 @@
+{
+  "title_suggestion": "update src/payment.rs",
+  "summary": [
+    "Stage review covers 1 file(s): 1 modified.",
+    "Primary files: src/payment.rs.",
+    "Touched areas: src."
+  ],
+  "risk_notes": [
+    "src/payment.rs is already a HIGH hotspot (score 9.00, churn 3)."
+  ],
+  "test_plan": [
+    "[ ] Run targeted tests covering: src/payment.rs.",
+    "[ ] Review the staged diff to confirm the summary and risk notes still match the final PR scope."
+  ],
+  "staged_files": [
+    {
+      "path": "src/payment.rs",
+      "change": "Modified"
+    }
+  ]
+}
