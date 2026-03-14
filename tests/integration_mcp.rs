@@ -2,8 +2,8 @@ mod common;
 
 use anyhow::Result;
 use common::{
-    assert_json_golden, ensure_success, setup_coupling_repo, setup_hotfix_repo, setup_split_repo,
-    setup_timebomb_repo,
+    assert_json_golden, ensure_success, setup_coupling_repo, setup_coupling_rich_repo,
+    setup_hotfix_repo, setup_split_repo, setup_timebomb_repo, setup_timebomb_rich_repo,
 };
 use serde_json::Value;
 
@@ -216,6 +216,38 @@ fn mcp_why_time_bombs_returns_findings() -> Result<()> {
 }
 
 #[test]
+fn mcp_why_time_bombs_returns_multiple_marker_kinds_for_rich_fixture() -> Result<()> {
+    let repo = setup_timebomb_rich_repo()?;
+    let output = repo.run_why_with_stdin(
+        &["mcp"],
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"why_time_bombs\",\"arguments\":{\"max_age_days\":30}}}\n",
+    )?;
+    ensure_success(&output)?;
+
+    let responses = response_lines(&output)?;
+    let payload = responses[0]["result"]["content"][0]["json"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("time bomb result should be array"))?;
+    assert_eq!(payload.len(), 2);
+    assert!(
+        payload
+            .iter()
+            .any(|finding| finding["kind"] == "PastDueTodo")
+    );
+    assert!(
+        payload
+            .iter()
+            .any(|finding| finding["kind"] == "ExpiredRemoveAfter")
+    );
+    assert_json_golden(
+        "mcp_why_time_bombs_timebomb_rich_repo",
+        &time_bombs_golden_view(payload),
+    )?;
+
+    Ok(())
+}
+
+#[test]
 fn mcp_why_hotspots_returns_ranked_findings() -> Result<()> {
     let repo = setup_hotfix_repo()?;
     let output = repo.run_why_with_stdin(
@@ -262,6 +294,37 @@ fn mcp_why_coupling_returns_ranked_findings() -> Result<()> {
     assert_eq!(results[0]["coupling_ratio"], 1.0);
     assert_json_golden(
         "mcp_why_coupling_coupling_repo",
+        &coupling_golden_view(payload),
+    )?;
+
+    Ok(())
+}
+
+#[test]
+fn mcp_why_coupling_returns_ranked_findings_for_rich_fixture() -> Result<()> {
+    let repo = setup_coupling_rich_repo()?;
+    let output = repo.run_why_with_stdin(
+        &["mcp"],
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"why_coupling\",\"arguments\":{\"target\":\"src/schema.rs:1\",\"limit\":5}}}\n",
+    )?;
+    ensure_success(&output)?;
+
+    let responses = response_lines(&output)?;
+    let payload = &responses[0]["result"]["content"][0]["json"];
+    assert_eq!(payload["target_path"], "src/schema.rs");
+    assert_eq!(payload["target_commit_count"], 5);
+    let results = payload["results"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("coupling result should include array"))?;
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0]["path"], "src/data.rs");
+    assert_eq!(results[0]["shared_commits"], 5);
+    assert_eq!(results[0]["coupling_ratio"], 1.0);
+    assert_eq!(results[1]["path"], "src/metrics.rs");
+    assert_eq!(results[1]["shared_commits"], 2);
+    assert_eq!(results[1]["coupling_ratio"], 0.4);
+    assert_json_golden(
+        "mcp_why_coupling_coupling_rich_repo",
         &coupling_golden_view(payload),
     )?;
 

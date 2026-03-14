@@ -1,0 +1,105 @@
+{
+  "change_guidance": "Stop and investigate before deleting or heavily refactoring this target.",
+  "commits": [
+    {
+      "commit": {
+        "author": "Fixture Bot",
+        "coverage_score": 1.0,
+        "diff_excerpt": "diff --git a/src/payment.rs b/src/payment.rs\nindex 12d11f8..032be1e 100644\n--- a/src/payment.rs\n+++ b/src/payment.rs\n@@ -1,13 +1,13 @@\npub struct PaymentService;\n\nimpl PaymentService {\n    pub fn process_payment(amount: f64) -> Result<(), String> {\n        // security: validate amount range to prevent negative charge exploit\n        if amount <= 0.0 || amount > 100_000.0 {\n            return Err(\"invalid amount range\".into());\n        pub fn process_payment(amount: f64) -> Result<(), String> {\n ",
+        "email": "test@example.com",
+        "is_mechanical": true,
+        "issue_refs": [],
+        "message": "fmt: align payment indentation",
+        "summary": "fmt: align payment indentation"
+      },
+      "path_at_commit": "src/payment.rs"
+    },
+    {
+      "commit": {
+        "author": "Fixture Bot",
+        "coverage_score": 1.0,
+        "diff_excerpt": "diff --git a/src/payment.rs b/src/payment.rs\nindex f110b16..12d11f8 100644\n--- a/src/payment.rs\n+++ b/src/payment.rs\n@@ -2,9 +2,12 @@ pub struct PaymentService;\n\nimpl PaymentService {\n    pub fn process_payment(amount: f64) -> Result<(), String> {\n        if amount <= 0.0 {\n            return Err(\"invalid amount\".into());\n        // security: validate amount range to prevent negative charge exploit\n        if amount <= 0.0 || amount > 100_000.0 {\n            return Err(\"invalid amount range\".int",
+        "email": "test@example.com",
+        "is_mechanical": false,
+        "issue_refs": [
+          "#4521"
+        ],
+        "message": "hotfix: fix duplicate charge vulnerability, closes #4521",
+        "summary": "hotfix: fix duplicate charge vulnerability, closes #4521"
+      },
+      "path_at_commit": "src/payment.rs"
+    },
+    {
+      "commit": {
+        "author": "Fixture Bot",
+        "coverage_score": 1.0,
+        "diff_excerpt": "diff --git a/src/payment.rs b/src/payment.rs\nnew file mode 100644\nindex 0000000..f110b16\n--- /dev/null\n+++ b/src/payment.rs\n@@ -0,0 +1,10 @@\npub struct PaymentService;\n\nimpl PaymentService {\n    pub fn process_payment(amount: f64) -> Result<(), String> {\n        if amount <= 0.0 {\n            return Err(\"invalid amount\".into());\n        }\n        charge_stripe(amount)\n    }\n}",
+        "email": "test@example.com",
+        "is_mechanical": false,
+        "issue_refs": [],
+        "message": "feat: add payment processing",
+        "summary": "feat: add payment processing"
+      },
+      "path_at_commit": "src/payment.rs"
+    }
+  ],
+  "inflection_points": [
+    {
+      "category": "mechanical-follow-up",
+      "path_at_commit": "src/payment.rs",
+      "reason": "A later mechanical change touched the target after substantive behavior had already landed.",
+      "summary": "fmt: align payment indentation"
+    }
+  ],
+  "latest_commit": {
+    "author": "Fixture Bot",
+    "coverage_score": 1.0,
+    "diff_excerpt": "diff --git a/src/payment.rs b/src/payment.rs\nindex 12d11f8..032be1e 100644\n--- a/src/payment.rs\n+++ b/src/payment.rs\n@@ -1,13 +1,13 @@\npub struct PaymentService;\n\nimpl PaymentService {\n    pub fn process_payment(amount: f64) -> Result<(), String> {\n        // security: validate amount range to prevent negative charge exploit\n        if amount <= 0.0 || amount > 100_000.0 {\n            return Err(\"invalid amount range\".into());\n        pub fn process_payment(amount: f64) -> Result<(), String> {\n ",
+    "email": "test@example.com",
+    "is_mechanical": true,
+    "issue_refs": [],
+    "message": "fmt: align payment indentation",
+    "summary": "fmt: align payment indentation"
+  },
+  "local_context": {
+    "comments": [
+      "security: validate amount range to prevent negative charge exploit",
+      "hotfix: rate limit to prevent duplicate charge incident #4521"
+    ],
+    "markers": [],
+    "risk_flags": [
+      "security",
+      "exploit",
+      "hotfix",
+      "incident",
+      "fix"
+    ]
+  },
+  "mode": "evolution-history",
+  "narrative_summary": "Latest state: fmt: align payment indentation on <date> at src/payment.rs. Origin: feat: add payment processing on <date> at src/payment.rs. Key inflection points: fmt: align payment indentation (mechanical-follow-up). Local context reinforces this with signals such as security, exploit, hotfix, incident, fix. Overall risk remains HIGH: Stop and investigate before deleting or heavily refactoring this target.",
+  "notes": [
+    "Evolution-history mode follows git log renames to preserve pre-move context",
+    "Narrative summaries separate recent state, origin, and inflection points from the raw timeline"
+  ],
+  "origin_commit": {
+    "author": "Fixture Bot",
+    "coverage_score": 1.0,
+    "diff_excerpt": "diff --git a/src/payment.rs b/src/payment.rs\nnew file mode 100644\nindex 0000000..f110b16\n--- /dev/null\n+++ b/src/payment.rs\n@@ -0,0 +1,10 @@\npub struct PaymentService;\n\nimpl PaymentService {\n    pub fn process_payment(amount: f64) -> Result<(), String> {\n        if amount <= 0.0 {\n            return Err(\"invalid amount\".into());\n        }\n        charge_stripe(amount)\n    }\n}",
+    "email": "test@example.com",
+    "is_mechanical": false,
+    "issue_refs": [],
+    "message": "feat: add payment processing",
+    "summary": "feat: add payment processing"
+  },
+  "paths_seen": [
+    "src/payment.rs"
+  ],
+  "risk_level": "HIGH",
+  "risk_summary": "The history suggests security sensitivity, incident context, or non-routine compatibility risk.",
+  "target": {
+    "end_line": 12,
+    "path": "src/payment.rs",
+    "query_kind": "qualified_symbol",
+    "start_line": 4
+  }
+}

@@ -9,6 +9,7 @@ pub mod ghost;
 pub mod health;
 pub mod hotspots;
 pub mod onboard;
+pub mod outage;
 pub mod pr_template;
 pub mod time_bombs;
 
@@ -33,6 +34,7 @@ pub use ghost::{GhostFinding, scan_ghosts};
 pub use health::{HealthDelta, HealthReport, scan_health};
 pub use hotspots::{HotspotFinding, scan_hotspots};
 pub use onboard::{OnboardFinding, scan_onboard};
+pub use outage::{OutageFinding, OutageReport, scan_outage, scan_outage_window};
 pub use pr_template::{PrTemplateReport, StagedChange, StagedFile, scan_pr_template};
 pub use time_bombs::{Severity, TimeBombFinding, TimeBombKind, scan_time_bombs};
 

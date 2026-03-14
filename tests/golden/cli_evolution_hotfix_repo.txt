@@ -1,0 +1,29 @@
+Evolution history for src/payment.rs
+
+Heuristic risk: HIGH.
+The history suggests security sensitivity, incident context, or non-routine compatibility risk.
+Stop and investigate before deleting or heavily refactoring this target.
+
+Narrative summary:
+  Latest state: fmt: align payment indentation on <date> at src/payment.rs. Origin: feat: add payment processing on <date> at src/payment.rs. Key inflection points: fmt: align payment indentation (mechanical-follow-up). Local context reinforces this with signals such as security, exploit, hotfix, incident, fix. Overall risk remains HIGH: Stop and investigate before deleting or heavily refactoring this target.
+
+Current edge:
+  <oid>  <date>  fmt: align payment indentation
+Origin:
+  <oid>  <date>  feat: add payment processing
+
+Paths seen:
+  - src/payment.rs
+
+Inflection points:
+  - [mechanical-follow-up] <date>  src/payment.rs  fmt: align payment indentation
+      A later mechanical change touched the target after substantive behavior had already landed.
+
+Timeline:
+  <oid>  <date>  src/payment.rs  fmt: align payment indentation
+  <oid>  <date>  src/payment.rs  hotfix: fix duplicate charge vulnerability, closes #4521
+  <oid>  <date>  src/payment.rs  feat: add payment processing
+
+Notes:
+  - Evolution-history mode follows git log renames to preserve pre-move context
+  - Narrative summaries separate recent state, origin, and inflection points from the raw timeline

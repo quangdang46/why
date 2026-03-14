@@ -193,8 +193,18 @@ pub fn setup_coupling_repo() -> Result<FixtureRepo> {
 }
 
 #[allow(dead_code)]
+pub fn setup_coupling_rich_repo() -> Result<FixtureRepo> {
+    setup_fixture("coupling_rich_repo")
+}
+
+#[allow(dead_code)]
 pub fn setup_timebomb_repo() -> Result<FixtureRepo> {
     setup_fixture("timebomb_repo")
+}
+
+#[allow(dead_code)]
+pub fn setup_timebomb_rich_repo() -> Result<FixtureRepo> {
+    setup_fixture("timebomb_rich_repo")
 }
 
 #[allow(dead_code)]

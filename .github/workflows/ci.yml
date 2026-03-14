@@ -83,6 +83,98 @@ jobs:
       - name: Audit dependencies
         run: cargo audit
 
+  packaging-alignment:
+    name: Packaging alignment audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify install/release/package metadata stay aligned
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          package_name=$(python - <<'PY'
+from pathlib import Path
+import re
+text = Path('crates/core/Cargo.toml').read_text()
+match = re.search(r'^name\s*=\s*"([^"]+)"', text, re.M)
+assert match, 'package name not found'
+print(match.group(1))
+PY
+)
+
+          publish_flag=$(python - <<'PY'
+from pathlib import Path
+import re
+text = Path('crates/core/Cargo.toml').read_text()
+match = re.search(r'^publish\s*=\s*(true|false)', text, re.M)
+print(match.group(1) if match else 'true')
+PY
+)
+
+          bin_name=$(python - <<'PY'
+from pathlib import Path
+import re
+text = Path('crates/core/Cargo.toml').read_text()
+match = re.search(r'\[\[bin\]\]\s*name\s*=\s*"([^"]+)"', text, re.S)
+assert match, 'bin name not found'
+print(match.group(1))
+PY
+)
+
+          release_package=$(python - <<'PY'
+from pathlib import Path
+import re
+text = Path('.github/workflows/release.yml').read_text()
+match = re.search(r'PACKAGE_NAME:\s*([^\n]+)', text)
+assert match, 'release PACKAGE_NAME not found'
+print(match.group(1).strip())
+PY
+)
+
+          release_bin=$(python - <<'PY'
+from pathlib import Path
+import re
+text = Path('.github/workflows/release.yml').read_text()
+match = re.search(r'BIN_NAME:\s*([^\n]+)', text)
+assert match, 'release BIN_NAME not found'
+print(match.group(1).strip())
+PY
+)
+
+          installer_bin=$(python - <<'PY'
+from pathlib import Path
+import re
+text = Path('install.sh').read_text()
+match = re.search(r'^BINARY_NAME="([^"]+)"', text, re.M)
+assert match, 'installer BINARY_NAME not found'
+print(match.group(1))
+PY
+)
+
+          if [ "$package_name" != "$release_package" ]; then
+            echo "crates/core/Cargo.toml package '$package_name' does not match release workflow PACKAGE_NAME '$release_package'"
+            exit 1
+          fi
+
+          if [ "$bin_name" != "$release_bin" ]; then
+            echo "crates/core/Cargo.toml bin '$bin_name' does not match release workflow BIN_NAME '$release_bin'"
+            exit 1
+          fi
+
+          if [ "$bin_name" != "$installer_bin" ]; then
+            echo "crates/core/Cargo.toml bin '$bin_name' does not match installer BINARY_NAME '$installer_bin'"
+            exit 1
+          fi
+
+          if [ "$publish_flag" = "false" ]; then
+            echo "crates.io readiness check: shipping package '$package_name' still has publish = false"
+          else
+            echo "crates.io readiness check: shipping package '$package_name' is publishable"
+          fi
+
   bench:
     name: Benchmark smoke check
     runs-on: ubuntu-latest

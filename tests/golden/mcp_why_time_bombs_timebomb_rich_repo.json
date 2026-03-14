@@ -1,0 +1,16 @@
+[
+  {
+    "path": "src/legacy.rs",
+    "line": 2,
+    "kind": "PastDueTodo",
+    "marker": "// TODO(<date>): remove after v3 migration is complete",
+    "severity": "Critical"
+  },
+  {
+    "path": "src/rollout.rs",
+    "line": 2,
+    "kind": "ExpiredRemoveAfter",
+    "marker": "// remove after <date> once the staged rollout is complete",
+    "severity": "Critical"
+  }
+]

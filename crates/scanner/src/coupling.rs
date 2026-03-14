@@ -8,7 +8,7 @@ use why_archaeologist::{commit_is_mechanical, discover_repository, relative_repo
 use why_context::load_config;
 use why_locator::{QueryTarget, resolve_target};
 
-use crate::hotspots::SOURCE_EXTENSIONS;
+use crate::is_source_file;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct CouplingFinding {
@@ -162,13 +162,6 @@ fn commit_touched_source_paths(
     }
 
     Ok(paths)
-}
-
-fn is_source_file(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| SOURCE_EXTENSIONS.contains(&ext))
-        .unwrap_or(false)
 }
 
 #[cfg(test)]

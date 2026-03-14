@@ -9,10 +9,7 @@ use why_archaeologist::{
 };
 use why_context::load_config;
 
-pub(crate) const SOURCE_EXTENSIONS: &[&str] = &[
-    "c", "cc", "cpp", "cs", "go", "h", "hpp", "java", "js", "jsx", "py", "rb", "rs", "swift", "ts",
-    "tsx",
-];
+use crate::{is_tracked_source_file, should_skip_dir};
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct HotspotFinding {
     pub path: PathBuf,
@@ -58,16 +55,14 @@ fn collect_hotspots(
             .with_context(|| format!("failed to inspect {}", path.display()))?;
 
         if file_type.is_dir() {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if name == ".git" || name == "target" || name == ".why" {
+            if should_skip_dir(&path) {
                 continue;
             }
             collect_hotspots(repo, workdir, &path, config, findings)?;
             continue;
         }
 
-        if !file_type.is_file() || !is_source_file(&path) {
+        if !file_type.is_file() || !is_tracked_source_file(repo, workdir, &path) {
             continue;
         }
 
@@ -175,13 +170,6 @@ fn delta_matches_path(delta: &git2::DiffDelta<'_>, relative_path: &Path) -> bool
         .any(|path| path == relative_path)
 }
 
-fn is_source_file(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| SOURCE_EXTENSIONS.contains(&ext))
-        .unwrap_or(false)
-}
-
 fn risk_weight(risk_level: RiskLevel) -> f32 {
     match risk_level {
         RiskLevel::HIGH => 3.0,
@@ -193,6 +181,7 @@ fn risk_weight(risk_level: RiskLevel) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{HotspotFinding, risk_weight, scan_hotspots};
+    use crate::should_skip_dir;
     use anyhow::{Context, Result};
     use std::process::Command;
     use tempfile::TempDir;
@@ -286,5 +275,13 @@ done
         let findings = scan_hotspots(fixture.path(), 1)?;
         assert_eq!(findings.len(), 1);
         Ok(())
+    }
+
+    #[test]
+    fn skips_vendored_directories() {
+        assert!(should_skip_dir(std::path::Path::new("node_modules")));
+        assert!(should_skip_dir(std::path::Path::new("vendor")));
+        assert!(should_skip_dir(std::path::Path::new("dist")));
+        assert!(!should_skip_dir(std::path::Path::new("src")));
     }
 }

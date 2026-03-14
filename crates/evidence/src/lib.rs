@@ -15,6 +15,10 @@ const MAX_SUBJECT_CHARS: usize = 120;
 const MAX_SIGNAL_ISSUE_REFS: usize = 20;
 const MAX_COMMIT_ISSUE_REFS: usize = 5;
 const MAX_SIGNAL_RISK_KEYWORDS: usize = 10;
+const MAX_SIGNAL_GITHUB_ITEMS: usize = 5;
+const MAX_SIGNAL_GITHUB_NOTES: usize = 10;
+const MAX_GITHUB_TITLE_CHARS: usize = 120;
+const MAX_GITHUB_BODY_CHARS: usize = 400;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EvidencePack {
@@ -62,6 +66,10 @@ pub struct SignalInfo {
     pub issue_refs: Vec<String>,
     pub risk_keywords: Vec<String>,
     pub heuristic_risk: String,
+    #[serde(default)]
+    pub github_items: Vec<GitHubItem>,
+    #[serde(default)]
+    pub github_notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +122,12 @@ pub struct GitHubItem {
 pub enum GitHubFetchOutcome {
     Item(GitHubItem),
     Degraded { note: String },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GitHubEnrichment {
+    pub items: Vec<GitHubItem>,
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -191,8 +205,7 @@ impl GitHubClient {
                 return Ok(GitHubFetchOutcome::Degraded {
                     note: format!(
                         "GitHub issue #{} enrichment unavailable: {}",
-                        issue.number,
-                        error
+                        issue.number, error
                     ),
                 });
             }
@@ -315,6 +328,7 @@ pub fn build(
     target: &EvidenceTarget,
     commits: &[EvidenceCommit],
     context: &EvidenceContext,
+    github: &GitHubEnrichment,
 ) -> EvidencePack {
     let total_commit_count = commits.len();
     let all_issue_refs = dedupe_issue_refs(commits);
@@ -325,6 +339,7 @@ pub fn build(
         &all_issue_refs,
         total_commit_count,
         true,
+        github,
     );
 
     if serialized_len(&full) <= MAX_PAYLOAD_CHARS {
@@ -338,6 +353,7 @@ pub fn build(
         &all_issue_refs,
         total_commit_count,
         false,
+        github,
     );
     if serialized_len(&reduced) <= MAX_PAYLOAD_CHARS {
         return reduced;
@@ -353,6 +369,7 @@ pub fn build(
             &all_issue_refs,
             total_commit_count,
             false,
+            github,
         );
         if serialized_len(&reduced) <= MAX_PAYLOAD_CHARS {
             return reduced;
@@ -369,6 +386,7 @@ fn build_internal(
     all_issue_refs: &[String],
     total_commit_count: usize,
     include_diffs: bool,
+    github: &GitHubEnrichment,
 ) -> EvidencePack {
     let top_commits: Vec<CommitSummary> = commits
         .iter()
@@ -432,6 +450,23 @@ fn build_internal(
                 .cloned()
                 .collect(),
             heuristic_risk: context.heuristic_risk.clone(),
+            github_items: github
+                .items
+                .iter()
+                .take(MAX_SIGNAL_GITHUB_ITEMS)
+                .map(|item| GitHubItem {
+                    number: item.number,
+                    title: truncate(&item.title, MAX_GITHUB_TITLE_CHARS),
+                    body: truncate(&item.body, MAX_GITHUB_BODY_CHARS),
+                    html_url: item.html_url.clone(),
+                })
+                .collect(),
+            github_notes: github
+                .notes
+                .iter()
+                .take(MAX_SIGNAL_GITHUB_NOTES)
+                .cloned()
+                .collect(),
         },
     }
 }
@@ -444,6 +479,50 @@ fn dedupe_issue_refs(commits: &[EvidenceCommit]) -> Vec<String> {
     refs.sort();
     refs.dedup();
     refs
+}
+
+pub fn parse_github_ref(value: &str) -> Option<GitHubRef> {
+    let number = value.trim().strip_prefix('#')?.parse().ok()?;
+    Some(GitHubRef { number })
+}
+
+fn dedupe_github_refs(issue_refs: &[String]) -> Vec<GitHubRef> {
+    let mut refs = issue_refs
+        .iter()
+        .filter_map(|issue_ref| parse_github_ref(issue_ref))
+        .collect::<Vec<_>>();
+    refs.sort_by_key(|issue| issue.number);
+    refs.dedup_by_key(|issue| issue.number);
+    refs
+}
+
+fn is_terminal_github_degradation(note: &str) -> bool {
+    note.contains("rate limiting")
+        || note.contains("authentication failed")
+        || note.contains("access was denied")
+}
+
+pub fn enrich_github_refs(client: &GitHubClient, issue_refs: &[String]) -> GitHubEnrichment {
+    let mut enrichment = GitHubEnrichment::default();
+
+    for issue in dedupe_github_refs(issue_refs) {
+        match client.fetch_issue(&issue) {
+            Ok(GitHubFetchOutcome::Item(item)) => enrichment.items.push(item),
+            Ok(GitHubFetchOutcome::Degraded { note }) => {
+                let should_stop = is_terminal_github_degradation(&note);
+                enrichment.notes.push(note);
+                if should_stop {
+                    break;
+                }
+            }
+            Err(error) => enrichment.notes.push(format!(
+                "GitHub issue #{} enrichment unavailable: {}",
+                issue.number, error
+            )),
+        }
+    }
+
+    enrichment
 }
 
 fn serialized_len(pack: &EvidencePack) -> usize {
@@ -505,7 +584,12 @@ mod tests {
         let commits: Vec<_> = (0..20)
             .map(|index| sample_commit(index, 2_000, vec!["#1", "#2"]))
             .collect();
-        let pack = build(&sample_target(), &commits, &sample_context());
+        let pack = build(
+            &sample_target(),
+            &commits,
+            &sample_context(),
+            &GitHubEnrichment::default(),
+        );
         let json = serde_json::to_string(&pack).expect("pack should serialize");
 
         assert!(json.len() <= MAX_PAYLOAD_CHARS);
@@ -518,6 +602,7 @@ mod tests {
             &sample_target(),
             &[sample_commit(1, 900, vec!["#42"])],
             &sample_context(),
+            &GitHubEnrichment::default(),
         );
         let diff = &pack.history.top_commits[0].diff_excerpt;
 
@@ -531,7 +616,12 @@ mod tests {
             sample_commit(1, 20, vec!["#42", "#7"]),
             sample_commit(2, 20, vec!["#7", "#99"]),
         ];
-        let pack = build(&sample_target(), &commits, &sample_context());
+        let pack = build(
+            &sample_target(),
+            &commits,
+            &sample_context(),
+            &GitHubEnrichment::default(),
+        );
 
         assert_eq!(pack.signals.issue_refs, vec!["#42", "#7", "#99"]);
     }
@@ -541,7 +631,12 @@ mod tests {
         let commits: Vec<_> = (0..20)
             .map(|index| sample_commit(index, 2_000, vec!["#1", "#2", "#3", "#4", "#5", "#6"]))
             .collect();
-        let pack = build(&sample_target(), &commits, &sample_context());
+        let pack = build(
+            &sample_target(),
+            &commits,
+            &sample_context(),
+            &GitHubEnrichment::default(),
+        );
 
         assert_eq!(pack.history.total_commit_count, commits.len());
         assert!(pack.history.commits_shown <= pack.history.total_commit_count);
@@ -568,10 +663,35 @@ mod tests {
             risk_flags: (0..20).map(|index| format!("flag-{index}")).collect(),
             heuristic_risk: "MEDIUM".into(),
         };
-        let pack = build(&sample_target(), &commits, &context);
+        let github = GitHubEnrichment {
+            items: (0..10)
+                .map(|index| GitHubItem {
+                    number: index,
+                    title: format!("Title {index} {}", "x".repeat(200)),
+                    body: "body ".repeat(200),
+                    html_url: format!("https://github.com/acme/repo/issues/{index}"),
+                })
+                .collect(),
+            notes: (0..20).map(|index| format!("note-{index}")).collect(),
+        };
+        let pack = build(&sample_target(), &commits, &context, &github);
 
         assert!(pack.signals.issue_refs.len() <= MAX_SIGNAL_ISSUE_REFS);
         assert!(pack.signals.risk_keywords.len() <= MAX_SIGNAL_RISK_KEYWORDS);
+        assert!(pack.signals.github_items.len() <= MAX_SIGNAL_GITHUB_ITEMS);
+        assert!(pack.signals.github_notes.len() <= MAX_SIGNAL_GITHUB_NOTES);
+        assert!(
+            pack.signals
+                .github_items
+                .iter()
+                .all(|item| item.title.chars().count() <= MAX_GITHUB_TITLE_CHARS + 1)
+        );
+        assert!(
+            pack.signals
+                .github_items
+                .iter()
+                .all(|item| item.body.chars().count() <= MAX_GITHUB_BODY_CHARS + 1)
+        );
         assert!(
             pack.history
                 .top_commits
@@ -645,6 +765,46 @@ mod tests {
     }
 
     #[test]
+    fn test_github_client_request_issue_sets_bearer_auth_when_token_present() {
+        let config = WhyConfig {
+            github: GitHubConfig {
+                remote: "origin".into(),
+                token: Some("github_test_token".into()),
+            },
+            ..WhyConfig::default()
+        };
+
+        let client = GitHubClient::from_config(&config, "https://github.com/anthropics/why.git")
+            .expect("client should build from config");
+        let request = client
+            .request_issue(&GitHubRef { number: 42 })
+            .build()
+            .expect("request should build");
+
+        let auth = request
+            .headers()
+            .get(AUTHORIZATION)
+            .expect("auth header should be present")
+            .to_str()
+            .expect("auth header should be valid utf-8");
+        assert_eq!(auth, "Bearer github_test_token");
+    }
+
+    #[test]
+    fn test_github_client_request_issue_omits_auth_when_token_absent() {
+        let config = WhyConfig::default();
+
+        let client = GitHubClient::from_config(&config, "https://github.com/anthropics/why.git")
+            .expect("client should build from config");
+        let request = client
+            .request_issue(&GitHubRef { number: 42 })
+            .build()
+            .expect("request should build");
+
+        assert!(request.headers().get(AUTHORIZATION).is_none());
+    }
+
+    #[test]
     fn test_github_client_debug_redacts_auth_token() {
         let config = WhyConfig {
             github: GitHubConfig {
@@ -714,5 +874,44 @@ mod tests {
     fn test_parse_github_api_error_message_reads_message_field() {
         let message = parse_github_api_error_message(r#"{"message":"secondary rate limit"}"#);
         assert_eq!(message.as_deref(), Some("secondary rate limit"));
+    }
+
+    #[test]
+    fn test_terminal_github_degradation_detection_matches_rate_limit_and_auth() {
+        assert!(is_terminal_github_degradation(
+            "GitHub issue #42 enrichment skipped due to rate limiting (HTTP 429): API rate limit exceeded"
+        ));
+        assert!(is_terminal_github_degradation(
+            "GitHub issue #7 enrichment skipped because authentication failed (HTTP 401): Bad credentials"
+        ));
+        assert!(is_terminal_github_degradation(
+            "GitHub issue #9 enrichment skipped because access was denied (HTTP 403): Resource not accessible"
+        ));
+        assert!(!is_terminal_github_degradation(
+            "GitHub issue #5 enrichment temporarily unavailable (HTTP 500): server error"
+        ));
+    }
+
+    #[test]
+    fn test_parse_github_ref_accepts_hash_prefixed_numbers() {
+        assert_eq!(parse_github_ref("#42"), Some(GitHubRef { number: 42 }));
+        assert_eq!(parse_github_ref("42"), None);
+        assert_eq!(parse_github_ref("#abc"), None);
+    }
+
+    #[test]
+    fn test_dedupe_github_refs_normalizes_repeated_issue_numbers() {
+        let refs = dedupe_github_refs(&[
+            "#42".to_string(),
+            "#7".to_string(),
+            "#42".to_string(),
+            "garbage".to_string(),
+            "#7".to_string(),
+        ]);
+
+        assert_eq!(
+            refs,
+            vec![GitHubRef { number: 7 }, GitHubRef { number: 42 }]
+        );
     }
 }

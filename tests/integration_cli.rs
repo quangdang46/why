@@ -671,6 +671,51 @@ fn ghost_subcommand_renders_terminal_summary() -> Result<()> {
 }
 
 #[test]
+fn onboard_subcommand_returns_ranked_json_for_fixture_repo() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let output = repo.run_why(&["onboard", "--limit", "5", "--json"])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    let parsed: Value = serde_json::from_str(&stdout)?;
+    let findings = parsed
+        .as_array()
+        .expect("onboard output should be an array");
+    assert!(!findings.is_empty());
+    assert_eq!(findings[0]["path"], "src/payment.rs");
+    assert_eq!(findings[0]["symbol"], "process_payment");
+    assert_eq!(findings[0]["risk_level"], "HIGH");
+    assert!(findings[0]["score"].as_f64().unwrap_or_default() > 0.0);
+    assert!(
+        findings[0]["change_guidance"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty())
+    );
+    assert!(
+        findings[0]["top_commit_summaries"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
+    Ok(())
+}
+
+#[test]
+fn onboard_subcommand_renders_terminal_summary() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let output = repo.run_why(&["onboard", "--limit", "3"])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    assert!(stdout.contains("Top 3 symbols to understand first"));
+    assert!(stdout.contains("src/payment.rs"));
+    assert!(stdout.contains("process_payment"));
+    assert!(stdout.contains("risk HIGH") || stdout.contains("risk HIGH  "));
+    assert!(stdout.contains("guidance:"));
+    assert!(stdout.contains("top history:"));
+    Ok(())
+}
+
+#[test]
 fn blame_chain_queries_return_origin_and_skipped_commits_for_fixture_repo() -> Result<()> {
     let repo = setup_hotfix_repo()?;
     let output = repo.run_why(&[
@@ -733,6 +778,88 @@ fn blame_chain_queries_render_terminal_output_for_fixture_repo() -> Result<()> {
     assert!(stdout.contains("True origin:"));
     assert!(stdout.contains("hotfix: fix duplicate charge vulnerability"));
     assert!(stdout.contains("Risk signals:"));
+
+    Ok(())
+}
+
+#[test]
+fn evolution_queries_return_timeline_json_for_fixture_repo() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let output = repo.run_why(&[
+        "src/payment.rs:PaymentService::process_payment",
+        "--evolution",
+        "--json",
+    ])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    let parsed: Value = serde_json::from_str(&stdout)?;
+    assert_eq!(parsed["target"]["path"], "src/payment.rs");
+    assert_eq!(parsed["target"]["query_kind"], "qualified_symbol");
+    assert_eq!(parsed["mode"], "evolution-history");
+    let commits = parsed["commits"]
+        .as_array()
+        .expect("evolution output should include commits");
+    assert!(!commits.is_empty());
+    assert!(
+        parsed["paths_seen"]
+            .as_array()
+            .is_some_and(|paths| !paths.is_empty())
+    );
+    assert!(
+        parsed["latest_commit"]["summary"]
+            .as_str()
+            .is_some_and(|text| text.contains("fmt: align payment indentation"))
+    );
+    assert!(
+        parsed["origin_commit"]["summary"]
+            .as_str()
+            .is_some_and(|text| text.contains("feat: add payment processing"))
+    );
+    assert!(
+        parsed["narrative_summary"]
+            .as_str()
+            .is_some_and(|text| text.contains("Latest state:"))
+    );
+    assert!(
+        parsed["inflection_points"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
+    assert!(
+        parsed["notes"]
+            .as_array()
+            .is_some_and(|notes| notes.iter().any(|note| note
+                .as_str()
+                .is_some_and(|text| text.contains("Narrative summaries"))))
+    );
+    assert_json_golden("cli_evolution_hotfix_repo", &parsed)?;
+
+    Ok(())
+}
+
+#[test]
+fn evolution_queries_render_terminal_timeline_for_fixture_repo() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let output = repo.run_why(&[
+        "src/payment.rs:PaymentService::process_payment",
+        "--evolution",
+    ])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    assert!(stdout.contains("Evolution history for src/payment.rs"));
+    assert!(stdout.contains("Heuristic risk: HIGH."));
+    assert!(stdout.contains("Narrative summary:"));
+    assert!(stdout.contains("Current edge:"));
+    assert!(stdout.contains("Origin:"));
+    assert!(stdout.contains("Paths seen:"));
+    assert!(stdout.contains("src/payment.rs"));
+    assert!(stdout.contains("Inflection points:"));
+    assert!(stdout.contains("hotfix: fix duplicate charge vulnerability"));
+    assert!(stdout.contains("Timeline:"));
+    assert!(stdout.contains("Notes:"));
+    assert_terminal_golden("cli_evolution_hotfix_repo", &stdout)?;
 
     Ok(())
 }
@@ -835,6 +962,54 @@ fn split_queries_render_positive_terminal_suggestion_for_mixed_era_fixture() -> 
     assert!(stdout.contains("different reasons to change"));
     assert!(stdout.contains("historically distinct paths"));
     assert_terminal_golden("cli_split_positive_split_repo", &stdout)?;
+
+    Ok(())
+}
+
+#[test]
+fn shell_subcommand_supports_help_reload_and_quit() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let output = repo.run_why_with_stdin(&["shell"], "help\nreload\nquit\n")?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    assert!(
+        stdout.contains("why shell — loading repository index...")
+            || stdout.contains("why shell - loading repository index...")
+    );
+    assert!(stdout.contains("Shell commands:"));
+    assert!(stdout.contains("reload             Rebuild the completion index"));
+    assert!(stdout.contains("reloaded "));
+
+    Ok(())
+}
+
+#[test]
+fn shell_subcommand_runs_queries_with_default_no_llm_mode() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let output = repo.run_why_with_stdin(&["shell"], "src/payment.rs:6 --json\nquit\n")?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    let summary_index = stdout
+        .find("\"summary\"")
+        .expect("shell query should emit JSON report");
+    let parsed: Value = serde_json::from_str(&stdout[summary_index.saturating_sub(2)..])
+        .or_else(|_| serde_json::from_str(&stdout[summary_index.saturating_sub(1)..]))
+        .or_else(|_| {
+            let start = stdout
+                .find('{')
+                .expect("shell stdout should contain JSON object");
+            serde_json::from_str(&stdout[start..])
+        })?;
+    assert_eq!(parsed["mode"], "heuristic");
+    assert_eq!(parsed["risk_level"], "HIGH");
+    assert!(parsed["notes"].as_array().is_some_and(|notes| {
+        notes.iter().any(|note| {
+            note.as_str()
+                .is_some_and(|text| text.contains("No LLM synthesis"))
+        })
+    }));
 
     Ok(())
 }

@@ -6,7 +6,7 @@ use why_locator::{QueryTarget, parse_target};
 #[command(name = "why")]
 #[command(
     about = "Ask your codebase why a line, range, symbol, or repo hotspot exists",
-    after_help = "Examples:\n  why src/auth.rs:42\n  why src/auth.rs --lines 40:45 --no-llm\n  why src/auth.rs:verify_token --json\n  why src/auth.rs:AuthService::login --team\n  why src/auth.rs:verify_token --blame-chain\n  why src/auth.rs:verify_token --evolution\n  why hotspots --limit 10\n  why health\n  why health --ci 80\n  why pr-template\n  why ghost --limit 10"
+    after_help = "Examples:\n  why src/auth.rs:42\n  why src/auth.rs --lines 40:45 --no-llm\n  why src/auth.rs:verify_token --json\n  why src/auth.rs:AuthService::login --team\n  why src/auth.rs:verify_token --blame-chain\n  why src/auth.rs:verify_token --evolution\n  why hotspots --limit 10\n  why health\n  why health --ci 80\n  why pr-template\n  why ghost --limit 10\n  why onboard --limit 10"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -107,6 +107,16 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Rank the symbols a new engineer should understand first.
+    Onboard {
+        /// Maximum number of findings to return.
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+
+        /// Emit machine-readable output.
+        #[arg(long)]
+        json: bool,
+    },
     /// Install managed git hooks that warn on high-risk changes.
     InstallHooks {
         /// Warn instead of blocking when high-risk changes are detected.
@@ -149,6 +159,7 @@ pub enum Mode {
     Health { json: bool, ci: Option<u32> },
     PrTemplate { json: bool },
     Ghost { limit: usize, json: bool },
+    Onboard { limit: usize, json: bool },
     InstallHooks { warn_only: bool },
     UninstallHooks,
     Completions { shell: CompletionShell },
@@ -278,6 +289,25 @@ impl Cli {
                     bail!("--limit must be greater than zero");
                 }
                 Ok(Mode::Ghost { limit, json })
+            }
+            Some(Command::Onboard { limit, json }) => {
+                if self.target.is_some()
+                    || self.lines.is_some()
+                    || self.no_llm
+                    || self.no_cache
+                    || self.split
+                    || self.coupled
+                    || self.since.is_some()
+                    || self.team
+                    || self.blame_chain
+                    || self.evolution
+                {
+                    bail!("the onboard subcommand does not accept query flags or a target");
+                }
+                if limit == 0 {
+                    bail!("--limit must be greater than zero");
+                }
+                Ok(Mode::Onboard { limit, json })
             }
             Some(Command::InstallHooks { warn_only }) => {
                 if self.target.is_some()
@@ -520,7 +550,13 @@ mod tests {
 
     #[test]
     fn parses_evolution_request() {
-        let cli = Cli::parse_from(["why", "src/lib.rs:authenticate", "--since", "30", "--evolution"]);
+        let cli = Cli::parse_from([
+            "why",
+            "src/lib.rs:authenticate",
+            "--since",
+            "30",
+            "--evolution",
+        ]);
         let mode = cli.parse_mode().expect("evolution target should parse");
         let Mode::Query(request) = mode else {
             panic!("expected query mode");
@@ -617,6 +653,18 @@ mod tests {
     }
 
     #[test]
+    fn parses_onboard_subcommand() {
+        let cli = Cli::parse_from(["why", "onboard", "--limit", "7", "--json"]);
+        assert_eq!(
+            cli.parse_mode().expect("onboard should parse"),
+            Mode::Onboard {
+                limit: 7,
+                json: true,
+            }
+        );
+    }
+
+    #[test]
     fn parses_install_hooks_subcommand() {
         let cli = Cli::parse_from(["why", "install-hooks", "--warn-only"]);
         assert_eq!(
@@ -648,7 +696,10 @@ mod tests {
     #[test]
     fn parses_manpage_subcommand() {
         let cli = Cli::parse_from(["why", "manpage"]);
-        assert_eq!(cli.parse_mode().expect("manpage should parse"), Mode::Manpage);
+        assert_eq!(
+            cli.parse_mode().expect("manpage should parse"),
+            Mode::Manpage
+        );
     }
 
     #[test]
@@ -680,6 +731,19 @@ mod tests {
         let error = cli
             .parse_mode()
             .expect_err("hotspots should reject a zero limit");
+        assert!(
+            error
+                .to_string()
+                .contains("--limit must be greater than zero")
+        );
+    }
+
+    #[test]
+    fn rejects_zero_limit_for_onboard() {
+        let cli = Cli::parse_from(["why", "onboard", "--limit", "0"]);
+        let error = cli
+            .parse_mode()
+            .expect_err("onboard should reject a zero limit");
         assert!(
             error
                 .to_string()
@@ -757,6 +821,17 @@ mod tests {
     fn rejects_query_flags_for_pr_template() {
         let error = Cli::try_parse_from(["why", "pr-template", "--no-cache"])
             .expect_err("clap should reject query flags for pr-template");
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--no-cache' found")
+        );
+    }
+
+    #[test]
+    fn rejects_query_flags_for_onboard() {
+        let error = Cli::try_parse_from(["why", "onboard", "--no-cache"])
+            .expect_err("clap should reject query flags for onboard");
         assert!(
             error
                 .to_string()

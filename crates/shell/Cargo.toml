@@ -9,3 +9,7 @@ publish = false
 
 [dependencies]
 anyhow.workspace = true
+dirs.workspace = true
+rustyline.workspace = true
+walkdir.workspace = true
+why-locator = { path = "../locator" }

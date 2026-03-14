@@ -187,7 +187,7 @@ fn write_cache_file(path: &Path, payload: &[u8]) -> Result<()> {
             .with_context(|| format!("failed to create cache temp file {}", path.display()))?;
         file.write_all(payload)
             .with_context(|| format!("failed to write cache temp file {}", path.display()))?;
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(unix))]

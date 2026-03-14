@@ -141,11 +141,25 @@ pub struct EvolutionCommit {
     pub path_at_commit: PathBuf,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EvolutionInflection {
+    pub category: &'static str,
+    pub reason: String,
+    pub oid: String,
+    pub summary: String,
+    pub path_at_commit: PathBuf,
+    pub date: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EvolutionHistoryResult {
     pub target: OutputTarget,
     pub commits: Vec<EvolutionCommit>,
     pub paths_seen: Vec<PathBuf>,
+    pub latest_commit: Option<CommitEvidence>,
+    pub origin_commit: Option<CommitEvidence>,
+    pub inflection_points: Vec<EvolutionInflection>,
+    pub narrative_summary: String,
     pub risk_level: RiskLevel,
     pub risk_summary: String,
     pub change_guidance: String,
@@ -603,6 +617,17 @@ pub fn analyze_evolution_history(
         }
     }
 
+    let latest_commit = commits.first().map(|entry| entry.commit.clone());
+    let origin_commit = commits.last().map(|entry| entry.commit.clone());
+    let inflection_points = collect_evolution_inflections(&commits, &paths_seen);
+    let narrative_summary = summarize_evolution_history(
+        &commits,
+        &inflection_points,
+        &paths_seen,
+        risk_level,
+        &local_context,
+    );
+
     Ok(EvolutionHistoryResult {
         target: OutputTarget {
             path: relative_path,
@@ -612,6 +637,10 @@ pub fn analyze_evolution_history(
         },
         commits,
         paths_seen,
+        latest_commit,
+        origin_commit,
+        inflection_points,
+        narrative_summary,
         risk_level,
         risk_summary: risk_level.summary().to_string(),
         change_guidance: risk_level.change_guidance().to_string(),
@@ -619,7 +648,7 @@ pub fn analyze_evolution_history(
         mode: "evolution-history",
         notes: vec![
             "Evolution-history mode follows git log renames to preserve pre-move context",
-            "This backend result is intended as raw material for a later timeline presentation",
+            "Narrative summaries separate recent state, origin, and inflection points from the raw timeline",
         ],
     })
 }
@@ -816,6 +845,141 @@ fn collect_evolution_history(
     Ok(commits)
 }
 
+fn collect_evolution_inflections(
+    commits: &[EvolutionCommit],
+    paths_seen: &[PathBuf],
+) -> Vec<EvolutionInflection> {
+    let mut inflections = Vec::new();
+
+    if let Some(rename_commit) = commits.iter().find(|entry| {
+        paths_seen.len() > 1 && entry.commit.summary.to_ascii_lowercase().contains("rename")
+    }) {
+        inflections.push(EvolutionInflection {
+            category: "rename",
+            reason: format!(
+                "History crosses {} path variants, so this commit likely marks a rename or move boundary.",
+                paths_seen.len()
+            ),
+            oid: rename_commit.commit.oid.clone(),
+            summary: rename_commit.commit.summary.clone(),
+            path_at_commit: rename_commit.path_at_commit.clone(),
+            date: rename_commit.commit.date.clone(),
+        });
+    }
+
+    if let Some(risk_commit) = commits
+        .iter()
+        .filter(|entry| !entry.commit.is_mechanical)
+        .find(|entry| commit_signal_strength(&entry.commit) >= 3)
+    {
+        inflections.push(EvolutionInflection {
+            category: "risk-escalation",
+            reason: "This commit introduces the strongest historical risk signal in the timeline."
+                .into(),
+            oid: risk_commit.commit.oid.clone(),
+            summary: risk_commit.commit.summary.clone(),
+            path_at_commit: risk_commit.path_at_commit.clone(),
+            date: risk_commit.commit.date.clone(),
+        });
+    }
+
+    if let Some(mechanical_tail) = commits
+        .iter()
+        .find(|entry| entry.commit.is_mechanical && !entry.commit.summary.is_empty())
+    {
+        inflections.push(EvolutionInflection {
+            category: "mechanical-follow-up",
+            reason: "A later mechanical change touched the target after substantive behavior had already landed.".into(),
+            oid: mechanical_tail.commit.oid.clone(),
+            summary: mechanical_tail.commit.summary.clone(),
+            path_at_commit: mechanical_tail.path_at_commit.clone(),
+            date: mechanical_tail.commit.date.clone(),
+        });
+    }
+
+    inflections
+}
+
+fn summarize_evolution_history(
+    commits: &[EvolutionCommit],
+    inflections: &[EvolutionInflection],
+    paths_seen: &[PathBuf],
+    risk_level: RiskLevel,
+    local_context: &LocalContext,
+) -> String {
+    if commits.is_empty() {
+        return "No evolution history matched the requested window, so there is not enough evidence to narrate how this target changed over time.".into();
+    }
+
+    let latest = &commits[0];
+    let origin = commits.last().unwrap_or(latest);
+    let mut parts = Vec::new();
+
+    parts.push(format!(
+        "Latest state: {} on {} at {}.",
+        latest.commit.summary,
+        latest.commit.date,
+        latest.path_at_commit.display()
+    ));
+
+    if latest.commit.oid != origin.commit.oid {
+        parts.push(format!(
+            "Origin: {} on {} at {}.",
+            origin.commit.summary,
+            origin.commit.date,
+            origin.path_at_commit.display()
+        ));
+    }
+
+    if paths_seen.len() > 1 {
+        let rendered_paths = paths_seen
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(" -> ");
+        parts.push(format!("Path progression: {rendered_paths}."));
+    }
+
+    if !inflections.is_empty() {
+        let highlights = inflections
+            .iter()
+            .map(|point| format!("{} ({})", point.summary, point.category))
+            .collect::<Vec<_>>()
+            .join("; ");
+        parts.push(format!("Key inflection points: {highlights}."));
+    }
+
+    if !local_context.risk_flags.is_empty() {
+        parts.push(format!(
+            "Local context reinforces this with signals such as {}.",
+            local_context.risk_flags.join(", ")
+        ));
+    }
+
+    parts.push(format!(
+        "Overall risk remains {}: {}",
+        risk_level.as_str(),
+        risk_level.change_guidance()
+    ));
+
+    parts.join(" ")
+}
+
+fn commit_signal_strength(commit: &CommitEvidence) -> usize {
+    let lower = format!("{} {}", commit.summary, commit.message).to_ascii_lowercase();
+    [
+        "hotfix",
+        "security",
+        "incident",
+        "vulnerability",
+        "auth",
+        "token",
+    ]
+    .into_iter()
+    .filter(|needle| lower.contains(needle))
+    .count()
+}
+
 fn commit_touches_path(repo: &Repository, commit: &git2::Commit<'_>, path: &Path) -> Result<bool> {
     let tree = commit.tree().context("failed to load commit tree")?;
     let parent_tree = if commit.parent_count() > 0 {
@@ -856,7 +1020,8 @@ fn commit_touches_path(repo: &Repository, commit: &git2::Commit<'_>, path: &Path
 }
 
 fn path_for_commit(repo: &Repository, commit: &git2::Commit<'_>, path: &Path) -> Result<PathBuf> {
-    rename_source_path(repo, commit, path).map(|previous| previous.unwrap_or_else(|| path.to_path_buf()))
+    rename_source_path(repo, commit, path)
+        .map(|previous| previous.unwrap_or_else(|| path.to_path_buf()))
 }
 
 fn rename_source_path(
@@ -1319,9 +1484,9 @@ mod tests {
     use super::{
         CommitEvidence, LocalContext, RiskLevel, blame_chain, blame_commit_evidence,
         collect_evolution_history, compute_relevance_score, discover_repository,
-        explainable_commit, extract_issue_refs, extract_local_context,
-        has_mechanical_summary, infer_risk_level, is_whitespace_only_diff_line,
-        parse_default_risk_level, relative_repo_path, select_top_commits, truncate_chars,
+        explainable_commit, extract_issue_refs, extract_local_context, has_mechanical_summary,
+        infer_risk_level, is_whitespace_only_diff_line, parse_default_risk_level,
+        relative_repo_path, select_top_commits, truncate_chars,
     };
     use anyhow::{Context, Result};
     use git2::Repository;
@@ -1886,12 +2051,16 @@ mod tests {
         assert_eq!(history[0].path_at_commit, Path::new("src/modern.rs"));
         assert_eq!(history[1].path_at_commit, Path::new("src/legacy.rs"));
         assert_eq!(history[2].path_at_commit, Path::new("src/legacy.rs"));
-        assert!(history
-            .iter()
-            .any(|entry| entry.commit.summary.contains("rename helper module")));
-        assert!(history
-            .iter()
-            .any(|entry| entry.commit.summary.contains("add legacy helper")));
+        assert!(
+            history
+                .iter()
+                .any(|entry| entry.commit.summary.contains("rename helper module"))
+        );
+        assert!(
+            history
+                .iter()
+                .any(|entry| entry.commit.summary.contains("add legacy helper"))
+        );
         Ok(())
     }
 }

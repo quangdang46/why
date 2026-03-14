@@ -9,3 +9,10 @@ publish = false
 
 [dependencies]
 anyhow.workspace = true
+tokio.workspace = true
+tower-lsp.workspace = true
+why-archaeologist = { path = "../archaeologist" }
+why-locator = { path = "../locator" }
+
+[dev-dependencies]
+tempfile = "3"

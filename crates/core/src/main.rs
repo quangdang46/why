@@ -8,8 +8,8 @@ use clap_mangen::Man;
 use cli::{Cli, CompletionShell, Mode, QueryRequest};
 use git2::Repository;
 use why_archaeologist::{
-    ArchaeologyResult, BlameChainResult, EvolutionHistoryResult, TeamReport,
-    analyze_blame_chain, analyze_evolution_history, analyze_target_with_options, analyze_team,
+    ArchaeologyResult, BlameChainResult, EvolutionHistoryResult, TeamReport, analyze_blame_chain,
+    analyze_evolution_history, analyze_target_with_options, analyze_team,
 };
 use why_cache::{Cache, HealthSnapshot};
 use why_context::load_config;
@@ -19,7 +19,8 @@ use why_evidence::{
 };
 use why_locator::QueryKind;
 use why_scanner::{
-    CouplingReport, GhostFinding, HealthDelta, HealthReport, HotspotFinding, PrTemplateReport,
+    CouplingReport, GhostFinding, HealthDelta, HealthReport, HotspotFinding, OnboardFinding,
+    PrTemplateReport,
 };
 use why_splitter::SplitSuggestion;
 use why_synthesizer::{
@@ -71,6 +72,10 @@ fn run() -> Result<ExitStatus> {
         }
         Mode::Ghost { limit, json } => {
             run_ghost(limit, json)?;
+            Ok(ExitStatus::Success)
+        }
+        Mode::Onboard { limit, json } => {
+            run_onboard(limit, json)?;
             Ok(ExitStatus::Success)
         }
         Mode::InstallHooks { warn_only } => {
@@ -199,6 +204,19 @@ fn run_ghost(limit: usize, json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&findings)?);
     } else {
         render_ghost_terminal(&findings, limit);
+    }
+
+    Ok(())
+}
+
+fn run_onboard(limit: usize, json: bool) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let findings = why_scanner::scan_onboard(&cwd, limit)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&findings)?);
+    } else {
+        render_onboard_terminal(&findings, limit);
     }
 
     Ok(())
@@ -480,13 +498,57 @@ fn render_evolution_terminal(report: &EvolutionHistoryResult) {
     println!("{}", report.risk_summary);
     println!("{}", report.change_guidance);
     println!();
+    println!("Narrative summary:");
+    println!("  {}", report.narrative_summary);
 
+    println!();
+    match (&report.latest_commit, &report.origin_commit) {
+        (Some(latest), Some(origin)) => {
+            println!("Current edge:");
+            println!(
+                "  {}  {}  {}",
+                latest.short_oid, latest.date, latest.summary
+            );
+            println!("Origin:");
+            println!(
+                "  {}  {}  {}",
+                origin.short_oid, origin.date, origin.summary
+            );
+        }
+        (Some(latest), None) => {
+            println!("Current edge:");
+            println!(
+                "  {}  {}  {}",
+                latest.short_oid, latest.date, latest.summary
+            );
+        }
+        _ => {}
+    }
+
+    println!();
     if report.paths_seen.is_empty() {
         println!("Paths seen: none");
     } else {
         println!("Paths seen:");
         for path in &report.paths_seen {
             println!("  - {}", path.display());
+        }
+    }
+
+    println!();
+    if report.inflection_points.is_empty() {
+        println!("Inflection points: none");
+    } else {
+        println!("Inflection points:");
+        for point in &report.inflection_points {
+            println!(
+                "  - [{}] {}  {}  {}",
+                point.category,
+                point.date,
+                point.path_at_commit.display(),
+                point.summary
+            );
+            println!("      {}", point.reason);
         }
     }
 
@@ -636,6 +698,39 @@ fn render_ghost_terminal(findings: &[GhostFinding], limit: usize) {
         }
         for note in &finding.notes {
             println!("      note: {note}");
+        }
+    }
+}
+
+fn render_onboard_terminal(findings: &[OnboardFinding], limit: usize) {
+    println!("Top {limit} symbols to understand first");
+    println!();
+    if findings.is_empty() {
+        println!("No onboarding findings were found in the current repository.");
+        return;
+    }
+
+    for (index, finding) in findings.iter().enumerate() {
+        println!(
+            "  {:>2}. {}:{}-{}  {}  risk {:<6}  score {:.2}",
+            index + 1,
+            finding.path.display(),
+            finding.start_line,
+            finding.end_line,
+            finding.symbol,
+            finding.risk_level.as_str(),
+            finding.score
+        );
+        println!("      summary: {}", finding.summary);
+        println!("      guidance: {}", finding.change_guidance);
+        if let Some(date) = &finding.last_touched_date {
+            println!("      last touched: {date}");
+        }
+        if !finding.top_commit_summaries.is_empty() {
+            println!(
+                "      top history: {}",
+                finding.top_commit_summaries.join(" | ")
+            );
         }
     }
 }

@@ -204,10 +204,27 @@ Add to your project's `CLAUDE.md`:
 - `why <file> --lines <start:end>` — explain why a line range exists
 - `why <file>:<line> --json` — return machine-readable raw archaeology output
 - `why <file>:<symbol>` — explain why a supported symbol exists (Rust, JavaScript, TypeScript, Python)
+- `why <file>:<symbol> --coupled` — inspect co-change dependencies before a deeper refactor
+- `why <file>:<symbol> --team` — identify likely owners before asking for review on risky code
 
 **Always run `why` before deleting or significantly refactoring any function
 that exists in git history for more than 6 months.**
 ```
+
+Recommended Claude Code workflow:
+
+1. Before deleting or rewriting unfamiliar code, run `why` on the exact symbol or line range first.
+2. If the reported risk is **HIGH**, treat that as a stop-and-investigate signal rather than a suggestion to proceed quickly.
+3. For larger refactors, also run `--coupled` and `--team` so you can spot co-change surfaces and likely reviewers.
+4. When working inside an MCP-capable editor, use `why mcp` for tool integration; use the normal CLI when you want the full query/output flow documented in this README.
+
+Recommended code review routine:
+
+- include a `why ... --json` or terminal summary when proposing removal of old-looking code
+- use `why ... --team` when the change touches operationally sensitive paths and you need to find the best reviewer
+- use `why ... --coupled` before splitting or relocating a historically noisy function
+
+For MCP-specific setup examples, see `docs/mcp-setup.md`.
 
 ## API Key
 

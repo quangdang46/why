@@ -7,12 +7,9 @@ use serde::Serialize;
 use why_archaeologist::{RiskLevel, analyze_target_with_options, discover_repository};
 use why_locator::{QueryKind, QueryTarget, SupportedLanguage, list_all_symbols};
 
-const SOURCE_EXTENSIONS: &[&str] = &[
-    "c", "cc", "cpp", "cs", "go", "h", "hpp", "java", "js", "jsx", "py", "rb", "rs", "swift", "ts",
-    "tsx",
-];
-const STATIC_ANALYSIS_WARNING: &str =
-    "WARNING: ghost detection uses static analysis. Verify these are truly uncalled before deletion.";
+use crate::{is_tracked_source_file, should_skip_dir};
+
+const STATIC_ANALYSIS_WARNING: &str = "WARNING: ghost detection uses static analysis. Verify these are truly uncalled before deletion.";
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct GhostFinding {
@@ -43,7 +40,7 @@ pub fn scan_ghosts(repo_root: &Path, limit: usize) -> Result<Vec<GhostFinding>> 
         .workdir()
         .context("repository does not have a working directory")?;
 
-    let files = collect_source_files(workdir, workdir)?;
+    let files = collect_source_files(&repo, workdir, workdir)?;
     let call_counts = aggregate_call_counts(&files);
     let mut findings = Vec::new();
 
@@ -63,13 +60,22 @@ pub fn scan_ghosts(repo_root: &Path, limit: usize) -> Result<Vec<GhostFinding>> 
     Ok(findings)
 }
 
-fn collect_source_files(workdir: &Path, dir: &Path) -> Result<Vec<SourceFile>> {
+fn collect_source_files(
+    repo: &git2::Repository,
+    workdir: &Path,
+    dir: &Path,
+) -> Result<Vec<SourceFile>> {
     let mut files = Vec::new();
-    collect_source_files_into(workdir, dir, &mut files)?;
+    collect_source_files_into(repo, workdir, dir, &mut files)?;
     Ok(files)
 }
 
-fn collect_source_files_into(workdir: &Path, dir: &Path, files: &mut Vec<SourceFile>) -> Result<()> {
+fn collect_source_files_into(
+    repo: &git2::Repository,
+    workdir: &Path,
+    dir: &Path,
+    files: &mut Vec<SourceFile>,
+) -> Result<()> {
     for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
         let entry = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
         let path = entry.path();
@@ -78,16 +84,14 @@ fn collect_source_files_into(workdir: &Path, dir: &Path, files: &mut Vec<SourceF
             .with_context(|| format!("failed to inspect {}", path.display()))?;
 
         if file_type.is_dir() {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if name == ".git" || name == "target" || name == ".why" {
+            if should_skip_dir(&path) {
                 continue;
             }
-            collect_source_files_into(workdir, &path, files)?;
+            collect_source_files_into(repo, workdir, &path, files)?;
             continue;
         }
 
-        if !file_type.is_file() || !is_source_file(&path) {
+        if !file_type.is_file() || !is_tracked_source_file(repo, workdir, &path) {
             continue;
         }
 
@@ -242,7 +246,9 @@ fn should_skip_symbol(path: &Path, source: &str, start_line: u32, symbol: &str) 
     if path
         .file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name.ends_with("_test.rs") || name.ends_with(".test.js") || name.ends_with(".test.ts"))
+        .is_some_and(|name| {
+            name.ends_with("_test.rs") || name.ends_with(".test.js") || name.ends_with(".test.ts")
+        })
     {
         return true;
     }
@@ -268,13 +274,6 @@ fn is_ident_start(byte: u8) -> bool {
 
 fn is_ident_continue(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
-}
-
-fn is_source_file(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| SOURCE_EXTENSIONS.contains(&ext))
-        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -356,9 +355,20 @@ git commit -m 'feat: add main entry point using authenticate' >/dev/null
         assert_eq!(ghost.risk_level, RiskLevel::HIGH);
         assert_eq!(ghost.call_site_count, 1);
         assert!(ghost.commit_count >= 1);
-        assert!(ghost.notes.iter().any(|note| note.contains("static analysis")));
-        assert!(ghost.summary.contains("token validation") || ghost.summary.contains("auth forgery"));
-        assert!(findings.iter().all(|finding| finding.symbol != "authenticate"));
+        assert!(
+            ghost
+                .notes
+                .iter()
+                .any(|note| note.contains("static analysis"))
+        );
+        assert!(
+            ghost.summary.contains("token validation") || ghost.summary.contains("auth forgery")
+        );
+        assert!(
+            findings
+                .iter()
+                .all(|finding| finding.symbol != "authenticate")
+        );
         Ok(())
     }
 

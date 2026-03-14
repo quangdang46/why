@@ -7,6 +7,7 @@ pub const TEST_CASES: &[(&str, &str)] = &[
     ("test_issue_refs_deduplicated", "duplicate issue refs across commits collapse into unique signal set"),
     ("test_total_commit_count_preserved_when_payload_is_reduced", "reported total commit count stays accurate even when the payload drops commit detail to fit budget"),
     ("test_signal_lists_are_bounded", "pack-level and per-commit signal lists stay capped for bounded synthesis and fallback payloads"),
+    ("test_dedupe_github_refs_normalizes_repeated_issue_numbers", "repeated GitHub issue refs collapse to one fetch target per issue number"),
 ];
 
 #[test]
@@ -17,6 +18,7 @@ fn evidence_test_matrix_covers_plan_inventory() {
         "test_issue_refs_deduplicated",
         "test_total_commit_count_preserved_when_payload_is_reduced",
         "test_signal_lists_are_bounded",
+        "test_dedupe_github_refs_normalizes_repeated_issue_numbers",
     ];
 
     let actual: Vec<_> = TEST_CASES.iter().map(|(name, _)| *name).collect();

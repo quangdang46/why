@@ -6,10 +6,7 @@ use git2::{BlameOptions, Repository};
 use serde::Serialize;
 use time::{Date, Duration, Month, OffsetDateTime};
 
-const SOURCE_EXTENSIONS: &[&str] = &[
-    "c", "cc", "cpp", "cs", "go", "h", "hpp", "java", "js", "jsx", "py", "rb", "rs", "swift", "ts",
-    "tsx",
-];
+use crate::{is_tracked_source_file, should_skip_dir};
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TimeBombKind {
@@ -73,16 +70,14 @@ fn scan_dir(
             .with_context(|| format!("failed to inspect {}", path.display()))?;
 
         if file_type.is_dir() {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if name == ".git" || name == "target" || name == ".why" {
+            if should_skip_dir(&path) {
                 continue;
             }
             scan_dir(repo, workdir, &path, time_bomb_age_days, findings)?;
             continue;
         }
 
-        if !file_type.is_file() || !is_source_file(&path) {
+        if !file_type.is_file() || !is_tracked_source_file(repo, workdir, &path) {
             continue;
         }
 
@@ -143,13 +138,6 @@ fn scan_file(
     }
 
     Ok(())
-}
-
-fn is_source_file(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| SOURCE_EXTENSIONS.contains(&ext))
-        .unwrap_or(false)
 }
 
 fn classify_due_date_marker(line: &str) -> Option<(TimeBombKind, Date)> {

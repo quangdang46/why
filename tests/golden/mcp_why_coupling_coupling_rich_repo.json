@@ -1,0 +1,28 @@
+{
+  "target_path": "src/schema.rs",
+  "target_commit_count": 5,
+  "scan_commits": 5,
+  "results": [
+    {
+      "path": "src/data.rs",
+      "shared_commits": 5,
+      "target_commit_count": 5,
+      "coupling_ratio": 1.0,
+      "top_commit_summaries": [
+        "migration: schema v5 + data migration",
+        "migration: schema v4 + data migration",
+        "migration: schema v3 + data migration + metrics"
+      ]
+    },
+    {
+      "path": "src/metrics.rs",
+      "shared_commits": 2,
+      "target_commit_count": 5,
+      "coupling_ratio": 0.4,
+      "top_commit_summaries": [
+        "migration: schema v3 + data migration + metrics",
+        "migration: schema v1 + data migration + metrics"
+      ]
+    }
+  ]
+}

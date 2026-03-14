@@ -53,6 +53,13 @@ Add the server to your Claude Code MCP settings:
 
 After Claude Code reloads its MCP configuration, the `why` tools should become available from the MCP server.
 
+Suggested Claude Code usage:
+
+- use MCP when you want `why` available as an editor-integrated tool
+- prefer the normal `why ...` CLI when you want the richer human-facing query flow described in `README.md`
+- before deleting or heavily refactoring unfamiliar code, start with `why_symbol` or the CLI equivalent on the exact symbol you plan to touch
+- if the code looks historically messy, follow up with `why_split`, `why_coupling`, or the CLI `--team`/`--coupled` flow as appropriate
+
 ## Cursor
 
 Cursor uses the same basic stdio server shape. Add an MCP server entry that runs:
