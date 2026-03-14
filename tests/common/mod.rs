@@ -2,7 +2,7 @@
 //!
 //! Provides fixture repo setup, CLI invocation helpers, and snapshot normalization.
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::fs;
@@ -339,29 +339,29 @@ fn golden_path(name: &str, extension: &str) -> PathBuf {
 #[allow(dead_code)]
 fn normalize_terminal_line(line: &str) -> String {
     let mut normalized = String::new();
-    let mut token = String::new();
+    let mut segment = String::new();
 
     for ch in line.chars() {
         if ch.is_whitespace() {
-            if !token.is_empty() {
-                if is_hex_segment(&token) {
+            if !segment.is_empty() {
+                if is_hex_segment(&segment) {
                     normalized.push_str("<oid>");
                 } else {
-                    normalized.push_str(&token);
+                    normalized.push_str(&segment);
                 }
-                token.clear();
+                segment.clear();
             }
             normalized.push(ch);
         } else {
-            token.push(ch);
+            segment.push(ch);
         }
     }
 
-    if !token.is_empty() {
-        if is_hex_segment(&token) {
+    if !segment.is_empty() {
+        if is_hex_segment(&segment) {
             normalized.push_str("<oid>");
         } else {
-            normalized.push_str(&token);
+            normalized.push_str(&segment);
         }
     }
 

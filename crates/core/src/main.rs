@@ -3,28 +3,29 @@ mod cli;
 use anyhow::Result;
 use clap::CommandFactory;
 use clap::Parser;
-use clap_complete::{generate, Generator, Shell};
+use clap_complete::{Generator, Shell, generate};
 use clap_mangen::Man;
 use cli::{Cli, CompletionShell, Mode, QueryRequest};
 use git2::Repository;
+use why_annotator::writer::annotate_file;
 use why_archaeologist::{
-    analyze_blame_chain, analyze_evolution_history, analyze_target_with_options, analyze_team,
-    ArchaeologyResult, BlameChainResult, EvolutionHistoryResult, TeamReport,
+    ArchaeologyResult, BlameChainResult, EvolutionHistoryResult, TeamReport, analyze_blame_chain,
+    analyze_evolution_history, analyze_target_with_options, analyze_team,
 };
 use why_cache::{Cache, HealthSnapshot};
 use why_context::load_config;
 use why_evidence::{
-    enrich_github_refs, EvidenceCommit, EvidenceContext, EvidenceTarget, GitHubClient,
-    GitHubEnrichment,
+    EvidenceCommit, EvidenceContext, EvidenceTarget, GitHubClient, GitHubEnrichment,
+    enrich_github_refs,
 };
 use why_locator::QueryKind;
 use why_scanner::{
     CouplingReport, CoverageGapReport, GhostFinding, HealthDelta, HealthReport, HotspotFinding,
-    OnboardFinding, PrTemplateReport,
+    OnboardFinding, PrTemplateReport, Severity, TimeBombFinding, TimeBombKind,
 };
 use why_splitter::SplitSuggestion;
 use why_synthesizer::{
-    heuristic_report, parse_response, prompt_contract, AnthropicClient, AnthropicRequest, WhyReport,
+    AnthropicClient, AnthropicRequest, WhyReport, heuristic_report, parse_response, prompt_contract,
 };
 
 fn main() {
@@ -85,6 +86,10 @@ fn run() -> Result<ExitStatus> {
         }
         Mode::Onboard { limit, json } => {
             run_onboard(limit, json)?;
+            Ok(ExitStatus::Success)
+        }
+        Mode::TimeBombs { age_days, json } => {
+            run_time_bombs(age_days, json)?;
             Ok(ExitStatus::Success)
         }
         Mode::InstallHooks { warn_only } => {
@@ -245,6 +250,19 @@ fn run_onboard(limit: usize, json: bool) -> Result<()> {
     Ok(())
 }
 
+fn run_time_bombs(age_days: i64, json: bool) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let findings = why_scanner::scan_time_bombs(&cwd, age_days)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&findings)?);
+    } else {
+        render_time_bombs_terminal(&findings, age_days);
+    }
+
+    Ok(())
+}
+
 fn run_completions(shell: CompletionShell) -> Result<()> {
     let mut command = Cli::command();
     let name = command.get_name().to_string();
@@ -376,6 +394,18 @@ fn run_query(request: QueryRequest) -> Result<()> {
             "{}",
             format_why_report(&format_target_label(&request.target), &report, false)
         );
+    }
+
+    if request.annotate {
+        let source_path = repo_root.join(&result.target.path);
+        annotate_file(
+            &source_path,
+            result.target.start_line,
+            &result,
+            &head_hash,
+            &format_target_label(&request.target),
+        )?;
+        println!("Annotation written to {}", source_path.display());
     }
 
     Ok(())
@@ -809,6 +839,109 @@ fn render_onboard_terminal(findings: &[OnboardFinding], limit: usize) {
     }
 }
 
+fn render_time_bombs_terminal(findings: &[TimeBombFinding], age_threshold: i64) {
+    println!(
+        "Time bombs (aged markers with threshold: {} days)",
+        age_threshold
+    );
+    println!();
+    if findings.is_empty() {
+        println!("No time bombs were found in the current repository.");
+        return;
+    }
+
+    let by_severity = |severity: Severity| {
+        let filtered: Vec<_> = findings.iter().filter(|f| f.severity == severity).collect();
+        filtered
+    };
+
+    let critical = by_severity(Severity::Critical);
+    let warn = by_severity(Severity::Warn);
+    let info = by_severity(Severity::Info);
+
+    if !critical.is_empty() {
+        println!("CRITICAL:");
+        for (index, finding) in critical.iter().enumerate() {
+            println!(
+                "  {}. {}:{}  {}",
+                index + 1,
+                finding.path.display(),
+                finding.line,
+                kind_emoji(finding.kind)
+            );
+            println!("      marker: {}", finding.marker);
+            println!("      kind: {:?}", finding.kind);
+            if let Some(author) = &finding.introduced_by {
+                println!("      introduced by: {}", author);
+            }
+            if let Some(age) = finding.age_days {
+                println!("      age: {} days", age);
+            }
+        }
+        println!();
+    }
+
+    if !warn.is_empty() {
+        println!("WARNING:");
+        for (index, finding) in warn.iter().enumerate() {
+            println!(
+                "  {}. {}:{}  {}",
+                index + 1,
+                finding.path.display(),
+                finding.line,
+                kind_emoji(finding.kind)
+            );
+            println!("      marker: {}", finding.marker);
+            println!("      kind: {:?}", finding.kind);
+            if let Some(author) = &finding.introduced_by {
+                println!("      introduced by: {}", author);
+            }
+            if let Some(age) = finding.age_days {
+                println!("      age: {} days", age);
+            }
+        }
+        println!();
+    }
+
+    if !info.is_empty() {
+        println!("INFO:");
+        for (index, finding) in info.iter().enumerate() {
+            println!(
+                "  {}. {}:{}  {}",
+                index + 1,
+                finding.path.display(),
+                finding.line,
+                kind_emoji(finding.kind)
+            );
+            println!("      marker: {}", finding.marker);
+            println!("      kind: {:?}", finding.kind);
+            if let Some(author) = &finding.introduced_by {
+                println!("      introduced by: {}", author);
+            }
+            if let Some(age) = finding.age_days {
+                println!("      age: {} days", age);
+            }
+        }
+    }
+
+    println!();
+    println!("Total: {} finding(s)", findings.len());
+    println!(
+        "  {} critical, {} warning, {} info",
+        critical.len(),
+        warn.len(),
+        info.len()
+    );
+}
+
+fn kind_emoji(kind: TimeBombKind) -> &'static str {
+    match kind {
+        TimeBombKind::PastDueTodo => "📅",
+        TimeBombKind::AgedHack => "🔧",
+        TimeBombKind::ExpiredRemoveAfter => "⏰",
+    }
+}
+
 fn sorted_signal_entries(signals: &std::collections::HashMap<String, u32>) -> Vec<(String, u32)> {
     let mut entries = signals
         .iter()
@@ -1136,8 +1269,8 @@ fn format_why_report(target: &str, report: &WhyReport, cached: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_github_enrichment, compute_health_delta, format_why_report, render_health_terminal,
-        render_pr_template_markdown, sorted_signal_entries, ExitStatus, HealthReport,
+        ExitStatus, HealthReport, build_github_enrichment, compute_health_delta, format_why_report,
+        render_health_terminal, render_pr_template_markdown, sorted_signal_entries,
     };
     use git2::Repository;
     use std::collections::HashMap;

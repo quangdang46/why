@@ -3,7 +3,7 @@
 use anyhow::{Context, Result, anyhow, bail};
 use reqwest::StatusCode;
 use reqwest::blocking::{Client, RequestBuilder};
-use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT};
+use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use why_context::WhyConfig;
 
@@ -19,6 +19,7 @@ const MAX_SIGNAL_GITHUB_ITEMS: usize = 5;
 const MAX_SIGNAL_GITHUB_NOTES: usize = 10;
 const MAX_GITHUB_TITLE_CHARS: usize = 120;
 const MAX_GITHUB_BODY_CHARS: usize = 400;
+const GITHUB_USER_AGENT: &str = concat!("why/", env!("CARGO_PKG_VERSION"));
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EvidencePack {
@@ -201,7 +202,8 @@ impl GitHubClient {
         let builder = self
             .client
             .get(self.issue_endpoint(issue))
-            .header(ACCEPT, "application/vnd.github+json");
+            .header(ACCEPT, "application/vnd.github+json")
+            .header(USER_AGENT, GITHUB_USER_AGENT);
 
         self.authorize_request(builder)
     }
@@ -215,6 +217,7 @@ impl GitHubClient {
             .client
             .post(self.issue_comment_endpoint(issue))
             .header(ACCEPT, "application/vnd.github+json")
+            .header(USER_AGENT, GITHUB_USER_AGENT)
             .json(&GitHubCommentRequest { body });
 
         self.authorize_request(builder)
@@ -258,8 +261,9 @@ impl GitHubClient {
         response: reqwest::Result<reqwest::blocking::Response>,
         issue: &GitHubRef,
     ) -> Result<GitHubComment> {
-        let response = response
-            .with_context(|| format!("failed to post GitHub comment for issue #{}", issue.number))?;
+        let response = response.with_context(|| {
+            format!("failed to post GitHub comment for issue #{}", issue.number)
+        })?;
 
         let status = response.status();
         let body = response.text().with_context(|| {
@@ -275,18 +279,19 @@ impl GitHubClient {
 
 pub fn parse_github_remote(remote_url: &str) -> Result<GitHubRepo> {
     let trimmed = remote_url.trim();
+    let sanitized = sanitize_remote_for_error(trimmed);
     let rest = trimmed
         .strip_prefix("git@github.com:")
-        .or_else(|| trimmed.strip_prefix("https://github.com/"))
-        .or_else(|| trimmed.strip_prefix("ssh://git@github.com/"))
-        .ok_or_else(|| anyhow!("unsupported GitHub remote: {trimmed}"))?;
+        .or_else(|| github_path_after_host(trimmed, "https://"))
+        .or_else(|| github_path_after_host(trimmed, "ssh://"))
+        .ok_or_else(|| anyhow!("unsupported GitHub remote: {sanitized}"))?;
 
     let rest = rest.trim_end_matches('/').trim_end_matches(".git");
     let mut parts = rest.split('/');
     let owner = parts.next().unwrap_or_default().trim();
     let name = parts.next().unwrap_or_default().trim();
     if owner.is_empty() || name.is_empty() || parts.next().is_some() {
-        bail!("unsupported GitHub remote: {trimmed}");
+        bail!("unsupported GitHub remote: {sanitized}");
     }
 
     Ok(GitHubRepo {
@@ -295,12 +300,34 @@ pub fn parse_github_remote(remote_url: &str) -> Result<GitHubRepo> {
     })
 }
 
+fn github_path_after_host<'a>(remote_url: &'a str, prefix: &str) -> Option<&'a str> {
+    let rest = remote_url.strip_prefix(prefix)?;
+    let rest = rest
+        .rsplit_once('@')
+        .map(|(_, host_and_path)| host_and_path)
+        .unwrap_or(rest);
+    rest.strip_prefix("github.com/")
+}
+
+fn sanitize_remote_for_error(remote_url: &str) -> String {
+    for prefix in ["https://", "http://", "ssh://"] {
+        if let Some(rest) = remote_url.strip_prefix(prefix) {
+            let split_at = rest.find('/').unwrap_or(rest.len());
+            let (authority, path) = rest.split_at(split_at);
+            let authority = authority
+                .rsplit_once('@')
+                .map(|(_, host)| format!("[redacted]@{host}"))
+                .unwrap_or_else(|| authority.to_string());
+            return format!("{prefix}{authority}{path}");
+        }
+    }
+
+    remote_url.to_string()
+}
+
 fn build_http_client() -> Result<Client> {
-    let mut headers = HeaderMap::new();
-    headers.insert(USER_AGENT, HeaderValue::from_static("why-cli/0.1"));
     Client::builder()
         .https_only(true)
-        .default_headers(headers)
         .build()
         .context("failed to build GitHub client")
 }
@@ -789,9 +816,27 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_github_remote_https_with_embedded_credentials() {
+        let repo = parse_github_remote("https://alice:ghp_secret@github.com/anthropics/why.git")
+            .expect("credentialed https remote should parse");
+
+        assert_eq!(repo.owner, "anthropics");
+        assert_eq!(repo.name, "why");
+    }
+
+    #[test]
     fn test_parse_github_remote_ssh() {
         let repo = parse_github_remote("git@github.com:anthropics/why.git")
             .expect("ssh remote should parse");
+
+        assert_eq!(repo.owner, "anthropics");
+        assert_eq!(repo.name, "why");
+    }
+
+    #[test]
+    fn test_parse_github_remote_ssh_url_with_embedded_user() {
+        let repo = parse_github_remote("ssh://git@github.com/anthropics/why.git")
+            .expect("ssh url remote should parse");
 
         assert_eq!(repo.owner, "anthropics");
         assert_eq!(repo.name, "why");
@@ -803,6 +848,18 @@ mod tests {
             .expect_err("non-GitHub remote should fail");
 
         assert!(error.to_string().contains("unsupported GitHub remote"));
+    }
+
+    #[test]
+    fn test_parse_github_remote_redacts_embedded_credentials_in_errors() {
+        let error =
+            parse_github_remote("https://alice:ghp_secret@notgithub.example/anthropics/why.git")
+                .expect_err("non-GitHub remote with credentials should fail");
+        let message = error.to_string();
+
+        assert!(message.contains("unsupported GitHub remote"));
+        assert!(message.contains("[redacted]@notgithub.example"));
+        assert!(!message.contains("alice:ghp_secret"));
     }
 
     #[test]
@@ -876,6 +933,26 @@ mod tests {
             .expect("request should build");
 
         assert!(request.headers().get(AUTHORIZATION).is_none());
+    }
+
+    #[test]
+    fn test_github_client_sets_shipped_user_agent_header() {
+        let config = WhyConfig::default();
+
+        let client = GitHubClient::from_config(&config, "https://github.com/anthropics/why.git")
+            .expect("client should build from config");
+        let request = client
+            .request_issue(&GitHubRef { number: 42 })
+            .build()
+            .expect("request should build");
+
+        let user_agent = request
+            .headers()
+            .get(USER_AGENT)
+            .expect("user-agent header should be present")
+            .to_str()
+            .expect("user-agent header should be valid utf-8");
+        assert_eq!(user_agent, GITHUB_USER_AGENT);
     }
 
     #[test]

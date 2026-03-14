@@ -44,6 +44,11 @@ coupling_scan_commits = 500
 # Lower values surface weaker relationships; higher values keep only stronger co-change signals.
 coupling_ratio_threshold = 0.30
 
+[cache]
+# Maximum number of cached why reports retained in `.why/cache.json` before the
+# oldest entries are evicted. Set to 0 to disable query-result retention.
+max_entries = 500
+
 [github]
 # Git remote name used to infer the repository when GitHub enrichment is enabled.
 remote = "origin"

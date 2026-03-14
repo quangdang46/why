@@ -90,12 +90,13 @@ export ANTHROPIC_API_KEY=your_anthropic_api_key_here
 ### Release and publishing readiness checklist
 
 Checked in today:
-- CI workflow for fmt, clippy, build, test, audit, and optional benches in `.github/workflows/ci.yml`
+- CI workflow for fmt, clippy, build, test, audit, optional benches, and packaging-alignment checks in `.github/workflows/ci.yml`
 - Tagged GitHub release workflow with cross-platform archives in `.github/workflows/release.yml`
 - Installer script with checksum verification and source-build fallback in `install.sh`
+- Packaging alignment audit that verifies `why-core` / `why` metadata stays consistent across `crates/core/Cargo.toml`, `.github/workflows/release.yml`, and `install.sh`
 
 Still required before `cargo install ...` is a supported path:
-- Publish the existing shipping package name `why-core` consistently anywhere older planning docs still say `why-cli`
+- Keep any future package-name/docs changes aligned with the current shipped package `why-core` and binary `why`
 - Remove `publish = false` from the shipping package once crates.io publication is intended
 - Verify `cargo install why-core` produces the `why` binary cleanly
 - Keep the README installation instructions, release workflow package name, and installer/source-build path aligned with the shipped package
@@ -216,7 +217,7 @@ Recommended Claude Code workflow:
 1. Before deleting or rewriting unfamiliar code, run `why` on the exact symbol or line range first.
 2. If the reported risk is **HIGH**, treat that as a stop-and-investigate signal rather than a suggestion to proceed quickly.
 3. For larger refactors, also run `--coupled` and `--team` so you can spot co-change surfaces and likely reviewers.
-4. When working inside an MCP-capable editor, use `why mcp` for tool integration; use the normal CLI when you want the full query/output flow documented in this README.
+4. When working inside an MCP-capable editor, use `why mcp` for tool integration; use the normal CLI when you want the full query/output flow documented in this README. Make sure the MCP server is launched from the repository/workspace you want analyzed, because it operates on its current working directory.
 
 Recommended code review routine:
 

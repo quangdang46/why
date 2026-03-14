@@ -3515,7 +3515,7 @@ and a heuristic risk level.
 
 **Day 8:** Phase 7 — Polish + packaging
 - `--since`, `--team`, merge commit handling
-- crates.io publication path for `why-core` ready
+- crates.io publication path for `why-core` documented, with the remaining `publish = false` gate called out explicitly
 
 ### Exit criteria
 

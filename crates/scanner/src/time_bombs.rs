@@ -303,7 +303,7 @@ fn severity_for_days_overdue(days_overdue: i64) -> Severity {
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_first_date_like, parse_date_token, scan_time_bombs, Severity, TimeBombKind,
+        Severity, TimeBombKind, extract_first_date_like, parse_date_token, scan_time_bombs,
     };
     use anyhow::{Context, Result};
     use std::path::Path;

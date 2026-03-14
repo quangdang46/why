@@ -322,8 +322,11 @@ remote = "upstream"
             .join("..")
             .join("..")
             .join(".why.toml.example");
+        let example_contents = fs::read_to_string(&config_path)?;
         let config = load_config_from_path(&config_path)?;
 
+        assert!(example_contents.contains("[cache]"));
+        assert!(example_contents.contains("max_entries"));
         assert_eq!(config.risk.default_level, DEFAULT_RISK_LEVEL);
         assert_eq!(
             config.risk.keywords.high,

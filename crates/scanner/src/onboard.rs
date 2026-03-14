@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Serialize;
 use time::OffsetDateTime;
-use why_archaeologist::{analyze_target_with_options, RiskLevel};
-use why_locator::{list_all_symbols, QueryKind, QueryTarget, SupportedLanguage};
+use why_archaeologist::{RiskLevel, analyze_target_with_options};
+use why_locator::{QueryKind, QueryTarget, SupportedLanguage, list_all_symbols};
 
 use crate::{is_tracked_source_file, should_skip_dir};
 
@@ -171,7 +171,7 @@ fn recency_factor(last_touched_timestamp: Option<i64>) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{risk_weight, scan_onboard, RiskLevel};
+    use super::{RiskLevel, risk_weight, scan_onboard};
     use anyhow::{Context, Result};
     use std::process::Command;
     use tempfile::TempDir;

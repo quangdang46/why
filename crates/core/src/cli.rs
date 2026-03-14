@@ -1,12 +1,12 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use why_locator::{parse_target, QueryTarget};
+use why_locator::{QueryTarget, parse_target};
 
 #[derive(Debug, Parser)]
 #[command(name = "why")]
 #[command(
     about = "Ask your codebase why a line, range, symbol, or repo hotspot exists",
-    after_help = "Examples:\n  why src/auth.rs:42\n  why src/auth.rs --lines 40:45 --no-llm\n  why src/auth.rs:verify_token --json\n  why src/auth.rs:AuthService::login --team\n  why src/auth.rs:verify_token --blame-chain\n  why src/auth.rs:verify_token --evolution\n  why hotspots --limit 10\n  why health\n  why health --ci 80\n  why pr-template\n  why coverage-gap --coverage lcov.info\n  why ghost --limit 10\n  why onboard --limit 10"
+    after_help = "Examples:\n  why src/auth.rs:42\n  why src/auth.rs --lines 40:45 --no-llm\n  why src/auth.rs:verify_token --json\n  why src/auth.rs:verify_token --annotate\n  why src/auth.rs:AuthService::login --team\n  why src/auth.rs:verify_token --blame-chain\n  why src/auth.rs:verify_token --evolution\n  why hotspots --limit 10\n  why health\n  why health --ci 80\n  why pr-template\n  why coverage-gap --coverage lcov.info\n  why ghost --limit 10\n  why onboard --limit 10\n  why time-bombs --age-days 180"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -54,6 +54,10 @@ pub struct Cli {
     /// Show rename-aware target evolution history as a timeline.
     #[arg(long)]
     pub evolution: bool,
+
+    /// Write a short evidence-backed doc annotation above the target.
+    #[arg(long)]
+    pub annotate: bool,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -151,6 +155,16 @@ pub enum Command {
     },
     /// Generate a man page for the why CLI.
     Manpage,
+    /// Find stale TODOs, HACK/TEMP markers, and expired remove-after dates.
+    TimeBombs {
+        /// Age threshold in days for aged markers (default: 180).
+        #[arg(long, default_value_t = 180)]
+        age_days: i64,
+
+        /// Emit machine-readable output.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,6 +179,7 @@ pub struct QueryRequest {
     pub team: bool,
     pub blame_chain: bool,
     pub evolution: bool,
+    pub annotate: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -206,6 +221,10 @@ pub enum Mode {
         shell: CompletionShell,
     },
     Manpage,
+    TimeBombs {
+        age_days: i64,
+        json: bool,
+    },
 }
 
 impl Cli {
@@ -223,6 +242,7 @@ impl Cli {
                     || self.team
                     || self.blame_chain
                     || self.evolution
+                    || self.annotate
                 {
                     bail!("the mcp subcommand does not accept query flags or a target");
                 }
@@ -240,6 +260,7 @@ impl Cli {
                     || self.team
                     || self.blame_chain
                     || self.evolution
+                    || self.annotate
                 {
                     bail!("the shell subcommand does not accept query flags or a target");
                 }
@@ -257,6 +278,7 @@ impl Cli {
                     || self.team
                     || self.blame_chain
                     || self.evolution
+                    || self.annotate
                 {
                     bail!("the lsp subcommand does not accept query flags or a target");
                 }
@@ -273,6 +295,7 @@ impl Cli {
                     || self.team
                     || self.blame_chain
                     || self.evolution
+                    || self.annotate
                 {
                     bail!("the hotspots subcommand does not accept query flags or a target");
                 }
@@ -292,6 +315,7 @@ impl Cli {
                     || self.team
                     || self.blame_chain
                     || self.evolution
+                    || self.annotate
                 {
                     bail!("the health subcommand does not accept query flags or a target");
                 }
@@ -308,6 +332,7 @@ impl Cli {
                     || self.team
                     || self.blame_chain
                     || self.evolution
+                    || self.annotate
                 {
                     bail!("the pr-template subcommand does not accept query flags or a target");
                 }
@@ -329,6 +354,7 @@ impl Cli {
                     || self.team
                     || self.blame_chain
                     || self.evolution
+                    || self.annotate
                 {
                     bail!("the coverage-gap subcommand does not accept query flags or a target");
                 }
@@ -359,6 +385,7 @@ impl Cli {
                     || self.team
                     || self.blame_chain
                     || self.evolution
+                    || self.annotate
                 {
                     bail!("the ghost subcommand does not accept query flags or a target");
                 }
@@ -378,6 +405,7 @@ impl Cli {
                     || self.team
                     || self.blame_chain
                     || self.evolution
+                    || self.annotate
                 {
                     bail!("the onboard subcommand does not accept query flags or a target");
                 }
@@ -398,6 +426,7 @@ impl Cli {
                     || self.team
                     || self.blame_chain
                     || self.evolution
+                    || self.annotate
                 {
                     bail!("the install-hooks subcommand does not accept query flags or a target");
                 }
@@ -415,6 +444,7 @@ impl Cli {
                     || self.team
                     || self.blame_chain
                     || self.evolution
+                    || self.annotate
                 {
                     bail!("the uninstall-hooks subcommand does not accept query flags or a target");
                 }
@@ -432,6 +462,7 @@ impl Cli {
                     || self.team
                     || self.blame_chain
                     || self.evolution
+                    || self.annotate
                 {
                     bail!("the completions subcommand does not accept query flags or a target");
                 }
@@ -449,10 +480,28 @@ impl Cli {
                     || self.team
                     || self.blame_chain
                     || self.evolution
+                    || self.annotate
                 {
                     bail!("the manpage subcommand does not accept query flags or a target");
                 }
                 Ok(Mode::Manpage)
+            }
+            Some(Command::TimeBombs { age_days, json }) => {
+                if self.target.is_some()
+                    || self.lines.is_some()
+                    || self.no_llm
+                    || self.no_cache
+                    || self.split
+                    || self.coupled
+                    || self.since.is_some()
+                    || self.team
+                    || self.blame_chain
+                    || self.evolution
+                    || self.annotate
+                {
+                    bail!("the time-bombs subcommand does not accept query flags or a target");
+                }
+                Ok(Mode::TimeBombs { age_days, json })
             }
             None => {
                 let target = self.target.ok_or_else(|| {
@@ -472,6 +521,7 @@ impl Cli {
                     team: self.team,
                     blame_chain: self.blame_chain,
                     evolution: self.evolution,
+                    annotate: self.annotate,
                 }))
             }
         }
@@ -509,6 +559,7 @@ mod tests {
                 team: false,
                 blame_chain: false,
                 evolution: false,
+                annotate: false,
             })
         );
     }
@@ -544,6 +595,7 @@ mod tests {
                 team: false,
                 blame_chain: false,
                 evolution: false,
+                annotate: false,
             })
         );
     }
@@ -552,8 +604,9 @@ mod tests {
     fn parses_split_request() {
         let cli = Cli::parse_from(["why", "src/lib.rs:authenticate", "--split"]);
         let mode = cli.parse_mode().expect("split target should parse");
+        assert!(matches!(mode, Mode::Query(_)), "expected query mode");
         let Mode::Query(request) = mode else {
-            panic!("expected query mode");
+            return;
         };
 
         assert_eq!(request.target.path, PathBuf::from("src/lib.rs"));
@@ -570,8 +623,9 @@ mod tests {
     fn parses_coupled_request() {
         let cli = Cli::parse_from(["why", "src/lib.rs:authenticate", "--coupled"]);
         let mode = cli.parse_mode().expect("coupled target should parse");
+        assert!(matches!(mode, Mode::Query(_)), "expected query mode");
         let Mode::Query(request) = mode else {
-            panic!("expected query mode");
+            return;
         };
 
         assert_eq!(request.target.path, PathBuf::from("src/lib.rs"));
@@ -592,8 +646,9 @@ mod tests {
     fn parses_since_and_team_request() {
         let cli = Cli::parse_from(["why", "src/lib.rs:authenticate", "--since", "30", "--team"]);
         let mode = cli.parse_mode().expect("since/team target should parse");
+        assert!(matches!(mode, Mode::Query(_)), "expected query mode");
         let Mode::Query(request) = mode else {
-            panic!("expected query mode");
+            return;
         };
 
         assert_eq!(request.target.path, PathBuf::from("src/lib.rs"));
@@ -610,8 +665,9 @@ mod tests {
     fn parses_blame_chain_request() {
         let cli = Cli::parse_from(["why", "src/lib.rs:authenticate", "--blame-chain"]);
         let mode = cli.parse_mode().expect("blame-chain target should parse");
+        assert!(matches!(mode, Mode::Query(_)), "expected query mode");
         let Mode::Query(request) = mode else {
-            panic!("expected query mode");
+            return;
         };
 
         assert_eq!(request.target.path, PathBuf::from("src/lib.rs"));
@@ -635,8 +691,9 @@ mod tests {
             "--evolution",
         ]);
         let mode = cli.parse_mode().expect("evolution target should parse");
+        assert!(matches!(mode, Mode::Query(_)), "expected query mode");
         let Mode::Query(request) = mode else {
-            panic!("expected query mode");
+            return;
         };
 
         assert_eq!(request.target.path, PathBuf::from("src/lib.rs"));
@@ -649,6 +706,27 @@ mod tests {
         assert!(!request.coupled);
         assert!(!request.split);
         assert!(!request.blame_chain);
+        assert!(!request.annotate);
+    }
+
+    #[test]
+    fn parses_annotate_request() {
+        let cli = Cli::parse_from(["why", "src/lib.rs:authenticate", "--annotate"]);
+        let mode = cli.parse_mode().expect("annotate target should parse");
+        assert!(matches!(mode, Mode::Query(_)), "expected query mode");
+        let Mode::Query(request) = mode else {
+            return;
+        };
+
+        assert_eq!(request.target.path, PathBuf::from("src/lib.rs"));
+        assert_eq!(request.target.symbol.as_deref(), Some("authenticate"));
+        assert_eq!(request.target.query_kind, QueryKind::Symbol);
+        assert!(request.annotate);
+        assert!(!request.split);
+        assert!(!request.coupled);
+        assert!(!request.team);
+        assert!(!request.blame_chain);
+        assert!(!request.evolution);
     }
 
     #[test]
@@ -766,6 +844,30 @@ mod tests {
     }
 
     #[test]
+    fn parses_time_bombs_subcommand() {
+        let cli = Cli::parse_from(["why", "time-bombs", "--age-days", "365", "--json"]);
+        assert_eq!(
+            cli.parse_mode().expect("time-bombs should parse"),
+            Mode::TimeBombs {
+                age_days: 365,
+                json: true,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_time_bombs_default_age() {
+        let cli = Cli::parse_from(["why", "time-bombs"]);
+        assert_eq!(
+            cli.parse_mode().expect("time-bombs should parse"),
+            Mode::TimeBombs {
+                age_days: 180,
+                json: false,
+            }
+        );
+    }
+
+    #[test]
     fn parses_install_hooks_subcommand() {
         let cli = Cli::parse_from(["why", "install-hooks", "--warn-only"]);
         assert_eq!(
@@ -807,8 +909,9 @@ mod tests {
     fn parses_no_cache_request() {
         let cli = Cli::parse_from(["why", "src/lib.rs:42", "--no-cache"]);
         let mode = cli.parse_mode().expect("no-cache target should parse");
+        assert!(matches!(mode, Mode::Query(_)), "expected query mode");
         let Mode::Query(request) = mode else {
-            panic!("expected query mode");
+            return;
         };
 
         assert!(request.no_cache);
@@ -819,9 +922,11 @@ mod tests {
     fn rejects_positional_target_for_hotspots() {
         let error = Cli::try_parse_from(["why", "hotspots", "--limit", "5", "src/lib.rs:42"])
             .expect_err("clap should reject positional targets for hotspots");
-        assert!(error
-            .to_string()
-            .contains("unexpected argument 'src/lib.rs:42' found"));
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument 'src/lib.rs:42' found")
+        );
     }
 
     #[test]
@@ -830,9 +935,11 @@ mod tests {
         let error = cli
             .parse_mode()
             .expect_err("hotspots should reject a zero limit");
-        assert!(error
-            .to_string()
-            .contains("--limit must be greater than zero"));
+        assert!(
+            error
+                .to_string()
+                .contains("--limit must be greater than zero")
+        );
     }
 
     #[test]
@@ -841,9 +948,11 @@ mod tests {
         let error = cli
             .parse_mode()
             .expect_err("onboard should reject a zero limit");
-        assert!(error
-            .to_string()
-            .contains("--limit must be greater than zero"));
+        assert!(
+            error
+                .to_string()
+                .contains("--limit must be greater than zero")
+        );
     }
 
     #[test]
@@ -859,54 +968,66 @@ mod tests {
         let error = cli
             .parse_mode()
             .expect_err("coverage-gap should reject percentages above 100");
-        assert!(error
-            .to_string()
-            .contains("--max-coverage must be between 0 and 100"));
+        assert!(
+            error
+                .to_string()
+                .contains("--max-coverage must be between 0 and 100")
+        );
     }
 
     #[test]
     fn rejects_no_cache_for_hotspots() {
         let error = Cli::try_parse_from(["why", "hotspots", "--no-cache"])
             .expect_err("clap should reject query flags for hotspots");
-        assert!(error
-            .to_string()
-            .contains("unexpected argument '--no-cache' found"));
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--no-cache' found")
+        );
     }
 
     #[test]
     fn rejects_query_flags_for_mcp() {
         let error = Cli::try_parse_from(["why", "mcp", "--json"])
             .expect_err("clap should reject query flags for mcp");
-        assert!(error
-            .to_string()
-            .contains("unexpected argument '--json' found"));
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--json' found")
+        );
     }
 
     #[test]
     fn rejects_query_flags_for_shell() {
         let error = Cli::try_parse_from(["why", "shell", "--json"])
             .expect_err("clap should reject query flags for shell");
-        assert!(error
-            .to_string()
-            .contains("unexpected argument '--json' found"));
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--json' found")
+        );
     }
 
     #[test]
     fn rejects_query_flags_for_lsp() {
         let error = Cli::try_parse_from(["why", "lsp", "--json"])
             .expect_err("clap should reject query flags for lsp");
-        assert!(error
-            .to_string()
-            .contains("unexpected argument '--json' found"));
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--json' found")
+        );
     }
 
     #[test]
     fn rejects_query_flags_for_health() {
         let error = Cli::try_parse_from(["why", "health", "--no-cache"])
             .expect_err("clap should reject query flags for health");
-        assert!(error
-            .to_string()
-            .contains("unexpected argument '--no-cache' found"));
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--no-cache' found")
+        );
     }
 
     #[test]
@@ -919,36 +1040,55 @@ mod tests {
             "--no-cache",
         ])
         .expect_err("clap should reject query flags for coverage-gap");
-        assert!(error
-            .to_string()
-            .contains("unexpected argument '--no-cache' found"));
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--no-cache' found")
+        );
     }
 
     #[test]
     fn rejects_query_flags_for_ghost() {
         let error = Cli::try_parse_from(["why", "ghost", "--no-cache"])
             .expect_err("clap should reject query flags for ghost");
-        assert!(error
-            .to_string()
-            .contains("unexpected argument '--no-cache' found"));
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--no-cache' found")
+        );
     }
 
     #[test]
     fn rejects_query_flags_for_pr_template() {
         let error = Cli::try_parse_from(["why", "pr-template", "--no-cache"])
             .expect_err("clap should reject query flags for pr-template");
-        assert!(error
-            .to_string()
-            .contains("unexpected argument '--no-cache' found"));
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--no-cache' found")
+        );
     }
 
     #[test]
     fn rejects_query_flags_for_onboard() {
         let error = Cli::try_parse_from(["why", "onboard", "--no-cache"])
             .expect_err("clap should reject query flags for onboard");
-        assert!(error
-            .to_string()
-            .contains("unexpected argument '--no-cache' found"));
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--no-cache' found")
+        );
+    }
+
+    #[test]
+    fn rejects_query_flags_for_time_bombs() {
+        let error = Cli::try_parse_from(["why", "time-bombs", "--no-cache"])
+            .expect_err("clap should reject query flags for time-bombs");
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--no-cache' found")
+        );
     }
 
     #[test]
@@ -962,35 +1102,43 @@ mod tests {
     fn rejects_query_flags_for_install_hooks() {
         let error = Cli::try_parse_from(["why", "install-hooks", "--json"])
             .expect_err("clap should reject query flags for install-hooks");
-        assert!(error
-            .to_string()
-            .contains("unexpected argument '--json' found"));
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--json' found")
+        );
     }
 
     #[test]
     fn rejects_query_flags_for_uninstall_hooks() {
         let error = Cli::try_parse_from(["why", "uninstall-hooks", "--no-cache"])
             .expect_err("clap should reject query flags for uninstall-hooks");
-        assert!(error
-            .to_string()
-            .contains("unexpected argument '--no-cache' found"));
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--no-cache' found")
+        );
     }
 
     #[test]
     fn rejects_query_flags_for_completions() {
         let error = Cli::try_parse_from(["why", "completions", "bash", "--json"])
             .expect_err("clap should reject query flags for completions");
-        assert!(error
-            .to_string()
-            .contains("unexpected argument '--json' found"));
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--json' found")
+        );
     }
 
     #[test]
     fn rejects_query_flags_for_manpage() {
         let error = Cli::try_parse_from(["why", "manpage", "--json"])
             .expect_err("clap should reject query flags for manpage");
-        assert!(error
-            .to_string()
-            .contains("unexpected argument '--json' found"));
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--json' found")
+        );
     }
 }

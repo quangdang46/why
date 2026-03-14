@@ -131,7 +131,43 @@ fn render_hook(hook_name: &str, warn_only: bool, file_command: &str, label: &str
     };
 
     format!(
-        "#!/usr/bin/env bash\nset -euo pipefail\n{MANAGED_MARKER}\n# installed by why for {hook_name}\n\nif ! command -v why >/dev/null 2>&1; then\n  exit 0\nfi\n\nfiles=$({file_command} || true)\nif [ -z \"${{files}}\" ]; then\n  exit 0\nfi\n\nrisk_output=$(why --no-llm --json $files 2>/dev/null || true)\nif printf '%s' \"$risk_output\" | grep -q '\"risk_level\"[[:space:]]*:[[:space:]]*\"HIGH\"'; then\n  {mode_logic}\nfi\n\nexit 0\n"
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+{MANAGED_MARKER}
+# installed by why for {hook_name}
+
+if ! command -v why >/dev/null 2>&1; then
+  exit 0
+fi
+
+files=$({file_command} || true)
+if [ -z "${{files}}" ]; then
+  exit 0
+fi
+
+high_risk=0
+while IFS= read -r file; do
+  [ -n "$file" ] || continue
+  [ -f "$file" ] || continue
+
+  line_count=$(awk 'END {{print NR}}' "$file")
+  if [ -z "${{line_count}}" ] || [ "${{line_count}}" = "0" ]; then
+    continue
+  fi
+
+  risk_output=$(why "$file" --lines "1:${{line_count}}" --no-llm --json 2>/dev/null || true)
+  if printf '%s' "$risk_output" | grep -q '"risk_level"[[:space:]]*:[[:space:]]*"HIGH"'; then
+    high_risk=1
+    break
+  fi
+done <<< "$files"
+
+if [ "$high_risk" -eq 1 ]; then
+  {mode_logic}
+fi
+
+exit 0
+"#
     )
 }
 

@@ -27,9 +27,12 @@ If you want the full CLI query flow, use the normal CLI directly outside MCP.
 
 Make sure the `why` binary is on your `PATH`.
 
+The MCP server analyzes the repository rooted at its **current working directory**. Start `why mcp` from the repository or workspace you want to inspect, or configure your client to launch the server with that directory as its working directory.
+
 Quick check:
 
 ```bash
+pwd
 why --help
 why mcp
 ```

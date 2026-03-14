@@ -2317,6 +2317,7 @@ dependencies = [
  "git2",
  "serde_json",
  "tokio",
+ "why-annotator",
  "why-archaeologist",
  "why-cache",
  "why-context",
@@ -2446,8 +2447,10 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "why-annotator",
  "why-archaeologist",
  "why-cache",
+ "why-hooks",
  "why-locator",
  "why-scanner",
 ]

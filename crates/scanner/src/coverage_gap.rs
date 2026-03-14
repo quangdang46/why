@@ -2,11 +2,11 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde::Serialize;
-use why_archaeologist::{analyze_target_with_options, discover_repository, RiskLevel};
-use why_locator::{list_all_symbols, QueryKind, SupportedLanguage};
+use why_archaeologist::{RiskLevel, analyze_target_with_options, discover_repository};
+use why_locator::{QueryKind, SupportedLanguage, list_all_symbols};
 
 use crate::{is_tracked_source_file, should_skip_dir};
 
@@ -422,7 +422,7 @@ fn normalize_coverage_path(raw: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_coverage_path, scan_coverage_gap, CoverageData};
+    use super::{CoverageData, normalize_coverage_path, scan_coverage_gap};
     use anyhow::{Context, Result};
     use std::fs;
     use std::process::Command;

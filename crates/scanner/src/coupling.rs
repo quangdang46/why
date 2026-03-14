@@ -6,7 +6,7 @@ use git2::{DiffOptions, Repository, Sort};
 use serde::Serialize;
 use why_archaeologist::{commit_is_mechanical, discover_repository, relative_repo_path};
 use why_context::load_config;
-use why_locator::{resolve_target, QueryTarget};
+use why_locator::{QueryTarget, resolve_target};
 
 use crate::is_source_file;
 
