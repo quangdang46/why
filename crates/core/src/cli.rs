@@ -1,12 +1,12 @@
 use anyhow::{Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use why_locator::{QueryTarget, parse_target};
 
 #[derive(Debug, Parser)]
 #[command(name = "why")]
 #[command(
     about = "Ask your codebase why a line, range, symbol, or repo hotspot exists",
-    after_help = "Examples:\n  why src/auth.rs:42\n  why src/auth.rs --lines 40:45 --no-llm\n  why src/auth.rs:verify_token --json\n  why src/auth.rs:AuthService::login --team\n  why src/auth.rs:verify_token --blame-chain\n  why hotspots --limit 10\n  why health\n  why health --ci 80\n  why pr-template\n  why ghost --limit 10"
+    after_help = "Examples:\n  why src/auth.rs:42\n  why src/auth.rs --lines 40:45 --no-llm\n  why src/auth.rs:verify_token --json\n  why src/auth.rs:AuthService::login --team\n  why src/auth.rs:verify_token --blame-chain\n  why src/auth.rs:verify_token --evolution\n  why hotspots --limit 10\n  why health\n  why health --ci 80\n  why pr-template\n  why ghost --limit 10"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -50,12 +50,27 @@ pub struct Cli {
     /// Walk past mechanical commits to show the likely true origin commit.
     #[arg(long)]
     pub blame_chain: bool,
+
+    /// Show rename-aware target evolution history as a timeline.
+    #[arg(long)]
+    pub evolution: bool,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum CompletionShell {
+    Bash,
+    Zsh,
+    Fish,
 }
 
 #[derive(Debug, Subcommand, Clone, PartialEq, Eq)]
 pub enum Command {
     /// Run the MCP stdio server.
     Mcp,
+    /// Start an interactive archaeology shell with completion support.
+    Shell,
+    /// Run the LSP hover server over stdio.
+    Lsp,
     /// Rank repository hotspots using churn × heuristic risk scoring.
     Hotspots {
         /// Maximum number of findings to return.
@@ -100,6 +115,14 @@ pub enum Command {
     },
     /// Remove managed git hooks and restore backups when present.
     UninstallHooks,
+    /// Generate shell completion scripts for the why CLI.
+    Completions {
+        /// Target shell to generate completions for.
+        #[arg(value_enum)]
+        shell: CompletionShell,
+    },
+    /// Generate a man page for the why CLI.
+    Manpage,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,18 +136,23 @@ pub struct QueryRequest {
     pub since_days: Option<u64>,
     pub team: bool,
     pub blame_chain: bool,
+    pub evolution: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
     Query(QueryRequest),
     Mcp,
+    Shell,
+    Lsp,
     Hotspots { limit: usize, json: bool },
     Health { json: bool, ci: Option<u32> },
     PrTemplate { json: bool },
     Ghost { limit: usize, json: bool },
     InstallHooks { warn_only: bool },
     UninstallHooks,
+    Completions { shell: CompletionShell },
+    Manpage,
 }
 
 impl Cli {
@@ -141,10 +169,45 @@ impl Cli {
                     || self.since.is_some()
                     || self.team
                     || self.blame_chain
+                    || self.evolution
                 {
                     bail!("the mcp subcommand does not accept query flags or a target");
                 }
                 Ok(Mode::Mcp)
+            }
+            Some(Command::Shell) => {
+                if self.target.is_some()
+                    || self.lines.is_some()
+                    || self.json
+                    || self.no_llm
+                    || self.no_cache
+                    || self.split
+                    || self.coupled
+                    || self.since.is_some()
+                    || self.team
+                    || self.blame_chain
+                    || self.evolution
+                {
+                    bail!("the shell subcommand does not accept query flags or a target");
+                }
+                Ok(Mode::Shell)
+            }
+            Some(Command::Lsp) => {
+                if self.target.is_some()
+                    || self.lines.is_some()
+                    || self.json
+                    || self.no_llm
+                    || self.no_cache
+                    || self.split
+                    || self.coupled
+                    || self.since.is_some()
+                    || self.team
+                    || self.blame_chain
+                    || self.evolution
+                {
+                    bail!("the lsp subcommand does not accept query flags or a target");
+                }
+                Ok(Mode::Lsp)
             }
             Some(Command::Hotspots { limit, json }) => {
                 if self.target.is_some()
@@ -156,6 +219,7 @@ impl Cli {
                     || self.since.is_some()
                     || self.team
                     || self.blame_chain
+                    || self.evolution
                 {
                     bail!("the hotspots subcommand does not accept query flags or a target");
                 }
@@ -174,6 +238,7 @@ impl Cli {
                     || self.since.is_some()
                     || self.team
                     || self.blame_chain
+                    || self.evolution
                 {
                     bail!("the health subcommand does not accept query flags or a target");
                 }
@@ -189,6 +254,7 @@ impl Cli {
                     || self.since.is_some()
                     || self.team
                     || self.blame_chain
+                    || self.evolution
                 {
                     bail!("the pr-template subcommand does not accept query flags or a target");
                 }
@@ -204,6 +270,7 @@ impl Cli {
                     || self.since.is_some()
                     || self.team
                     || self.blame_chain
+                    || self.evolution
                 {
                     bail!("the ghost subcommand does not accept query flags or a target");
                 }
@@ -223,6 +290,7 @@ impl Cli {
                     || self.since.is_some()
                     || self.team
                     || self.blame_chain
+                    || self.evolution
                 {
                     bail!("the install-hooks subcommand does not accept query flags or a target");
                 }
@@ -239,10 +307,45 @@ impl Cli {
                     || self.since.is_some()
                     || self.team
                     || self.blame_chain
+                    || self.evolution
                 {
                     bail!("the uninstall-hooks subcommand does not accept query flags or a target");
                 }
                 Ok(Mode::UninstallHooks)
+            }
+            Some(Command::Completions { shell }) => {
+                if self.target.is_some()
+                    || self.lines.is_some()
+                    || self.json
+                    || self.no_llm
+                    || self.no_cache
+                    || self.split
+                    || self.coupled
+                    || self.since.is_some()
+                    || self.team
+                    || self.blame_chain
+                    || self.evolution
+                {
+                    bail!("the completions subcommand does not accept query flags or a target");
+                }
+                Ok(Mode::Completions { shell })
+            }
+            Some(Command::Manpage) => {
+                if self.target.is_some()
+                    || self.lines.is_some()
+                    || self.json
+                    || self.no_llm
+                    || self.no_cache
+                    || self.split
+                    || self.coupled
+                    || self.since.is_some()
+                    || self.team
+                    || self.blame_chain
+                    || self.evolution
+                {
+                    bail!("the manpage subcommand does not accept query flags or a target");
+                }
+                Ok(Mode::Manpage)
             }
             None => {
                 let target = self.target.ok_or_else(|| {
@@ -261,6 +364,7 @@ impl Cli {
                     since_days: self.since,
                     team: self.team,
                     blame_chain: self.blame_chain,
+                    evolution: self.evolution,
                 }))
             }
         }
@@ -269,7 +373,7 @@ impl Cli {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Command, Mode, QueryRequest};
+    use super::{Cli, Command, CompletionShell, Mode, QueryRequest};
     use clap::Parser;
     use std::path::PathBuf;
     use why_locator::{QueryKind, QueryTarget};
@@ -297,6 +401,7 @@ mod tests {
                 since_days: None,
                 team: false,
                 blame_chain: false,
+                evolution: false,
             })
         );
     }
@@ -331,6 +436,7 @@ mod tests {
                 since_days: None,
                 team: false,
                 blame_chain: false,
+                evolution: false,
             })
         );
     }
@@ -372,6 +478,7 @@ mod tests {
         assert_eq!(request.since_days, None);
         assert!(!request.team);
         assert!(!request.blame_chain);
+        assert!(!request.evolution);
     }
 
     #[test]
@@ -389,6 +496,7 @@ mod tests {
         assert_eq!(request.since_days, Some(30));
         assert!(request.team);
         assert!(!request.blame_chain);
+        assert!(!request.evolution);
     }
 
     #[test]
@@ -407,6 +515,27 @@ mod tests {
         assert!(!request.team);
         assert!(!request.coupled);
         assert!(!request.split);
+        assert!(!request.evolution);
+    }
+
+    #[test]
+    fn parses_evolution_request() {
+        let cli = Cli::parse_from(["why", "src/lib.rs:authenticate", "--since", "30", "--evolution"]);
+        let mode = cli.parse_mode().expect("evolution target should parse");
+        let Mode::Query(request) = mode else {
+            panic!("expected query mode");
+        };
+
+        assert_eq!(request.target.path, PathBuf::from("src/lib.rs"));
+        assert_eq!(request.target.symbol.as_deref(), Some("authenticate"));
+        assert_eq!(request.target.query_kind, QueryKind::Symbol);
+        assert!(!request.no_cache);
+        assert_eq!(request.since_days, Some(30));
+        assert!(request.evolution);
+        assert!(!request.team);
+        assert!(!request.coupled);
+        assert!(!request.split);
+        assert!(!request.blame_chain);
     }
 
     #[test]
@@ -414,6 +543,20 @@ mod tests {
         let cli = Cli::parse_from(["why", "mcp"]);
         assert_eq!(cli.command, Some(Command::Mcp));
         assert_eq!(cli.parse_mode().expect("mcp should parse"), Mode::Mcp);
+    }
+
+    #[test]
+    fn parses_shell_subcommand() {
+        let cli = Cli::parse_from(["why", "shell"]);
+        assert_eq!(cli.command, Some(Command::Shell));
+        assert_eq!(cli.parse_mode().expect("shell should parse"), Mode::Shell);
+    }
+
+    #[test]
+    fn parses_lsp_subcommand() {
+        let cli = Cli::parse_from(["why", "lsp"]);
+        assert_eq!(cli.command, Some(Command::Lsp));
+        assert_eq!(cli.parse_mode().expect("lsp should parse"), Mode::Lsp);
     }
 
     #[test]
@@ -492,6 +635,23 @@ mod tests {
     }
 
     #[test]
+    fn parses_completions_subcommand() {
+        let cli = Cli::parse_from(["why", "completions", "zsh"]);
+        assert_eq!(
+            cli.parse_mode().expect("completions should parse"),
+            Mode::Completions {
+                shell: CompletionShell::Zsh
+            }
+        );
+    }
+
+    #[test]
+    fn parses_manpage_subcommand() {
+        let cli = Cli::parse_from(["why", "manpage"]);
+        assert_eq!(cli.parse_mode().expect("manpage should parse"), Mode::Manpage);
+    }
+
+    #[test]
     fn parses_no_cache_request() {
         let cli = Cli::parse_from(["why", "src/lib.rs:42", "--no-cache"]);
         let mode = cli.parse_mode().expect("no-cache target should parse");
@@ -542,6 +702,28 @@ mod tests {
     fn rejects_query_flags_for_mcp() {
         let error = Cli::try_parse_from(["why", "mcp", "--json"])
             .expect_err("clap should reject query flags for mcp");
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--json' found")
+        );
+    }
+
+    #[test]
+    fn rejects_query_flags_for_shell() {
+        let error = Cli::try_parse_from(["why", "shell", "--json"])
+            .expect_err("clap should reject query flags for shell");
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--json' found")
+        );
+    }
+
+    #[test]
+    fn rejects_query_flags_for_lsp() {
+        let error = Cli::try_parse_from(["why", "lsp", "--json"])
+            .expect_err("clap should reject query flags for lsp");
         assert!(
             error
                 .to_string()
@@ -608,6 +790,28 @@ mod tests {
             error
                 .to_string()
                 .contains("unexpected argument '--no-cache' found")
+        );
+    }
+
+    #[test]
+    fn rejects_query_flags_for_completions() {
+        let error = Cli::try_parse_from(["why", "completions", "bash", "--json"])
+            .expect_err("clap should reject query flags for completions");
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--json' found")
+        );
+    }
+
+    #[test]
+    fn rejects_query_flags_for_manpage() {
+        let error = Cli::try_parse_from(["why", "manpage", "--json"])
+            .expect_err("clap should reject query flags for manpage");
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--json' found")
         );
     }
 }

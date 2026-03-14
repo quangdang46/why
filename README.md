@@ -77,6 +77,12 @@ cargo run -q -p why-core -- --help
 cargo build -p why-core --release
 ./target/release/why --help
 
+# Generate local CLI artifacts from the current build
+cargo run -q -p why-core -- completions bash > why.bash
+cargo run -q -p why-core -- completions zsh > _why
+cargo run -q -p why-core -- completions fish > why.fish
+cargo run -q -p why-core -- manpage > why.1
+
 # Set your API key once when you want synthesis
 export ANTHROPIC_API_KEY=your_anthropic_api_key_here
 ```
@@ -93,6 +99,11 @@ Still required before `cargo install ...` is a supported path:
 - Remove `publish = false` from the shipping package once crates.io publication is intended
 - Verify `cargo install why-core` produces the `why` binary cleanly
 - Keep the README installation instructions, release workflow package name, and installer/source-build path aligned with the shipped package
+
+Current artifact-generation support:
+- `why completions bash|zsh|fish` emits shell completion scripts to stdout
+- `why manpage` emits a roff man page to stdout
+- These commands make it possible to check completion/manual artifacts into packaging or release automation later without inventing a separate generator binary
 
 ## Usage
 

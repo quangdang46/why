@@ -21,6 +21,8 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+clap_complete.workspace = true
+clap_mangen.workspace = true
 git2.workspace = true
 serde_json.workspace = true
 why-archaeologist = { path = "../archaeologist" }
@@ -33,3 +35,6 @@ why-splitter = { path = "../splitter" }
 why-synthesizer = { path = "../synthesizer" }
 why-evidence = { path = "../evidence" }
 why-hooks = { path = "../hooks" }
+why-shell = { path = "../shell" }
+why-lsp = { path = "../lsp" }
+tokio.workspace = true

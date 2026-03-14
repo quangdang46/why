@@ -1,12 +1,15 @@
 mod cli;
 
 use anyhow::Result;
+use clap::CommandFactory;
 use clap::Parser;
-use cli::{Cli, Mode, QueryRequest};
+use clap_complete::{Generator, Shell, generate};
+use clap_mangen::Man;
+use cli::{Cli, CompletionShell, Mode, QueryRequest};
 use git2::Repository;
 use why_archaeologist::{
-    ArchaeologyResult, BlameChainResult, TeamReport, analyze_blame_chain,
-    analyze_target_with_options, analyze_team,
+    ArchaeologyResult, BlameChainResult, EvolutionHistoryResult, TeamReport,
+    analyze_blame_chain, analyze_evolution_history, analyze_target_with_options, analyze_team,
 };
 use why_cache::{Cache, HealthSnapshot};
 use why_context::load_config;
@@ -46,6 +49,17 @@ fn run() -> Result<ExitStatus> {
             why_mcp::run_stdio()?;
             Ok(ExitStatus::Success)
         }
+        Mode::Shell => {
+            why_shell::run()?;
+            Ok(ExitStatus::Success)
+        }
+        Mode::Lsp => {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?
+                .block_on(why_lsp::run_stdio())?;
+            Ok(ExitStatus::Success)
+        }
         Mode::Hotspots { limit, json } => {
             run_hotspots(limit, json)?;
             Ok(ExitStatus::Success)
@@ -65,6 +79,14 @@ fn run() -> Result<ExitStatus> {
         }
         Mode::UninstallHooks => {
             run_uninstall_hooks()?;
+            Ok(ExitStatus::Success)
+        }
+        Mode::Completions { shell } => {
+            run_completions(shell)?;
+            Ok(ExitStatus::Success)
+        }
+        Mode::Manpage => {
+            run_manpage()?;
             Ok(ExitStatus::Success)
         }
         Mode::Query(request) => {
@@ -182,6 +204,28 @@ fn run_ghost(limit: usize, json: bool) -> Result<()> {
     Ok(())
 }
 
+fn run_completions(shell: CompletionShell) -> Result<()> {
+    let mut command = Cli::command();
+    let name = command.get_name().to_string();
+    match shell {
+        CompletionShell::Bash => generate_completion(Shell::Bash, &mut command, &name),
+        CompletionShell::Zsh => generate_completion(Shell::Zsh, &mut command, &name),
+        CompletionShell::Fish => generate_completion(Shell::Fish, &mut command, &name),
+    }
+    Ok(())
+}
+
+fn generate_completion<G: Generator>(generator: G, command: &mut clap::Command, name: &str) {
+    generate(generator, command, name, &mut std::io::stdout());
+}
+
+fn run_manpage() -> Result<()> {
+    let command = Cli::command();
+    let man = Man::new(command);
+    man.render(&mut std::io::stdout())?;
+    Ok(())
+}
+
 fn run_query(request: QueryRequest) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let config = load_config(&cwd)?;
@@ -222,6 +266,16 @@ fn run_query(request: QueryRequest) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&report)?);
         } else {
             render_blame_chain_terminal(&report);
+        }
+        return Ok(());
+    }
+
+    if request.evolution {
+        let report = analyze_evolution_history(&request.target, &cwd, request.since_days)?;
+        if request.json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            render_evolution_terminal(&report);
         }
         return Ok(());
     }
@@ -400,6 +454,64 @@ fn render_coupling_terminal(report: &CouplingReport) {
             finding.shared_commits,
             finding.path.display()
         );
+    }
+}
+
+fn render_evolution_terminal(report: &EvolutionHistoryResult) {
+    let heading = match report.target.query_kind {
+        QueryKind::Symbol | QueryKind::QualifiedSymbol => {
+            format!("Evolution history for {}", report.target.path.display())
+        }
+        QueryKind::Range => format!(
+            "Evolution history for {} (lines {}-{})",
+            report.target.path.display(),
+            report.target.start_line,
+            report.target.end_line
+        ),
+        QueryKind::Line => format!(
+            "Evolution history for {}:{}",
+            report.target.path.display(),
+            report.target.start_line
+        ),
+    };
+    println!("{heading}");
+    println!();
+    println!("Heuristic risk: {}.", report.risk_level.as_str());
+    println!("{}", report.risk_summary);
+    println!("{}", report.change_guidance);
+    println!();
+
+    if report.paths_seen.is_empty() {
+        println!("Paths seen: none");
+    } else {
+        println!("Paths seen:");
+        for path in &report.paths_seen {
+            println!("  - {}", path.display());
+        }
+    }
+
+    println!();
+    if report.commits.is_empty() {
+        println!("Timeline: no commits matched the requested evolution window.");
+    } else {
+        println!("Timeline:");
+        for entry in &report.commits {
+            println!(
+                "  {}  {}  {}  {}",
+                entry.commit.short_oid,
+                entry.commit.date,
+                entry.path_at_commit.display(),
+                entry.commit.summary
+            );
+        }
+    }
+
+    if !report.notes.is_empty() {
+        println!();
+        println!("Notes:");
+        for note in &report.notes {
+            println!("  - {note}");
+        }
     }
 }
 

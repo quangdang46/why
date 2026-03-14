@@ -27,6 +27,8 @@ authors = ["why contributors"]
 [workspace.dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+clap_mangen = "0.2"
 git2 = { version = "0.18", default-features = false, features = ["vendored-openssl"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -38,6 +40,11 @@ tree-sitter-javascript = "0.21"
 tree-sitter-python = "0.21"
 tree-sitter-rust = "0.21"
 tree-sitter-typescript = "0.21"
+rustyline = { version = "14", features = ["derive"] }
+walkdir = "2"
+dirs = "5"
+tokio = { version = "1", features = ["io-std", "macros", "rt-multi-thread"] }
+tower-lsp = "0.20"
 
 [package]
 name = "why-workspace"
