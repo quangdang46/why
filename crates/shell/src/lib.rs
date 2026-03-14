@@ -240,10 +240,9 @@ fn run_shell_command(cwd: &Path, line: &str) -> Result<()> {
     if !matches!(
         args.first().map(String::as_str),
         Some("hotspots" | "health" | "ghost")
-    ) {
-        if !args.iter().any(|arg| arg == "--no-llm") {
-            args.push("--no-llm".to_string());
-        }
+    ) && !args.iter().any(|arg| arg == "--no-llm")
+    {
+        args.push("--no-llm".to_string());
     }
 
     let exe = std::env::current_exe().context("failed to locate current why binary")?;
