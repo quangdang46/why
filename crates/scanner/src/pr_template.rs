@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use git2::{Delta, DiffOptions, Repository};
 use serde::Serialize;
 
-use crate::{HotspotFinding, TimeBombFinding, scan_hotspots, scan_time_bombs};
+use crate::{scan_hotspots, scan_time_bombs, HotspotFinding, TimeBombFinding};
 
 const TIME_BOMB_AGE_DAYS: i64 = 180;
 
@@ -252,7 +252,7 @@ fn build_test_plan(staged_files: &[StagedFile]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{PrTemplateReport, StagedChange, StagedFile, build_title};
+    use super::{build_title, PrTemplateReport, StagedChange, StagedFile};
     use std::path::PathBuf;
 
     #[test]

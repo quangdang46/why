@@ -3,28 +3,28 @@ mod cli;
 use anyhow::Result;
 use clap::CommandFactory;
 use clap::Parser;
-use clap_complete::{Generator, Shell, generate};
+use clap_complete::{generate, Generator, Shell};
 use clap_mangen::Man;
 use cli::{Cli, CompletionShell, Mode, QueryRequest};
 use git2::Repository;
 use why_archaeologist::{
-    ArchaeologyResult, BlameChainResult, EvolutionHistoryResult, TeamReport, analyze_blame_chain,
-    analyze_evolution_history, analyze_target_with_options, analyze_team,
+    analyze_blame_chain, analyze_evolution_history, analyze_target_with_options, analyze_team,
+    ArchaeologyResult, BlameChainResult, EvolutionHistoryResult, TeamReport,
 };
 use why_cache::{Cache, HealthSnapshot};
 use why_context::load_config;
 use why_evidence::{
-    EvidenceCommit, EvidenceContext, EvidenceTarget, GitHubClient, GitHubEnrichment,
-    enrich_github_refs,
+    enrich_github_refs, EvidenceCommit, EvidenceContext, EvidenceTarget, GitHubClient,
+    GitHubEnrichment,
 };
 use why_locator::QueryKind;
 use why_scanner::{
-    CouplingReport, GhostFinding, HealthDelta, HealthReport, HotspotFinding, OnboardFinding,
-    PrTemplateReport,
+    CouplingReport, CoverageGapReport, GhostFinding, HealthDelta, HealthReport, HotspotFinding,
+    OnboardFinding, PrTemplateReport,
 };
 use why_splitter::SplitSuggestion;
 use why_synthesizer::{
-    AnthropicClient, AnthropicRequest, WhyReport, heuristic_report, parse_response, prompt_contract,
+    heuristic_report, parse_response, prompt_contract, AnthropicClient, AnthropicRequest, WhyReport,
 };
 
 fn main() {
@@ -68,6 +68,15 @@ fn run() -> Result<ExitStatus> {
         Mode::Health { json, ci } => run_health(json, ci),
         Mode::PrTemplate { json } => {
             run_pr_template(json)?;
+            Ok(ExitStatus::Success)
+        }
+        Mode::CoverageGap {
+            coverage,
+            limit,
+            max_coverage,
+            json,
+        } => {
+            run_coverage_gap(&coverage, limit, max_coverage, json)?;
             Ok(ExitStatus::Success)
         }
         Mode::Ghost { limit, json } => {
@@ -191,6 +200,20 @@ fn run_pr_template(json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print!("{}", render_pr_template_markdown(&report));
+    }
+
+    Ok(())
+}
+
+fn run_coverage_gap(coverage: &str, limit: usize, max_coverage: f32, json: bool) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let report =
+        why_scanner::scan_coverage_gap(&cwd, std::path::Path::new(coverage), limit, max_coverage)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        render_coverage_gap_terminal(&report, limit);
     }
 
     Ok(())
@@ -669,6 +692,57 @@ fn render_pr_template_markdown(report: &PrTemplateReport) -> String {
     lines.join("\n")
 }
 
+fn render_coverage_gap_terminal(report: &CoverageGapReport, limit: usize) {
+    println!(
+        "Top {limit} HIGH-risk functions at or below {:.1}% coverage",
+        report.max_coverage
+    );
+    println!();
+    println!("Coverage report: {}", report.coverage_path.display());
+    println!();
+    if report.findings.is_empty() {
+        println!("No HIGH-risk coverage gaps were found in the current repository.");
+    } else {
+        for (index, finding) in report.findings.iter().enumerate() {
+            let risk_flags = if finding.risk_flags.is_empty() {
+                "none".to_string()
+            } else {
+                finding.risk_flags.join(", ")
+            };
+            println!(
+                "  {:>2}. {}:{}-{}  {}  coverage {:>5.1}%  commits {:>2}",
+                index + 1,
+                finding.path.display(),
+                finding.start_line,
+                finding.end_line,
+                finding.symbol,
+                finding.coverage_pct,
+                finding.commit_count
+            );
+            println!(
+                "      instrumented: {} line(s), covered: {}",
+                finding.instrumented_lines, finding.covered_lines
+            );
+            println!("      risk flags: {risk_flags}");
+            println!("      summary: {}", finding.summary);
+            if !finding.top_commit_summaries.is_empty() {
+                println!(
+                    "      top history: {}",
+                    finding.top_commit_summaries.join(" | ")
+                );
+            }
+        }
+    }
+
+    if !report.notes.is_empty() {
+        println!();
+        println!("Notes");
+        for note in &report.notes {
+            println!("  - {note}");
+        }
+    }
+}
+
 fn render_ghost_terminal(findings: &[GhostFinding], limit: usize) {
     println!("Top {limit} ghost functions by risk-aware archaeology");
     println!();
@@ -1062,8 +1136,8 @@ fn format_why_report(target: &str, report: &WhyReport, cached: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExitStatus, HealthReport, build_github_enrichment, compute_health_delta, format_why_report,
-        render_health_terminal, render_pr_template_markdown, sorted_signal_entries,
+        build_github_enrichment, compute_health_delta, format_why_report, render_health_terminal,
+        render_pr_template_markdown, sorted_signal_entries, ExitStatus, HealthReport,
     };
     use git2::Repository;
     use std::collections::HashMap;

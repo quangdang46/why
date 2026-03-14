@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use crate::hotspots::HotspotFinding;
 use crate::scan_hotspots;
-use crate::time_bombs::{TimeBombKind, scan_time_bombs};
+use crate::time_bombs::{scan_time_bombs, TimeBombKind};
 use why_archaeologist::RiskLevel;
 
 const TIME_BOMB_AGE_DAYS: i64 = 180;

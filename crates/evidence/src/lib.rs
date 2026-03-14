@@ -118,6 +118,13 @@ pub struct GitHubItem {
     pub html_url: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GitHubComment {
+    pub id: u64,
+    pub html_url: String,
+    pub body: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GitHubFetchOutcome {
     Item(GitHubItem),
@@ -133,6 +140,11 @@ pub struct GitHubEnrichment {
 #[derive(Debug, Deserialize)]
 struct GitHubApiErrorEnvelope {
     message: String,
+}
+
+#[derive(Debug, Serialize)]
+struct GitHubCommentRequest<'a> {
+    body: &'a str,
 }
 
 #[derive(Clone)]
@@ -171,6 +183,13 @@ impl GitHubClient {
         &self.repo
     }
 
+    fn authorize_request(&self, builder: RequestBuilder) -> RequestBuilder {
+        match self.auth_value.as_deref() {
+            Some(auth_value) => builder.header(AUTHORIZATION, format!("Bearer {auth_value}")),
+            None => builder,
+        }
+    }
+
     pub fn issue_endpoint(&self, issue: &GitHubRef) -> String {
         format!(
             "https://api.github.com/repos/{}/{}/issues/{}",
@@ -184,14 +203,29 @@ impl GitHubClient {
             .get(self.issue_endpoint(issue))
             .header(ACCEPT, "application/vnd.github+json");
 
-        match self.auth_value.as_deref() {
-            Some(auth_value) => builder.header(AUTHORIZATION, format!("Bearer {auth_value}")),
-            None => builder,
-        }
+        self.authorize_request(builder)
+    }
+
+    pub fn issue_comment_endpoint(&self, issue: &GitHubRef) -> String {
+        format!("{}/comments", self.issue_endpoint(issue))
+    }
+
+    pub fn request_issue_comment(&self, issue: &GitHubRef, body: &str) -> RequestBuilder {
+        let builder = self
+            .client
+            .post(self.issue_comment_endpoint(issue))
+            .header(ACCEPT, "application/vnd.github+json")
+            .json(&GitHubCommentRequest { body });
+
+        self.authorize_request(builder)
     }
 
     pub fn fetch_issue(&self, issue: &GitHubRef) -> Result<GitHubFetchOutcome> {
         self.fetch_issue_from_response(self.request_issue(issue).send(), issue)
+    }
+
+    pub fn post_issue_comment(&self, issue: &GitHubRef, body: &str) -> Result<GitHubComment> {
+        self.post_issue_comment_from_response(self.request_issue_comment(issue, body).send(), issue)
     }
 
     fn fetch_issue_from_response(
@@ -217,6 +251,25 @@ impl GitHubClient {
             .with_context(|| format!("failed to read GitHub issue #{} response", issue.number))?;
 
         parse_github_issue_response(issue.number, status, &body)
+    }
+
+    fn post_issue_comment_from_response(
+        &self,
+        response: reqwest::Result<reqwest::blocking::Response>,
+        issue: &GitHubRef,
+    ) -> Result<GitHubComment> {
+        let response = response
+            .with_context(|| format!("failed to post GitHub comment for issue #{}", issue.number))?;
+
+        let status = response.status();
+        let body = response.text().with_context(|| {
+            format!(
+                "failed to read GitHub comment response for issue #{}",
+                issue.number
+            )
+        })?;
+
+        parse_github_comment_response(issue.number, status, &body)
     }
 }
 
@@ -266,6 +319,27 @@ fn parse_github_issue_response(
     Ok(GitHubFetchOutcome::Degraded {
         note: format_github_degradation_note(issue_number, status, body),
     })
+}
+
+fn parse_github_comment_response(
+    issue_number: u64,
+    status: StatusCode,
+    body: &str,
+) -> Result<GitHubComment> {
+    if status.is_success() {
+        return serde_json::from_str(body).with_context(|| {
+            format!(
+                "failed to parse GitHub comment response for issue #{}",
+                issue_number
+            )
+        });
+    }
+
+    bail!(
+        "failed to post GitHub comment for issue #{}: {}",
+        issue_number,
+        format_github_degradation_note(issue_number, status, body)
+    )
 }
 
 fn format_github_degradation_note(issue_number: u64, status: StatusCode, body: &str) -> String {
@@ -805,6 +879,53 @@ mod tests {
     }
 
     #[test]
+    fn test_github_client_builds_issue_comment_endpoint() {
+        let config = WhyConfig::default();
+        let client = GitHubClient::from_config(&config, "https://github.com/anthropics/why.git")
+            .expect("client should build from config");
+
+        assert_eq!(
+            client.issue_comment_endpoint(&GitHubRef { number: 42 }),
+            "https://api.github.com/repos/anthropics/why/issues/42/comments"
+        );
+    }
+
+    #[test]
+    fn test_github_client_request_issue_comment_sets_auth_and_json_body() {
+        let config = WhyConfig {
+            github: GitHubConfig {
+                remote: "origin".into(),
+                token: Some("github_test_token".into()),
+            },
+            ..WhyConfig::default()
+        };
+        let client = GitHubClient::from_config(&config, "https://github.com/anthropics/why.git")
+            .expect("client should build from config");
+        let request = client
+            .request_issue_comment(&GitHubRef { number: 42 }, "hello from why")
+            .build()
+            .expect("request should build");
+
+        assert_eq!(request.method().as_str(), "POST");
+        assert_eq!(
+            request.url().as_str(),
+            "https://api.github.com/repos/anthropics/why/issues/42/comments"
+        );
+        let auth = request
+            .headers()
+            .get(AUTHORIZATION)
+            .expect("auth header should be present")
+            .to_str()
+            .expect("auth header should be valid utf-8");
+        assert_eq!(auth, "Bearer github_test_token");
+        let body = request.body().expect("request should have body");
+        let bytes = body.as_bytes().expect("body should be buffered bytes");
+        let payload: serde_json::Value =
+            serde_json::from_slice(bytes).expect("comment payload should be valid JSON");
+        assert_eq!(payload["body"], "hello from why");
+    }
+
+    #[test]
     fn test_github_client_debug_redacts_auth_token() {
         let config = WhyConfig {
             github: GitHubConfig {
@@ -868,6 +989,42 @@ mod tests {
         assert!(note.contains("issue #7"));
         assert!(note.contains("authentication failed"));
         assert!(note.contains("HTTP 401"));
+    }
+
+    #[test]
+    fn test_parse_github_comment_response_parses_successful_responses() {
+        let comment = parse_github_comment_response(
+            42,
+            StatusCode::CREATED,
+            r#"{"id":99,"html_url":"https://github.com/anthropics/why/issues/42#issuecomment-99","body":"Looks good"}"#,
+        )
+        .expect("comment response should parse");
+
+        assert_eq!(
+            comment,
+            GitHubComment {
+                id: 99,
+                html_url: "https://github.com/anthropics/why/issues/42#issuecomment-99".into(),
+                body: "Looks good".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_github_comment_response_surfaces_http_errors() {
+        let error = parse_github_comment_response(
+            42,
+            StatusCode::FORBIDDEN,
+            r#"{"message":"Resource not accessible by integration"}"#,
+        )
+        .expect_err("comment response should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("failed to post GitHub comment for issue #42")
+        );
+        assert!(error.to_string().contains("access was denied"));
     }
 
     #[test]

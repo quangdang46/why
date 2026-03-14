@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use git2::{DiffOptions, Repository, Sort};
 use serde::Serialize;
 use why_archaeologist::{
-    RiskLevel, blame_commit_evidence, discover_repository, extract_local_context, infer_risk_level,
+    blame_commit_evidence, discover_repository, extract_local_context, infer_risk_level, RiskLevel,
 };
 use why_context::load_config;
 
@@ -180,7 +180,7 @@ fn risk_weight(risk_level: RiskLevel) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{HotspotFinding, risk_weight, scan_hotspots};
+    use super::{risk_weight, scan_hotspots, HotspotFinding};
     use crate::should_skip_dir;
     use anyhow::{Context, Result};
     use std::process::Command;
@@ -254,12 +254,10 @@ done
         assert!(findings[0].churn_commits >= 4);
         assert_eq!(findings[0].risk_level, RiskLevel::HIGH);
         assert!(findings[0].hotspot_score >= 12.0);
-        assert!(
-            findings[0]
-                .top_commit_summaries
-                .iter()
-                .any(|summary| summary.contains("security hotfix"))
-        );
+        assert!(findings[0]
+            .top_commit_summaries
+            .iter()
+            .any(|summary| summary.contains("security hotfix")));
 
         let util = findings
             .iter()

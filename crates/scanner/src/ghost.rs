@@ -4,8 +4,8 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::Serialize;
-use why_archaeologist::{RiskLevel, analyze_target_with_options, discover_repository};
-use why_locator::{QueryKind, QueryTarget, SupportedLanguage, list_all_symbols};
+use why_archaeologist::{analyze_target_with_options, discover_repository, RiskLevel};
+use why_locator::{list_all_symbols, QueryKind, QueryTarget, SupportedLanguage};
 
 use crate::{is_tracked_source_file, should_skip_dir};
 
@@ -278,7 +278,7 @@ fn is_ident_continue(byte: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{RiskLevel, extract_call_like_identifiers, scan_ghosts};
+    use super::{extract_call_like_identifiers, scan_ghosts, RiskLevel};
     use anyhow::{Context, Result};
     use std::process::Command;
     use tempfile::TempDir;
@@ -355,20 +355,16 @@ git commit -m 'feat: add main entry point using authenticate' >/dev/null
         assert_eq!(ghost.risk_level, RiskLevel::HIGH);
         assert_eq!(ghost.call_site_count, 1);
         assert!(ghost.commit_count >= 1);
-        assert!(
-            ghost
-                .notes
-                .iter()
-                .any(|note| note.contains("static analysis"))
-        );
+        assert!(ghost
+            .notes
+            .iter()
+            .any(|note| note.contains("static analysis")));
         assert!(
             ghost.summary.contains("token validation") || ghost.summary.contains("auth forgery")
         );
-        assert!(
-            findings
-                .iter()
-                .all(|finding| finding.symbol != "authenticate")
-        );
+        assert!(findings
+            .iter()
+            .all(|finding| finding.symbol != "authenticate"));
         Ok(())
     }
 

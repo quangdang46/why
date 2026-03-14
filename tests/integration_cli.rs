@@ -1,7 +1,7 @@
 mod common;
 
-use anyhow::Result;
 use anyhow::bail;
+use anyhow::Result;
 use common::{
     assert_json_golden, assert_terminal_golden, setup_compat_shim_repo, setup_coupling_repo,
     setup_ghost_repo, setup_hotfix_repo, setup_javascript_repo, setup_python_repo,
@@ -35,43 +35,31 @@ fn hotfix_repo_json_output_has_phase_one_shape() -> Result<()> {
     assert_eq!(parsed["mode"], "heuristic");
     assert_eq!(parsed["risk_level"], "HIGH");
     assert_eq!(parsed["confidence"], "low");
-    assert!(
-        parsed["summary"]
-            .as_str()
-            .is_some_and(|summary| summary.contains("Heuristic analysis of src/payment.rs:6"))
-    );
-    assert!(
-        parsed["evidence"]
-            .as_array()
-            .is_some_and(|items| !items.is_empty())
-    );
-    assert!(
-        parsed["inference"]
-            .as_array()
-            .is_some_and(|items| items.is_empty())
-    );
-    assert!(
-        parsed["unknowns"]
-            .as_array()
-            .is_some_and(|items| !items.is_empty())
-    );
-    assert!(parsed["risk_summary"].as_str().is_some_and(
-        |text| text.contains("security sensitivity")
+    assert!(parsed["summary"]
+        .as_str()
+        .is_some_and(|summary| summary.contains("Heuristic analysis of src/payment.rs:6")));
+    assert!(parsed["evidence"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty()));
+    assert!(parsed["inference"]
+        .as_array()
+        .is_some_and(|items| items.is_empty()));
+    assert!(parsed["unknowns"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty()));
+    assert!(parsed["risk_summary"]
+        .as_str()
+        .is_some_and(|text| text.contains("security sensitivity")
             || text.contains("migration")
-            || text.contains("available history")
-    ));
-    assert!(
-        parsed["change_guidance"]
+            || text.contains("available history")));
+    assert!(parsed["change_guidance"]
+        .as_str()
+        .is_some_and(|text| !text.is_empty()));
+    assert!(parsed["notes"]
+        .as_array()
+        .is_some_and(|items| items.iter().any(|note| note
             .as_str()
-            .is_some_and(|text| !text.is_empty())
-    );
-    assert!(
-        parsed["notes"]
-            .as_array()
-            .is_some_and(|items| items.iter().any(|note| note
-                .as_str()
-                .is_some_and(|text| text.contains("No LLM synthesis"))))
-    );
+            .is_some_and(|text| text.contains("No LLM synthesis")))));
     assert!(parsed["cost_usd"].is_null());
 
     Ok(())
@@ -85,20 +73,16 @@ fn hotfix_repo_since_filters_to_recent_evidence() -> Result<()> {
 
     let stdout = repo.stdout(&output);
     let parsed: Value = serde_json::from_str(&stdout)?;
-    assert!(
-        parsed["summary"]
-            .as_str()
-            .is_some_and(|summary| summary.contains("Heuristic analysis"))
-    );
+    assert!(parsed["summary"]
+        .as_str()
+        .is_some_and(|summary| summary.contains("Heuristic analysis")));
     let evidence = parsed["evidence"]
         .as_array()
         .expect("evidence should be an array");
     assert_eq!(evidence.len(), 1);
-    assert!(
-        evidence[0]
-            .as_str()
-            .is_some_and(|summary| summary.contains("hotfix"))
-    );
+    assert!(evidence[0]
+        .as_str()
+        .is_some_and(|summary| summary.contains("hotfix")));
 
     Ok(())
 }
@@ -197,11 +181,9 @@ fn range_query_works_for_compat_fixture() -> Result<()> {
     let parsed: Value = serde_json::from_str(&stdout)?;
     assert_eq!(parsed["mode"], "heuristic");
     assert_eq!(parsed["risk_level"], "MEDIUM");
-    assert!(
-        parsed["summary"]
-            .as_str()
-            .is_some_and(|summary| summary.contains("src/http.rs:1-6"))
-    );
+    assert!(parsed["summary"]
+        .as_str()
+        .is_some_and(|summary| summary.contains("src/http.rs:1-6")));
     let evidence = parsed["evidence"]
         .as_array()
         .expect("evidence should be an array");
@@ -223,18 +205,14 @@ fn sparse_repo_yields_non_high_risk() -> Result<()> {
     let stdout = repo.stdout(&output);
     let parsed: Value = serde_json::from_str(&stdout)?;
     assert_ne!(parsed["risk_level"], "HIGH");
-    assert!(
-        parsed["evidence"]
-            .as_array()
-            .is_some_and(|items| !items.is_empty())
-    );
-    assert!(
-        parsed["unknowns"]
-            .as_array()
-            .is_some_and(|items| items.iter().any(|item| item
-                .as_str()
-                .is_some_and(|text| text.contains("No model synthesis"))))
-    );
+    assert!(parsed["evidence"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty()));
+    assert!(parsed["unknowns"]
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| item
+            .as_str()
+            .is_some_and(|text| text.contains("No model synthesis")))));
 
     Ok(())
 }
@@ -250,16 +228,12 @@ fn rust_symbol_queries_emit_why_report_json() -> Result<()> {
     assert_eq!(parsed["mode"], "heuristic");
     assert_eq!(parsed["risk_level"], "HIGH");
     assert_eq!(parsed["confidence"], "low");
-    assert!(
-        parsed["summary"]
-            .as_str()
-            .is_some_and(|summary| summary.contains("src/payment.rs:process_payment"))
-    );
-    assert!(
-        parsed["evidence"]
-            .as_array()
-            .is_some_and(|items| !items.is_empty())
-    );
+    assert!(parsed["summary"]
+        .as_str()
+        .is_some_and(|summary| summary.contains("src/payment.rs:process_payment")));
+    assert!(parsed["evidence"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty()));
 
     Ok(())
 }
@@ -281,11 +255,9 @@ fn rust_qualified_symbol_queries_emit_why_report_json() -> Result<()> {
     assert!(parsed["summary"].as_str().is_some_and(|summary| {
         summary.contains("src/payment.rs:PaymentService::process_payment")
     }));
-    assert!(
-        parsed["evidence"]
-            .as_array()
-            .is_some_and(|items| !items.is_empty())
-    );
+    assert!(parsed["evidence"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty()));
 
     Ok(())
 }
@@ -300,16 +272,12 @@ fn typescript_symbol_queries_emit_why_report_json() -> Result<()> {
     let parsed: Value = serde_json::from_str(&stdout)?;
     assert_eq!(parsed["mode"], "heuristic");
     assert_eq!(parsed["risk_level"], "HIGH");
-    assert!(
-        parsed["summary"]
-            .as_str()
-            .is_some_and(|summary| summary.contains("src/auth.ts:authenticate"))
-    );
-    assert!(
-        parsed["evidence"]
-            .as_array()
-            .is_some_and(|items| !items.is_empty())
-    );
+    assert!(parsed["summary"]
+        .as_str()
+        .is_some_and(|summary| summary.contains("src/auth.ts:authenticate")));
+    assert!(parsed["evidence"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty()));
 
     Ok(())
 }
@@ -324,16 +292,12 @@ fn typescript_class_symbol_queries_emit_why_report_json() -> Result<()> {
     let parsed: Value = serde_json::from_str(&stdout)?;
     assert_eq!(parsed["mode"], "heuristic");
     assert_eq!(parsed["risk_level"], "HIGH");
-    assert!(
-        parsed["summary"]
-            .as_str()
-            .is_some_and(|summary| summary.contains("src/auth.ts:AuthService"))
-    );
-    assert!(
-        parsed["evidence"]
-            .as_array()
-            .is_some_and(|items| !items.is_empty())
-    );
+    assert!(parsed["summary"]
+        .as_str()
+        .is_some_and(|summary| summary.contains("src/auth.ts:AuthService")));
+    assert!(parsed["evidence"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty()));
 
     Ok(())
 }
@@ -348,16 +312,12 @@ fn javascript_symbol_queries_emit_why_report_json() -> Result<()> {
     let parsed: Value = serde_json::from_str(&stdout)?;
     assert_eq!(parsed["mode"], "heuristic");
     assert_eq!(parsed["risk_level"], "HIGH");
-    assert!(
-        parsed["summary"]
-            .as_str()
-            .is_some_and(|summary| summary.contains("src/auth.js:login"))
-    );
-    assert!(
-        parsed["evidence"]
-            .as_array()
-            .is_some_and(|items| !items.is_empty())
-    );
+    assert!(parsed["summary"]
+        .as_str()
+        .is_some_and(|summary| summary.contains("src/auth.js:login")));
+    assert!(parsed["evidence"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty()));
 
     Ok(())
 }
@@ -372,16 +332,12 @@ fn javascript_class_symbol_queries_emit_why_report_json() -> Result<()> {
     let parsed: Value = serde_json::from_str(&stdout)?;
     assert_eq!(parsed["mode"], "heuristic");
     assert_eq!(parsed["risk_level"], "HIGH");
-    assert!(
-        parsed["summary"]
-            .as_str()
-            .is_some_and(|summary| summary.contains("src/auth.js:AuthService"))
-    );
-    assert!(
-        parsed["evidence"]
-            .as_array()
-            .is_some_and(|items| !items.is_empty())
-    );
+    assert!(parsed["summary"]
+        .as_str()
+        .is_some_and(|summary| summary.contains("src/auth.js:AuthService")));
+    assert!(parsed["evidence"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty()));
 
     Ok(())
 }
@@ -396,16 +352,12 @@ fn python_symbol_queries_emit_why_report_json() -> Result<()> {
     let parsed: Value = serde_json::from_str(&stdout)?;
     assert_eq!(parsed["mode"], "heuristic");
     assert_eq!(parsed["risk_level"], "HIGH");
-    assert!(
-        parsed["summary"]
-            .as_str()
-            .is_some_and(|summary| summary.contains("src/auth.py:authenticate"))
-    );
-    assert!(
-        parsed["evidence"]
-            .as_array()
-            .is_some_and(|items| !items.is_empty())
-    );
+    assert!(parsed["summary"]
+        .as_str()
+        .is_some_and(|summary| summary.contains("src/auth.py:authenticate")));
+    assert!(parsed["evidence"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty()));
 
     Ok(())
 }
@@ -477,11 +429,9 @@ fn health_subcommand_returns_json_report_and_persists_snapshot() -> Result<()> {
     assert_eq!(parsed["signals"]["time_bombs"], 1);
     assert_eq!(parsed["signals"]["stale_hacks"], 0);
     assert!(parsed["delta"].is_null());
-    assert!(
-        parsed["notes"]
-            .as_array()
-            .is_some_and(|items| !items.is_empty())
-    );
+    assert!(parsed["notes"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty()));
 
     let cache_path = repo.path.join(".why").join("cache.json");
     let cache_value: Value = serde_json::from_str(&std::fs::read_to_string(cache_path)?)?;
@@ -537,10 +487,9 @@ fn health_ci_subcommand_succeeds_when_score_is_within_threshold() -> Result<()> 
     let output = repo.run_why(&["health", "--ci", "100"])?;
     ensure_success(&output)?;
     assert_eq!(output.status.code(), Some(0));
-    assert!(
-        repo.stdout(&output)
-            .contains("CI gate: PASS (threshold 100)")
-    );
+    assert!(repo
+        .stdout(&output)
+        .contains("CI gate: PASS (threshold 100)"));
     Ok(())
 }
 
@@ -577,11 +526,9 @@ fn pr_template_subcommand_reports_when_no_staged_changes_exist() -> Result<()> {
         parsed["staged_files"].as_array().map(|items| items.len()),
         Some(0)
     );
-    assert!(
-        parsed["summary"][0]
-            .as_str()
-            .is_some_and(|text| text.contains("No staged changes were found"))
-    );
+    assert!(parsed["summary"][0]
+        .as_str()
+        .is_some_and(|text| text.contains("No staged changes were found")));
     Ok(())
 }
 
@@ -606,26 +553,114 @@ fn pr_template_subcommand_summarizes_staged_diff() -> Result<()> {
     assert_eq!(parsed["title_suggestion"], "update src/payment.rs");
     assert_eq!(parsed["staged_files"][0]["path"], "src/payment.rs");
     assert_eq!(parsed["staged_files"][0]["change"], "Modified");
-    assert!(
-        parsed["summary"]
-            .as_array()
-            .is_some_and(|items| !items.is_empty())
-    );
-    assert!(
-        parsed["risk_notes"]
-            .as_array()
-            .is_some_and(|items| !items.is_empty())
-    );
-    assert!(
-        parsed["test_plan"]
-            .as_array()
-            .is_some_and(|items| !items.is_empty())
-    );
+    assert!(parsed["summary"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty()));
+    assert!(parsed["risk_notes"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty()));
+    assert!(parsed["test_plan"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty()));
     assert_json_golden("cli_pr_template_hotfix_repo", &parsed)?;
 
     let terminal = repo.run_why(&["pr-template"])?;
     ensure_success(&terminal)?;
     assert_terminal_golden("cli_pr_template_hotfix_repo", &repo.stdout(&terminal))?;
+    Ok(())
+}
+
+#[test]
+fn coverage_gap_subcommand_reports_high_risk_uncovered_symbols() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let coverage_path = repo.path.join("lcov.info");
+    fs::write(
+        &coverage_path,
+        "TN:\nSF:src/payment.rs\nDA:5,0\nDA:6,0\nDA:7,0\nDA:8,0\nDA:9,0\nDA:10,0\nDA:11,0\nDA:12,0\nend_of_record\n",
+    )?;
+
+    let output = repo.run_why(&[
+        "coverage-gap",
+        "--coverage",
+        "lcov.info",
+        "--limit",
+        "5",
+        "--json",
+    ])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    let parsed: Value = serde_json::from_str(&stdout)?;
+    assert_eq!(
+        parsed["coverage_path"],
+        coverage_path.to_string_lossy().to_string()
+    );
+    assert_eq!(parsed["max_coverage"], 20.0);
+    let findings = parsed["findings"]
+        .as_array()
+        .expect("coverage-gap findings should be an array");
+    assert!(!findings.is_empty());
+    assert_eq!(findings[0]["path"], "src/payment.rs");
+    assert_eq!(findings[0]["symbol"], "process_payment");
+    assert_eq!(findings[0]["risk_level"], "HIGH");
+    assert_eq!(findings[0]["coverage_pct"], 0.0);
+    assert!(findings[0]["risk_flags"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty()));
+    assert!(parsed["notes"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty()));
+
+    Ok(())
+}
+
+#[test]
+fn coverage_gap_subcommand_renders_terminal_summary() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let coverage_path = repo.path.join("llvm-cov.json");
+    fs::write(
+        &coverage_path,
+        r#"{
+          "data": [
+            {
+              "files": [
+                {
+                  "filename": "src/payment.rs",
+                  "segments": [
+                    [5, 0, 0, true, true, false],
+                    [6, 0, 0, true, true, false],
+                    [7, 0, 0, true, true, false],
+                    [8, 0, 0, true, true, false],
+                    [9, 0, 0, true, true, false],
+                    [10, 0, 0, true, true, false],
+                    [11, 0, 0, true, true, false],
+                    [12, 0, 0, true, true, false]
+                  ]
+                }
+              ]
+            }
+          ]
+        }"#,
+    )?;
+
+    let output = repo.run_why(&[
+        "coverage-gap",
+        "--coverage",
+        "llvm-cov.json",
+        "--limit",
+        "3",
+    ])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    assert!(stdout.contains("Top 3 HIGH-risk functions at or below 20.0% coverage"));
+    assert!(stdout.contains("Coverage report:"));
+    assert!(stdout.contains("src/payment.rs"));
+    assert!(stdout.contains("process_payment"));
+    assert!(stdout.contains("coverage   0.0%") || stdout.contains("coverage  0.0%"));
+    assert!(stdout.contains("risk flags:"));
+    assert!(stdout.contains("Notes"));
+
     Ok(())
 }
 
@@ -643,13 +678,11 @@ fn ghost_subcommand_returns_ranked_json_for_fixture_repo() -> Result<()> {
     assert_eq!(findings[0]["symbol"], "validate_auth_token_legacy");
     assert_eq!(findings[0]["risk_level"], "HIGH");
     assert_eq!(findings[0]["call_site_count"], 1);
-    assert!(
-        findings[0]["notes"]
-            .as_array()
-            .is_some_and(|items| items.iter().any(|note| note
-                .as_str()
-                .is_some_and(|text| text.contains("static analysis"))))
-    );
+    assert!(findings[0]["notes"]
+        .as_array()
+        .is_some_and(|items| items.iter().any(|note| note
+            .as_str()
+            .is_some_and(|text| text.contains("static analysis")))));
 
     Ok(())
 }
@@ -686,16 +719,12 @@ fn onboard_subcommand_returns_ranked_json_for_fixture_repo() -> Result<()> {
     assert_eq!(findings[0]["symbol"], "process_payment");
     assert_eq!(findings[0]["risk_level"], "HIGH");
     assert!(findings[0]["score"].as_f64().unwrap_or_default() > 0.0);
-    assert!(
-        findings[0]["change_guidance"]
-            .as_str()
-            .is_some_and(|text| !text.is_empty())
-    );
-    assert!(
-        findings[0]["top_commit_summaries"]
-            .as_array()
-            .is_some_and(|items| !items.is_empty())
-    );
+    assert!(findings[0]["change_guidance"]
+        .as_str()
+        .is_some_and(|text| !text.is_empty()));
+    assert!(findings[0]["top_commit_summaries"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty()));
     Ok(())
 }
 
@@ -732,31 +761,23 @@ fn blame_chain_queries_return_origin_and_skipped_commits_for_fixture_repo() -> R
     assert_eq!(parsed["mode"], "blame-chain");
     assert_eq!(parsed["chain_depth"], 1);
     assert_eq!(parsed["risk_level"], "HIGH");
-    assert!(
-        parsed["starting_commit"]["summary"]
-            .as_str()
-            .is_some_and(|summary| summary.contains("align payment indentation"))
-    );
+    assert!(parsed["starting_commit"]["summary"]
+        .as_str()
+        .is_some_and(|summary| summary.contains("align payment indentation")));
     let skipped = parsed["noise_commits_skipped"]
         .as_array()
         .expect("noise commits should be an array");
     assert_eq!(skipped.len(), 1);
     assert!(skipped[0]["is_mechanical"].as_bool().unwrap_or(false));
-    assert!(
-        skipped[0]["summary"]
-            .as_str()
-            .is_some_and(|summary| summary.contains("align payment indentation"))
-    );
-    assert!(
-        parsed["origin_commit"]["summary"]
-            .as_str()
-            .is_some_and(|summary| summary.contains("hotfix: fix duplicate charge vulnerability"))
-    );
-    assert!(
-        parsed["origin_commit"]["issue_refs"]
-            .as_array()
-            .is_some_and(|refs| refs.iter().any(|r| r == "#4521"))
-    );
+    assert!(skipped[0]["summary"]
+        .as_str()
+        .is_some_and(|summary| summary.contains("align payment indentation")));
+    assert!(parsed["origin_commit"]["summary"]
+        .as_str()
+        .is_some_and(|summary| summary.contains("hotfix: fix duplicate charge vulnerability")));
+    assert!(parsed["origin_commit"]["issue_refs"]
+        .as_array()
+        .is_some_and(|refs| refs.iter().any(|r| r == "#4521")));
 
     Ok(())
 }
@@ -801,38 +822,26 @@ fn evolution_queries_return_timeline_json_for_fixture_repo() -> Result<()> {
         .as_array()
         .expect("evolution output should include commits");
     assert!(!commits.is_empty());
-    assert!(
-        parsed["paths_seen"]
-            .as_array()
-            .is_some_and(|paths| !paths.is_empty())
-    );
-    assert!(
-        parsed["latest_commit"]["summary"]
+    assert!(parsed["paths_seen"]
+        .as_array()
+        .is_some_and(|paths| !paths.is_empty()));
+    assert!(parsed["latest_commit"]["summary"]
+        .as_str()
+        .is_some_and(|text| text.contains("fmt: align payment indentation")));
+    assert!(parsed["origin_commit"]["summary"]
+        .as_str()
+        .is_some_and(|text| text.contains("feat: add payment processing")));
+    assert!(parsed["narrative_summary"]
+        .as_str()
+        .is_some_and(|text| text.contains("Latest state:")));
+    assert!(parsed["inflection_points"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty()));
+    assert!(parsed["notes"]
+        .as_array()
+        .is_some_and(|notes| notes.iter().any(|note| note
             .as_str()
-            .is_some_and(|text| text.contains("fmt: align payment indentation"))
-    );
-    assert!(
-        parsed["origin_commit"]["summary"]
-            .as_str()
-            .is_some_and(|text| text.contains("feat: add payment processing"))
-    );
-    assert!(
-        parsed["narrative_summary"]
-            .as_str()
-            .is_some_and(|text| text.contains("Latest state:"))
-    );
-    assert!(
-        parsed["inflection_points"]
-            .as_array()
-            .is_some_and(|items| !items.is_empty())
-    );
-    assert!(
-        parsed["notes"]
-            .as_array()
-            .is_some_and(|notes| notes.iter().any(|note| note
-                .as_str()
-                .is_some_and(|text| text.contains("Narrative summaries"))))
-    );
+            .is_some_and(|text| text.contains("Narrative summaries")))));
     assert_json_golden("cli_evolution_hotfix_repo", &parsed)?;
 
     Ok(())
@@ -922,11 +931,9 @@ fn split_queries_return_positive_json_suggestion_for_mixed_era_fixture() -> Resu
     assert_eq!(blocks[0]["era_label"], "Security hardening era");
     assert_eq!(blocks[0]["suggested_name"], "authenticate_with_guard");
     assert_eq!(blocks[0]["risk_level"], "HIGH");
-    assert!(
-        blocks[0]["dominant_commit_summary"]
-            .as_str()
-            .is_some_and(|summary| summary.contains("hotfix: harden authenticate"))
-    );
+    assert!(blocks[0]["dominant_commit_summary"]
+        .as_str()
+        .is_some_and(|summary| summary.contains("hotfix: harden authenticate")));
 
     assert_eq!(blocks[1]["start_line"], 7);
     assert_eq!(blocks[1]["end_line"], 14);
@@ -935,11 +942,9 @@ fn split_queries_return_positive_json_suggestion_for_mixed_era_fixture() -> Resu
     assert_eq!(blocks[1]["era_label"], "Backward compat era");
     assert_eq!(blocks[1]["suggested_name"], "authenticate_legacy");
     assert_eq!(blocks[1]["risk_level"], "MEDIUM");
-    assert!(
-        blocks[1]["dominant_commit_summary"]
-            .as_str()
-            .is_some_and(|summary| summary.contains("legacy v1 token support"))
-    );
+    assert!(blocks[1]["dominant_commit_summary"]
+        .as_str()
+        .is_some_and(|summary| summary.contains("legacy v1 token support")));
     assert_json_golden("cli_split_positive_split_repo", &parsed)?;
 
     Ok(())

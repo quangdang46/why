@@ -5,6 +5,7 @@ use std::path::Path;
 use git2::{Repository, Status};
 
 pub mod coupling;
+pub mod coverage_gap;
 pub mod ghost;
 pub mod health;
 pub mod hotspots;
@@ -29,14 +30,15 @@ const SKIPPED_DIR_NAMES: &[&str] = &[
     "coverage",
 ];
 
-pub use coupling::{CouplingFinding, CouplingReport, scan_coupling};
-pub use ghost::{GhostFinding, scan_ghosts};
-pub use health::{HealthDelta, HealthReport, scan_health};
-pub use hotspots::{HotspotFinding, scan_hotspots};
-pub use onboard::{OnboardFinding, scan_onboard};
-pub use outage::{OutageFinding, OutageReport, scan_outage, scan_outage_window};
-pub use pr_template::{PrTemplateReport, StagedChange, StagedFile, scan_pr_template};
-pub use time_bombs::{Severity, TimeBombFinding, TimeBombKind, scan_time_bombs};
+pub use coupling::{scan_coupling, CouplingFinding, CouplingReport};
+pub use coverage_gap::{scan_coverage_gap, CoverageGapFinding, CoverageGapReport};
+pub use ghost::{scan_ghosts, GhostFinding};
+pub use health::{scan_health, HealthDelta, HealthReport};
+pub use hotspots::{scan_hotspots, HotspotFinding};
+pub use onboard::{scan_onboard, OnboardFinding};
+pub use outage::{scan_outage, scan_outage_window, OutageFinding, OutageReport};
+pub use pr_template::{scan_pr_template, PrTemplateReport, StagedChange, StagedFile};
+pub use time_bombs::{scan_time_bombs, Severity, TimeBombFinding, TimeBombKind};
 
 pub(crate) fn is_source_file(path: &Path) -> bool {
     path.extension()

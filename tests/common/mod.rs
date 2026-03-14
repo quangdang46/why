@@ -2,7 +2,7 @@
 //!
 //! Provides fixture repo setup, CLI invocation helpers, and snapshot normalization.
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::fs;

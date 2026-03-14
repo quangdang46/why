@@ -1,12 +1,12 @@
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use why_locator::{QueryTarget, parse_target};
+use why_locator::{parse_target, QueryTarget};
 
 #[derive(Debug, Parser)]
 #[command(name = "why")]
 #[command(
     about = "Ask your codebase why a line, range, symbol, or repo hotspot exists",
-    after_help = "Examples:\n  why src/auth.rs:42\n  why src/auth.rs --lines 40:45 --no-llm\n  why src/auth.rs:verify_token --json\n  why src/auth.rs:AuthService::login --team\n  why src/auth.rs:verify_token --blame-chain\n  why src/auth.rs:verify_token --evolution\n  why hotspots --limit 10\n  why health\n  why health --ci 80\n  why pr-template\n  why ghost --limit 10\n  why onboard --limit 10"
+    after_help = "Examples:\n  why src/auth.rs:42\n  why src/auth.rs --lines 40:45 --no-llm\n  why src/auth.rs:verify_token --json\n  why src/auth.rs:AuthService::login --team\n  why src/auth.rs:verify_token --blame-chain\n  why src/auth.rs:verify_token --evolution\n  why hotspots --limit 10\n  why health\n  why health --ci 80\n  why pr-template\n  why coverage-gap --coverage lcov.info\n  why ghost --limit 10\n  why onboard --limit 10"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -63,7 +63,7 @@ pub enum CompletionShell {
     Fish,
 }
 
-#[derive(Debug, Subcommand, Clone, PartialEq, Eq)]
+#[derive(Debug, Subcommand, Clone, PartialEq)]
 pub enum Command {
     /// Run the MCP stdio server.
     Mcp,
@@ -93,6 +93,24 @@ pub enum Command {
     },
     /// Generate a reviewer-friendly PR template from the staged diff.
     PrTemplate {
+        /// Emit machine-readable output.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Cross-reference HIGH-risk functions against LCOV or llvm-cov JSON coverage.
+    CoverageGap {
+        /// Path to an LCOV file or llvm-cov JSON report.
+        #[arg(long, value_name = "PATH")]
+        coverage: String,
+
+        /// Maximum number of findings to return.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+
+        /// Only include findings at or below this coverage percentage.
+        #[arg(long, value_name = "PERCENT", default_value_t = 20.0)]
+        max_coverage: f32,
+
         /// Emit machine-readable output.
         #[arg(long)]
         json: bool,
@@ -149,20 +167,44 @@ pub struct QueryRequest {
     pub evolution: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Mode {
     Query(QueryRequest),
     Mcp,
     Shell,
     Lsp,
-    Hotspots { limit: usize, json: bool },
-    Health { json: bool, ci: Option<u32> },
-    PrTemplate { json: bool },
-    Ghost { limit: usize, json: bool },
-    Onboard { limit: usize, json: bool },
-    InstallHooks { warn_only: bool },
+    Hotspots {
+        limit: usize,
+        json: bool,
+    },
+    Health {
+        json: bool,
+        ci: Option<u32>,
+    },
+    PrTemplate {
+        json: bool,
+    },
+    CoverageGap {
+        coverage: String,
+        limit: usize,
+        max_coverage: f32,
+        json: bool,
+    },
+    Ghost {
+        limit: usize,
+        json: bool,
+    },
+    Onboard {
+        limit: usize,
+        json: bool,
+    },
+    InstallHooks {
+        warn_only: bool,
+    },
     UninstallHooks,
-    Completions { shell: CompletionShell },
+    Completions {
+        shell: CompletionShell,
+    },
     Manpage,
 }
 
@@ -270,6 +312,41 @@ impl Cli {
                     bail!("the pr-template subcommand does not accept query flags or a target");
                 }
                 Ok(Mode::PrTemplate { json })
+            }
+            Some(Command::CoverageGap {
+                coverage,
+                limit,
+                max_coverage,
+                json,
+            }) => {
+                if self.target.is_some()
+                    || self.lines.is_some()
+                    || self.no_llm
+                    || self.no_cache
+                    || self.split
+                    || self.coupled
+                    || self.since.is_some()
+                    || self.team
+                    || self.blame_chain
+                    || self.evolution
+                {
+                    bail!("the coverage-gap subcommand does not accept query flags or a target");
+                }
+                if coverage.trim().is_empty() {
+                    bail!("--coverage must not be empty");
+                }
+                if limit == 0 {
+                    bail!("--limit must be greater than zero");
+                }
+                if !(0.0..=100.0).contains(&max_coverage) {
+                    bail!("--max-coverage must be between 0 and 100");
+                }
+                Ok(Mode::CoverageGap {
+                    coverage,
+                    limit,
+                    max_coverage,
+                    json,
+                })
             }
             Some(Command::Ghost { limit, json }) => {
                 if self.target.is_some()
@@ -641,6 +718,30 @@ mod tests {
     }
 
     #[test]
+    fn parses_coverage_gap_subcommand() {
+        let cli = Cli::parse_from([
+            "why",
+            "coverage-gap",
+            "--coverage",
+            "lcov.info",
+            "--limit",
+            "7",
+            "--max-coverage",
+            "15",
+            "--json",
+        ]);
+        assert_eq!(
+            cli.parse_mode().expect("coverage-gap should parse"),
+            Mode::CoverageGap {
+                coverage: "lcov.info".into(),
+                limit: 7,
+                max_coverage: 15.0,
+                json: true,
+            }
+        );
+    }
+
+    #[test]
     fn parses_ghost_subcommand() {
         let cli = Cli::parse_from(["why", "ghost", "--limit", "7", "--json"]);
         assert_eq!(
@@ -718,11 +819,9 @@ mod tests {
     fn rejects_positional_target_for_hotspots() {
         let error = Cli::try_parse_from(["why", "hotspots", "--limit", "5", "src/lib.rs:42"])
             .expect_err("clap should reject positional targets for hotspots");
-        assert!(
-            error
-                .to_string()
-                .contains("unexpected argument 'src/lib.rs:42' found")
-        );
+        assert!(error
+            .to_string()
+            .contains("unexpected argument 'src/lib.rs:42' found"));
     }
 
     #[test]
@@ -731,11 +830,9 @@ mod tests {
         let error = cli
             .parse_mode()
             .expect_err("hotspots should reject a zero limit");
-        assert!(
-            error
-                .to_string()
-                .contains("--limit must be greater than zero")
-        );
+        assert!(error
+            .to_string()
+            .contains("--limit must be greater than zero"));
     }
 
     #[test]
@@ -744,99 +841,114 @@ mod tests {
         let error = cli
             .parse_mode()
             .expect_err("onboard should reject a zero limit");
-        assert!(
-            error
-                .to_string()
-                .contains("--limit must be greater than zero")
-        );
+        assert!(error
+            .to_string()
+            .contains("--limit must be greater than zero"));
+    }
+
+    #[test]
+    fn rejects_invalid_max_coverage_for_coverage_gap() {
+        let cli = Cli::parse_from([
+            "why",
+            "coverage-gap",
+            "--coverage",
+            "lcov.info",
+            "--max-coverage",
+            "101",
+        ]);
+        let error = cli
+            .parse_mode()
+            .expect_err("coverage-gap should reject percentages above 100");
+        assert!(error
+            .to_string()
+            .contains("--max-coverage must be between 0 and 100"));
     }
 
     #[test]
     fn rejects_no_cache_for_hotspots() {
         let error = Cli::try_parse_from(["why", "hotspots", "--no-cache"])
             .expect_err("clap should reject query flags for hotspots");
-        assert!(
-            error
-                .to_string()
-                .contains("unexpected argument '--no-cache' found")
-        );
+        assert!(error
+            .to_string()
+            .contains("unexpected argument '--no-cache' found"));
     }
 
     #[test]
     fn rejects_query_flags_for_mcp() {
         let error = Cli::try_parse_from(["why", "mcp", "--json"])
             .expect_err("clap should reject query flags for mcp");
-        assert!(
-            error
-                .to_string()
-                .contains("unexpected argument '--json' found")
-        );
+        assert!(error
+            .to_string()
+            .contains("unexpected argument '--json' found"));
     }
 
     #[test]
     fn rejects_query_flags_for_shell() {
         let error = Cli::try_parse_from(["why", "shell", "--json"])
             .expect_err("clap should reject query flags for shell");
-        assert!(
-            error
-                .to_string()
-                .contains("unexpected argument '--json' found")
-        );
+        assert!(error
+            .to_string()
+            .contains("unexpected argument '--json' found"));
     }
 
     #[test]
     fn rejects_query_flags_for_lsp() {
         let error = Cli::try_parse_from(["why", "lsp", "--json"])
             .expect_err("clap should reject query flags for lsp");
-        assert!(
-            error
-                .to_string()
-                .contains("unexpected argument '--json' found")
-        );
+        assert!(error
+            .to_string()
+            .contains("unexpected argument '--json' found"));
     }
 
     #[test]
     fn rejects_query_flags_for_health() {
         let error = Cli::try_parse_from(["why", "health", "--no-cache"])
             .expect_err("clap should reject query flags for health");
-        assert!(
-            error
-                .to_string()
-                .contains("unexpected argument '--no-cache' found")
-        );
+        assert!(error
+            .to_string()
+            .contains("unexpected argument '--no-cache' found"));
+    }
+
+    #[test]
+    fn rejects_query_flags_for_coverage_gap() {
+        let error = Cli::try_parse_from([
+            "why",
+            "coverage-gap",
+            "--coverage",
+            "lcov.info",
+            "--no-cache",
+        ])
+        .expect_err("clap should reject query flags for coverage-gap");
+        assert!(error
+            .to_string()
+            .contains("unexpected argument '--no-cache' found"));
     }
 
     #[test]
     fn rejects_query_flags_for_ghost() {
         let error = Cli::try_parse_from(["why", "ghost", "--no-cache"])
             .expect_err("clap should reject query flags for ghost");
-        assert!(
-            error
-                .to_string()
-                .contains("unexpected argument '--no-cache' found")
-        );
+        assert!(error
+            .to_string()
+            .contains("unexpected argument '--no-cache' found"));
     }
 
     #[test]
     fn rejects_query_flags_for_pr_template() {
         let error = Cli::try_parse_from(["why", "pr-template", "--no-cache"])
             .expect_err("clap should reject query flags for pr-template");
-        assert!(
-            error
-                .to_string()
-                .contains("unexpected argument '--no-cache' found")
-        );
+        assert!(error
+            .to_string()
+            .contains("unexpected argument '--no-cache' found"));
     }
 
     #[test]
     fn rejects_query_flags_for_onboard() {
         let error = Cli::try_parse_from(["why", "onboard", "--no-cache"])
             .expect_err("clap should reject query flags for onboard");
-        assert!(
-            error
-                .to_string()
-                .contains("unexpected argument '--no-cache' found")
-        );
+        assert!(error
+            .to_string()
+            .contains("unexpected argument '--no-cache' found"));
     }
 
     #[test]
@@ -850,43 +962,35 @@ mod tests {
     fn rejects_query_flags_for_install_hooks() {
         let error = Cli::try_parse_from(["why", "install-hooks", "--json"])
             .expect_err("clap should reject query flags for install-hooks");
-        assert!(
-            error
-                .to_string()
-                .contains("unexpected argument '--json' found")
-        );
+        assert!(error
+            .to_string()
+            .contains("unexpected argument '--json' found"));
     }
 
     #[test]
     fn rejects_query_flags_for_uninstall_hooks() {
         let error = Cli::try_parse_from(["why", "uninstall-hooks", "--no-cache"])
             .expect_err("clap should reject query flags for uninstall-hooks");
-        assert!(
-            error
-                .to_string()
-                .contains("unexpected argument '--no-cache' found")
-        );
+        assert!(error
+            .to_string()
+            .contains("unexpected argument '--no-cache' found"));
     }
 
     #[test]
     fn rejects_query_flags_for_completions() {
         let error = Cli::try_parse_from(["why", "completions", "bash", "--json"])
             .expect_err("clap should reject query flags for completions");
-        assert!(
-            error
-                .to_string()
-                .contains("unexpected argument '--json' found")
-        );
+        assert!(error
+            .to_string()
+            .contains("unexpected argument '--json' found"));
     }
 
     #[test]
     fn rejects_query_flags_for_manpage() {
         let error = Cli::try_parse_from(["why", "manpage", "--json"])
             .expect_err("clap should reject query flags for manpage");
-        assert!(
-            error
-                .to_string()
-                .contains("unexpected argument '--json' found")
-        );
+        assert!(error
+            .to_string()
+            .contains("unexpected argument '--json' found"));
     }
 }

@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use git2::{DiffOptions, Repository, Sort};
 use serde::Serialize;
 use why_archaeologist::RiskLevel;
@@ -417,12 +417,10 @@ GIT_AUTHOR_DATE='2024-01-04T12:00:00Z' GIT_COMMITTER_DATE='2024-01-04T12:00:00Z'
         assert_eq!(report.findings[0].risk_level, RiskLevel::HIGH);
         assert!(report.findings[0].summary.contains("hotfix"));
         assert_eq!(report.findings[0].blast_radius_files, 2);
-        assert!(
-            report.findings[0]
-                .changed_paths
-                .iter()
-                .any(|path| path == std::path::Path::new("src/auth.rs"))
-        );
+        assert!(report.findings[0]
+            .changed_paths
+            .iter()
+            .any(|path| path == std::path::Path::new("src/auth.rs")));
         assert_eq!(report.findings[0].issue_refs, vec!["#42"]);
         assert_eq!(report.notes.len(), 2);
         Ok(())
