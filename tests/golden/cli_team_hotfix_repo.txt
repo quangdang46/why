@@ -1,0 +1,6 @@
+Team ownership for src/payment.rs
+
+  Fixture Bot    2 commits (100%)  Last: <date>  [primary owner]
+
+Bus factor: 1
+Risk: Fixture Bot is the primary owner of HIGH-risk code for this target.

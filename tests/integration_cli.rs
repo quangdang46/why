@@ -4,9 +4,9 @@ use anyhow::Result;
 use anyhow::bail;
 use common::{
     assert_json_golden, assert_terminal_golden, setup_compat_shim_repo, setup_coupling_repo,
-    setup_ghost_repo, setup_hotfix_repo, setup_javascript_repo, setup_outage_repo,
-    setup_python_repo, setup_sparse_repo, setup_split_repo, setup_timebomb_repo,
-    setup_typescript_repo,
+    setup_coupling_rich_repo, setup_ghost_repo, setup_hotfix_repo, setup_javascript_repo,
+    setup_outage_repo, setup_python_repo, setup_sparse_repo, setup_split_repo,
+    setup_timebomb_repo, setup_timebomb_rich_repo, setup_typescript_repo,
 };
 use serde_json::Value;
 use std::fs;
@@ -151,6 +151,24 @@ fn hotfix_repo_team_report_shows_primary_owner_and_bus_factor() -> Result<()> {
     assert_eq!(owners[0]["author"], "Fixture Bot");
     assert_eq!(owners[0]["commit_count"], 2);
     assert_eq!(owners[0]["ownership_percent"], 100);
+
+    Ok(())
+}
+
+#[test]
+fn hotfix_repo_team_report_renders_terminal_summary() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let output = repo.run_why(&["src/payment.rs:process_payment", "--team"])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    assert!(stdout.contains("Team ownership for src/payment.rs"));
+    assert!(stdout.contains("[primary owner]"));
+    assert!(stdout.contains("Bus factor: 1"));
+    assert!(stdout.contains(
+        "Risk: Fixture Bot is the primary owner of HIGH-risk code for this target."
+    ));
+    assert_terminal_golden("cli_team_hotfix_repo", &stdout)?;
 
     Ok(())
 }
@@ -459,6 +477,52 @@ fn coupling_queries_return_ranked_json_for_fixture_repo() -> Result<()> {
     assert_eq!(results[0]["shared_commits"], 5);
     assert_eq!(results[0]["target_commit_count"], 5);
     assert_eq!(results[0]["coupling_ratio"], 1.0);
+
+    Ok(())
+}
+
+#[test]
+fn coupling_queries_render_terminal_output_for_rich_fixture_repo() -> Result<()> {
+    let repo = setup_coupling_rich_repo()?;
+    let output = repo.run_why(&["src/schema.rs:1", "--coupled"])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    assert!(stdout.contains("Coupled files for src/schema.rs"));
+    assert!(stdout.contains(
+        "Scanned 5 commits; 5 non-mechanical commits touched the target."
+    ));
+    assert!(stdout.contains("src/data.rs"));
+    assert!(stdout.contains("src/metrics.rs"));
+    assert_terminal_golden("cli_coupling_coupling_rich_repo", &stdout)?;
+
+    Ok(())
+}
+
+#[test]
+fn time_bombs_subcommand_renders_terminal_summary_for_rich_fixture() -> Result<()> {
+    let repo = setup_timebomb_rich_repo()?;
+    let output = repo.run_why(&["time-bombs", "--age-days", "30"])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    assert!(stdout.contains("Time bombs (aged markers with threshold: 30 days)"));
+    assert!(stdout.contains("kind: PastDueTodo"));
+    assert!(stdout.contains("kind: ExpiredRemoveAfter"));
+    assert!(stdout.contains("Total: 2 finding(s)"));
+
+    let snapshot = stdout
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("age: ") {
+                "      age: <days>".to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_terminal_golden("cli_time_bombs_timebomb_rich_repo", &snapshot)?;
 
     Ok(())
 }
@@ -1026,6 +1090,7 @@ fn explain_outage_subcommand_renders_terminal_summary() -> Result<()> {
     assert!(stdout.contains("issue refs: #42"));
     assert!(stdout.contains("guidance:"));
     assert!(stdout.contains("Notes"));
+    assert_terminal_golden("cli_explain_outage_outage_repo", &stdout)?;
 
     Ok(())
 }
@@ -1067,6 +1132,7 @@ fn ghost_subcommand_renders_terminal_summary() -> Result<()> {
     assert!(stdout.contains("risk: HIGH"));
     assert!(stdout.contains("call-sites  1") || stdout.contains("call-sites 1"));
     assert!(stdout.contains("WARNING: ghost detection uses static analysis"));
+    assert_terminal_golden("cli_ghost_ghost_repo", &stdout)?;
 
     Ok(())
 }
@@ -1179,6 +1245,7 @@ fn blame_chain_queries_render_terminal_output_for_fixture_repo() -> Result<()> {
     assert!(stdout.contains("True origin:"));
     assert!(stdout.contains("hotfix: fix duplicate charge vulnerability"));
     assert!(stdout.contains("Risk signals:"));
+    assert_terminal_golden("cli_blame_chain_hotfix_repo", &stdout)?;
 
     Ok(())
 }

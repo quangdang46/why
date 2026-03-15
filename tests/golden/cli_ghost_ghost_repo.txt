@@ -1,0 +1,8 @@
+Top 5 ghost functions by risk-aware archaeology
+
+   1. src/auth.rs:2-5  validate_auth_token_legacy  commits  1  call-sites  1
+      risk: HIGH
+      summary: hotfix: add token validation after auth forgery incident #7890
+      top history: hotfix: add token validation after auth forgery incident #7890
+      note: WARNING: ghost detection uses static analysis. Verify these are truly uncalled before deletion.
+      note: Static heuristic saw 1 call-like occurrence(s) for this symbol name across scanned source files.

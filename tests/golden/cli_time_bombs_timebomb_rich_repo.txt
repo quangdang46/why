@@ -1,0 +1,15 @@
+Time bombs (aged markers with threshold: 30 days)
+
+CRITICAL:
+  1. src/legacy.rs:2  📅
+      marker: // TODO(<date>): remove after v3 migration is complete
+      kind: PastDueTodo
+      age: <days>
+  2. src/rollout.rs:2  ⏰
+      marker: // remove after <date> once the staged rollout is complete
+      kind: ExpiredRemoveAfter
+      age: <days>
+
+
+Total: 2 finding(s)
+  2 critical, 0 warning, 0 info

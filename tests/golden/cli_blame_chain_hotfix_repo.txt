@@ -1,0 +1,16 @@
+Blame chain for src/payment.rs
+
+Starting blame tip: <oid>  Fixture Bot  <date>  fmt: align payment indentation
+
+  Skipped (mechanical):
+    <oid>  fmt: align payment indentation (<date>)
+
+  True origin:
+    <oid>  hotfix: fix duplicate charge vulnerability, closes #4521 (<date>)
+              Author: test@example.com
+              Risk signals: security, exploit, hotfix, incident, fix
+
+Chain depth: 1
+Heuristic risk: HIGH.
+The history suggests security sensitivity, incident context, or non-routine compatibility risk.
+Stop and investigate before deleting or heavily refactoring this target.

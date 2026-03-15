@@ -1,0 +1,25 @@
+Top 5 outage archaeology findings in <date> 00:00 – <date> 23:59
+
+   1. <oid>  <date>  HIGH  score 4.75
+      summary: hotfix: rollback auth guard after outage (#42)
+      author: Fixture Bot
+      blast radius: 2 file(s)
+      issue refs: #42
+      paths: src/auth.rs, src/util.rs
+      guidance: Stop and investigate before deleting or heavily refactoring this target.
+      note: Blast radius heuristic counted 2 changed source file(s) in this commit.
+      note: Commit message or changed paths include incident-like, security-sensitive, or rollback-related signals.
+      note: Representative touched paths: src/auth.rs, src/util.rs.
+   2. <oid>  <date>  MEDIUM  score 2.75
+      summary: fix: adjust util helper
+      author: Fixture Bot
+      blast radius: 1 file(s)
+      issue refs: none
+      paths: src/util.rs
+      guidance: Change only after reviewing surrounding code and validating the behavior you might disturb.
+      note: Blast radius heuristic counted 1 changed source file(s) in this commit.
+      note: Representative touched paths: src/util.rs.
+
+Notes
+  - Outage archaeology ranks commits inside the requested window using risk, recency, and blast-radius heuristics.
+  - Scores are suggestive only: treat the top-ranked commits as starting points for incident review, not proof of causality.

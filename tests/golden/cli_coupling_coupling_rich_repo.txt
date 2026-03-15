@@ -1,0 +1,6 @@
+Coupled files for src/schema.rs
+
+Scanned 5 commits; 5 non-mechanical commits touched the target.
+
+  1.00  5 shared  src/data.rs
+  0.40  2 shared  src/metrics.rs
