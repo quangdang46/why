@@ -296,7 +296,8 @@ pub fn assert_json_golden(name: &str, value: &Value) -> Result<()> {
 
 #[allow(dead_code)]
 pub fn normalize_terminal_snapshot(text: &str) -> String {
-    text.lines()
+    strip_osc8_hyperlinks(text)
+        .lines()
         .map(|line| line.replace('\\', "/"))
         .map(|line| normalize_paths(&line))
         .map(|line| normalize_dynamic_text(&line))
@@ -375,6 +376,37 @@ fn normalize_terminal_line(line: &str) -> String {
     }
 
     normalized
+}
+
+#[allow(dead_code)]
+fn strip_osc8_hyperlinks(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut remainder = text;
+    let open = "\u{1b}]8;;";
+    let close = "\u{1b}]8;;\u{1b}\\";
+    let terminator = "\u{1b}\\";
+
+    while let Some(start) = remainder.find(open) {
+        result.push_str(&remainder[..start]);
+        remainder = &remainder[start + open.len()..];
+
+        let Some(url_end) = remainder.find(terminator) else {
+            result.push_str(open);
+            result.push_str(remainder);
+            return result;
+        };
+        remainder = &remainder[url_end + terminator.len()..];
+
+        let Some(label_end) = remainder.find(close) else {
+            result.push_str(remainder);
+            return result;
+        };
+        result.push_str(&remainder[..label_end]);
+        remainder = &remainder[label_end + close.len()..];
+    }
+
+    result.push_str(remainder);
+    result
 }
 
 #[allow(dead_code)]

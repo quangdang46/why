@@ -1,0 +1,13 @@
+Repository health
+
+Debt score: 5
+
+Signals
+  - high_risk_files: 0
+  - hotspot_files: 1
+  - stale_hacks: 0
+  - time_bombs: 1
+
+Notes
+  - Current health aggregation uses implemented scanner signals only: time bombs, high-risk files, hotspot quartile, and stale hacks.
+  - Plan-only metrics such as ghost functions, coverage gaps, and bus-factor hotspots are not included until those scanners exist.

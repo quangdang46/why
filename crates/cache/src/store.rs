@@ -398,10 +398,9 @@ mod tests {
 
     #[test]
     fn health_snapshot_backwards_compatibly_reads_legacy_details_field() {
-        let snapshot: HealthSnapshot = serde_json::from_str(
-            r#"{"timestamp":1,"debt_score":7,"details":{"time_bombs":2}}"#,
-        )
-        .expect("legacy health snapshot should parse");
+        let snapshot: HealthSnapshot =
+            serde_json::from_str(r#"{"timestamp":1,"debt_score":7,"details":{"time_bombs":2}}"#)
+                .expect("legacy health snapshot should parse");
         assert_eq!(snapshot.signals.get("time_bombs"), Some(&2));
         assert_eq!(snapshot.head_hash, None);
         assert_eq!(snapshot.ref_name, None);

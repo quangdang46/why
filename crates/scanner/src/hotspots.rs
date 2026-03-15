@@ -35,7 +35,14 @@ pub fn scan_hotspots(
     let config = load_config(workdir)?;
 
     let mut findings = Vec::new();
-    collect_hotspots(&repo, workdir, workdir, &config, owner_filter, &mut findings)?;
+    collect_hotspots(
+        &repo,
+        workdir,
+        workdir,
+        &config,
+        owner_filter,
+        &mut findings,
+    )?;
     findings.sort_by(|left, right| {
         right
             .hotspot_score
@@ -264,7 +271,8 @@ done
     }
 
     fn setup_multi_owner_hotspot_repo() -> Result<TempDir> {
-        let dir = TempDir::new().context("failed to create tempdir for multi-owner hotspot fixture")?;
+        let dir =
+            TempDir::new().context("failed to create tempdir for multi-owner hotspot fixture")?;
         let script = r#"
 set -euo pipefail
 cd "$1"

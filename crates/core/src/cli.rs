@@ -451,10 +451,10 @@ impl Cli {
                 if baseline_file.is_none() && require_baseline {
                     bail!("--require-baseline requires --baseline-file");
                 }
-                if baseline_file.is_none() && (max_regression.is_some() || !max_signal_regression.is_empty()) {
-                    bail!(
-                        "health regression budgets require --baseline-file"
-                    );
+                if baseline_file.is_none()
+                    && (max_regression.is_some() || !max_signal_regression.is_empty())
+                {
+                    bail!("health regression budgets require --baseline-file");
                 }
                 for budget in &max_signal_regression {
                     parse_signal_budget(budget)?;
@@ -1004,7 +1004,8 @@ mod tests {
     fn parses_hotspots_owner_filter() {
         let cli = Cli::parse_from(["why", "hotspots", "--limit", "7", "--owner", "Fixture Bot"]);
         assert_eq!(
-            cli.parse_mode().expect("hotspots owner filter should parse"),
+            cli.parse_mode()
+                .expect("hotspots owner filter should parse"),
             Mode::Hotspots {
                 limit: 7,
                 owner: Some("Fixture Bot".into()),
@@ -1628,7 +1629,11 @@ mod tests {
         let error = Cli::parse_from(["why", "health", "--require-baseline"])
             .parse_mode()
             .expect_err("health should reject orphaned require-baseline");
-        assert!(error.to_string().contains("--require-baseline requires --baseline-file"));
+        assert!(
+            error
+                .to_string()
+                .contains("--require-baseline requires --baseline-file")
+        );
     }
 
     #[test]

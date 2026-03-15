@@ -2,6 +2,7 @@ mod cli;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow};
@@ -22,7 +23,8 @@ use why_cache::{Cache, HealthSnapshot};
 use why_context::load_config;
 use why_evidence::{
     EvidenceCommit, EvidenceContext, EvidencePack, EvidenceTarget, GitHubClient, GitHubComment,
-    GitHubEnrichment, enrich_github_refs, parse_github_ref, select_single_github_ref,
+    GitHubEnrichment, enrich_github_refs, parse_github_ref, parse_github_remote,
+    select_single_github_ref,
 };
 use why_locator::QueryKind;
 use why_scanner::{
@@ -253,12 +255,15 @@ fn run_context_inject() -> Result<()> {
 
 fn run_hotspots(limit: usize, owner: Option<&str>, json: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
+    let repo = Repository::discover(&cwd)?;
+    let config = load_config(&cwd)?;
+    let terminal_links = build_terminal_link_context(&repo, &config);
     let findings = why_scanner::scan_hotspots(&cwd, limit, owner)?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&findings)?);
     } else {
-        render_hotspots_terminal(&findings, limit, owner);
+        render_hotspots_terminal(&findings, limit, owner, Some(&terminal_links));
     }
 
     Ok(())
@@ -268,17 +273,23 @@ fn run_health(json: bool, ci: Option<u32>, baseline: HealthBaselineOptions) -> R
     let context = collect_health_report()?;
     let mut report = context.report;
 
-    let regression_gate_enabled = baseline.max_regression.is_some()
-        || !baseline.max_signal_regression.is_empty();
+    let regression_gate_enabled =
+        baseline.max_regression.is_some() || !baseline.max_signal_regression.is_empty();
 
     if let Some(path) = baseline.baseline_file.as_deref() {
         let baseline_snapshot = load_health_baseline(path, baseline.require_baseline)?;
         if let Some(baseline_snapshot) = baseline_snapshot {
-            report.comparison = Some(compute_health_comparison(&context.snapshot, &baseline_snapshot));
+            report.comparison = Some(compute_health_comparison(
+                &context.snapshot,
+                &baseline_snapshot,
+            ));
             if regression_gate_enabled || ci.is_some() {
                 report.gate = Some(evaluate_health_gate(
                     &context.snapshot,
-                    report.comparison.as_ref().expect("comparison should be set"),
+                    report
+                        .comparison
+                        .as_ref()
+                        .expect("comparison should be set"),
                     ci,
                     baseline.max_regression,
                     &baseline.max_signal_regression,
@@ -294,7 +305,11 @@ fn run_health(json: bool, ci: Option<u32>, baseline: HealthBaselineOptions) -> R
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
-        render_health_terminal(&report, ci);
+        let cwd = std::env::current_dir()?;
+        let repo = Repository::discover(&cwd)?;
+        let config = load_config(&cwd)?;
+        let terminal_links = build_terminal_link_context(&repo, &config);
+        render_health_terminal(&report, ci, Some(&terminal_links));
     }
 
     Ok(determine_health_exit_status(
@@ -329,7 +344,10 @@ fn collect_health_report() -> Result<HealthReportContext> {
             .ok()
             .and_then(|head| head.peel_to_commit().ok())
             .map(|commit| commit.id().to_string()),
-        ref_name: repo.head().ok().and_then(|head| head.shorthand().map(str::to_string)),
+        ref_name: repo
+            .head()
+            .ok()
+            .and_then(|head| head.shorthand().map(str::to_string)),
     };
 
     cache.insert_health_snapshot(snapshot.clone())?;
@@ -358,12 +376,15 @@ fn run_explain_outage(from: &str, to: &str, limit: usize, json: bool) -> Result<
     }
 
     let cwd = std::env::current_dir()?;
+    let repo = Repository::discover(&cwd)?;
+    let config = load_config(&cwd)?;
+    let terminal_links = build_terminal_link_context(&repo, &config);
     let report = why_scanner::scan_outage_window(&cwd, window_start_ts, window_end_ts, limit)?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
-        render_outage_terminal(&report, limit);
+        render_outage_terminal(&report, limit, Some(&terminal_links));
     }
 
     Ok(())
@@ -409,13 +430,16 @@ fn run_diff_review(
 
 fn run_coverage_gap(coverage: &str, limit: usize, max_coverage: f32, json: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
+    let repo = Repository::discover(&cwd)?;
+    let config = load_config(&cwd)?;
+    let terminal_links = build_terminal_link_context(&repo, &config);
     let report =
         why_scanner::scan_coverage_gap(&cwd, std::path::Path::new(coverage), limit, max_coverage)?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
-        render_coverage_gap_terminal(&report, limit);
+        render_coverage_gap_terminal(&report, limit, Some(&terminal_links));
     }
 
     Ok(())
@@ -423,12 +447,15 @@ fn run_coverage_gap(coverage: &str, limit: usize, max_coverage: f32, json: bool)
 
 fn run_ghost(limit: usize, json: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
+    let repo = Repository::discover(&cwd)?;
+    let config = load_config(&cwd)?;
+    let terminal_links = build_terminal_link_context(&repo, &config);
     let findings = why_scanner::scan_ghosts(&cwd, limit)?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&findings)?);
     } else {
-        render_ghost_terminal(&findings, limit);
+        render_ghost_terminal(&findings, limit, Some(&terminal_links));
     }
 
     Ok(())
@@ -436,12 +463,15 @@ fn run_ghost(limit: usize, json: bool) -> Result<()> {
 
 fn run_onboard(limit: usize, json: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
+    let repo = Repository::discover(&cwd)?;
+    let config = load_config(&cwd)?;
+    let terminal_links = build_terminal_link_context(&repo, &config);
     let findings = why_scanner::scan_onboard(&cwd, limit)?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&findings)?);
     } else {
-        render_onboard_terminal(&findings, limit);
+        render_onboard_terminal(&findings, limit, Some(&terminal_links));
     }
 
     Ok(())
@@ -449,12 +479,15 @@ fn run_onboard(limit: usize, json: bool) -> Result<()> {
 
 fn run_time_bombs(age_days: i64, json: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
+    let repo = Repository::discover(&cwd)?;
+    let config = load_config(&cwd)?;
+    let terminal_links = build_terminal_link_context(&repo, &config);
     let findings = why_scanner::scan_time_bombs(&cwd, age_days)?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&findings)?);
     } else {
-        render_time_bombs_terminal(&findings, age_days);
+        render_time_bombs_terminal(&findings, age_days, Some(&terminal_links));
     }
 
     Ok(())
@@ -485,13 +518,15 @@ fn run_manpage() -> Result<()> {
 fn run_query(request: QueryRequest) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let config = load_config(&cwd)?;
+    let repo = Repository::discover(&cwd)?;
+    let terminal_links = build_terminal_link_context(&repo, &config);
 
     if request.split {
         let suggestion = why_splitter::suggest_split(&request.target, &cwd)?;
         if request.json {
             println!("{}", serde_json::to_string_pretty(&suggestion)?);
         } else {
-            render_split_terminal(&request.target, suggestion.as_ref());
+            render_split_terminal(&request.target, suggestion.as_ref(), Some(&terminal_links));
         }
         return Ok(());
     }
@@ -501,7 +536,7 @@ fn run_query(request: QueryRequest) -> Result<()> {
         if request.json {
             println!("{}", serde_json::to_string_pretty(&report)?);
         } else {
-            render_coupling_terminal(&report);
+            render_coupling_terminal(&report, Some(&terminal_links));
         }
         return Ok(());
     }
@@ -511,7 +546,7 @@ fn run_query(request: QueryRequest) -> Result<()> {
         if request.json {
             println!("{}", serde_json::to_string_pretty(&report)?);
         } else {
-            render_team_terminal(&report);
+            render_team_terminal(&report, Some(&terminal_links));
         }
         return Ok(());
     }
@@ -521,7 +556,7 @@ fn run_query(request: QueryRequest) -> Result<()> {
         if request.json {
             println!("{}", serde_json::to_string_pretty(&report)?);
         } else {
-            render_blame_chain_terminal(&report);
+            render_blame_chain_terminal(&report, Some(&terminal_links));
         }
         return Ok(());
     }
@@ -531,12 +566,11 @@ fn run_query(request: QueryRequest) -> Result<()> {
         if request.json {
             println!("{}", serde_json::to_string_pretty(&report)?);
         } else {
-            render_evolution_terminal(&report);
+            render_evolution_terminal(&report, Some(&terminal_links));
         }
         return Ok(());
     }
 
-    let repo = Repository::discover(&cwd)?;
     let repo_root = repo
         .workdir()
         .map(|path| path.to_path_buf())
@@ -573,7 +607,7 @@ fn run_query(request: QueryRequest) -> Result<()> {
             } else {
                 println!(
                     "{}",
-                    format_why_report(&format_target_label(&request.target), &cached, true)
+                    format_why_report(&request.target, &cached, true, Some(&terminal_links))
                 );
             }
 
@@ -604,7 +638,7 @@ fn run_query(request: QueryRequest) -> Result<()> {
     } else {
         println!(
             "{}",
-            format_why_report(&format_target_label(&request.target), &report, false)
+            format_why_report(&request.target, &report, false, Some(&terminal_links))
         );
     }
 
@@ -623,10 +657,18 @@ fn run_query(request: QueryRequest) -> Result<()> {
     Ok(())
 }
 
-fn render_team_terminal(report: &TeamReport) {
+fn render_team_terminal(report: &TeamReport, links: Option<&TerminalLinkContext>) {
     let heading = match report.target.query_kind {
-        QueryKind::Symbol | QueryKind::QualifiedSymbol => "Team ownership for target",
-        _ => "Team ownership for file range",
+        QueryKind::Symbol | QueryKind::QualifiedSymbol => {
+            format!(
+                "Team ownership for {}",
+                format_output_target_heading(&report.target, links)
+            )
+        }
+        _ => format!(
+            "Team ownership for {}",
+            format_output_target_heading(&report.target, links)
+        ),
     };
     println!("{heading}");
     println!();
@@ -654,28 +696,20 @@ fn render_team_terminal(report: &TeamReport) {
     println!("Risk: {}", report.risk_summary);
 }
 
-fn render_blame_chain_terminal(report: &BlameChainResult) {
-    let heading = match report.target.query_kind {
-        QueryKind::Symbol | QueryKind::QualifiedSymbol => {
-            format!("Blame chain for {}", report.target.path.display())
-        }
-        QueryKind::Range => format!(
-            "Blame chain for {} (lines {}-{})",
-            report.target.path.display(),
-            report.target.start_line,
-            report.target.end_line
-        ),
-        QueryKind::Line => format!(
-            "Blame chain for {}:{}",
-            report.target.path.display(),
-            report.target.start_line
-        ),
-    };
+fn render_blame_chain_terminal(report: &BlameChainResult, links: Option<&TerminalLinkContext>) {
+    let heading = format!(
+        "Blame chain for {}",
+        format_output_target_heading(&report.target, links)
+    );
     println!("{heading}");
     println!();
     println!(
         "Starting blame tip: {}  {}  {}  {}",
-        report.starting_commit.short_oid,
+        linked_commit_label(
+            links,
+            &report.starting_commit.oid,
+            &report.starting_commit.short_oid
+        ),
         report.starting_commit.author,
         report.starting_commit.date,
         report.starting_commit.summary
@@ -689,7 +723,9 @@ fn render_blame_chain_terminal(report: &BlameChainResult) {
         for commit in &report.noise_commits_skipped {
             println!(
                 "    {}  {} ({})",
-                commit.short_oid, commit.summary, commit.date
+                linked_commit_label(links, &commit.oid, &commit.short_oid),
+                commit.summary,
+                commit.date
             );
         }
     }
@@ -698,7 +734,13 @@ fn render_blame_chain_terminal(report: &BlameChainResult) {
     println!("  True origin:");
     println!(
         "    {}  {} ({})",
-        report.origin_commit.short_oid, report.origin_commit.summary, report.origin_commit.date
+        linked_commit_label(
+            links,
+            &report.origin_commit.oid,
+            &report.origin_commit.short_oid
+        ),
+        report.origin_commit.summary,
+        report.origin_commit.date
     );
     println!("              Author: {}", report.origin_commit.email);
     if report.local_context.risk_flags.is_empty() {
@@ -716,8 +758,16 @@ fn render_blame_chain_terminal(report: &BlameChainResult) {
     println!("{}", report.change_guidance);
 }
 
-fn render_coupling_terminal(report: &CouplingReport) {
-    println!("Coupled files for {}", report.target_path.display());
+fn render_coupling_terminal(report: &CouplingReport, links: Option<&TerminalLinkContext>) {
+    println!(
+        "Coupled files for {}",
+        linked_path_label(
+            links,
+            &report.target_path,
+            None,
+            report.target_path.display().to_string()
+        )
+    );
     println!();
     if report.results.is_empty() {
         println!("No coupled files met the configured ratio threshold.");
@@ -735,28 +785,21 @@ fn render_coupling_terminal(report: &CouplingReport) {
             "  {:.2}  {} shared  {}",
             finding.coupling_ratio,
             finding.shared_commits,
-            finding.path.display()
+            linked_path_label(
+                links,
+                &finding.path,
+                None,
+                finding.path.display().to_string()
+            )
         );
     }
 }
 
-fn render_evolution_terminal(report: &EvolutionHistoryResult) {
-    let heading = match report.target.query_kind {
-        QueryKind::Symbol | QueryKind::QualifiedSymbol => {
-            format!("Evolution history for {}", report.target.path.display())
-        }
-        QueryKind::Range => format!(
-            "Evolution history for {} (lines {}-{})",
-            report.target.path.display(),
-            report.target.start_line,
-            report.target.end_line
-        ),
-        QueryKind::Line => format!(
-            "Evolution history for {}:{}",
-            report.target.path.display(),
-            report.target.start_line
-        ),
-    };
+fn render_evolution_terminal(report: &EvolutionHistoryResult, links: Option<&TerminalLinkContext>) {
+    let heading = format!(
+        "Evolution history for {}",
+        format_output_target_heading(&report.target, links)
+    );
     println!("{heading}");
     println!();
     println!("Heuristic risk: {}.", report.risk_level.as_str());
@@ -772,19 +815,25 @@ fn render_evolution_terminal(report: &EvolutionHistoryResult) {
             println!("Current edge:");
             println!(
                 "  {}  {}  {}",
-                latest.short_oid, latest.date, latest.summary
+                linked_commit_label(links, &latest.oid, &latest.short_oid),
+                latest.date,
+                latest.summary
             );
             println!("Origin:");
             println!(
                 "  {}  {}  {}",
-                origin.short_oid, origin.date, origin.summary
+                linked_commit_label(links, &origin.oid, &origin.short_oid),
+                origin.date,
+                origin.summary
             );
         }
         (Some(latest), None) => {
             println!("Current edge:");
             println!(
                 "  {}  {}  {}",
-                latest.short_oid, latest.date, latest.summary
+                linked_commit_label(links, &latest.oid, &latest.short_oid),
+                latest.date,
+                latest.summary
             );
         }
         _ => {}
@@ -796,7 +845,10 @@ fn render_evolution_terminal(report: &EvolutionHistoryResult) {
     } else {
         println!("Paths seen:");
         for path in &report.paths_seen {
-            println!("  - {}", path.display());
+            println!(
+                "  - {}",
+                linked_path_label(links, path, None, path.display().to_string())
+            );
         }
     }
 
@@ -810,7 +862,12 @@ fn render_evolution_terminal(report: &EvolutionHistoryResult) {
                 "  - [{}] {}  {}  {}",
                 point.category,
                 point.date,
-                point.path_at_commit.display(),
+                linked_path_label(
+                    links,
+                    &point.path_at_commit,
+                    None,
+                    point.path_at_commit.display().to_string()
+                ),
                 point.summary
             );
             println!("      {}", point.reason);
@@ -825,9 +882,14 @@ fn render_evolution_terminal(report: &EvolutionHistoryResult) {
         for entry in &report.commits {
             println!(
                 "  {}  {}  {}  {}",
-                entry.commit.short_oid,
+                linked_commit_label(links, &entry.commit.oid, &entry.commit.short_oid),
                 entry.commit.date,
-                entry.path_at_commit.display(),
+                linked_path_label(
+                    links,
+                    &entry.path_at_commit,
+                    None,
+                    entry.path_at_commit.display().to_string()
+                ),
                 entry.commit.summary
             );
         }
@@ -842,7 +904,12 @@ fn render_evolution_terminal(report: &EvolutionHistoryResult) {
     }
 }
 
-fn render_hotspots_terminal(findings: &[HotspotFinding], limit: usize, owner: Option<&str>) {
+fn render_hotspots_terminal(
+    findings: &[HotspotFinding],
+    limit: usize,
+    owner: Option<&str>,
+    links: Option<&TerminalLinkContext>,
+) {
     match owner {
         Some(owner) => println!("Top {limit} hotspots by churn × risk for owner {owner}"),
         None => println!("Top {limit} hotspots by churn × risk"),
@@ -850,7 +917,9 @@ fn render_hotspots_terminal(findings: &[HotspotFinding], limit: usize, owner: Op
     println!();
     if findings.is_empty() {
         match owner {
-            Some(owner) => println!("No source hotspots were found for owner {owner} in the current repository."),
+            Some(owner) => println!(
+                "No source hotspots were found for owner {owner} in the current repository."
+            ),
             None => println!("No source hotspots were found in the current repository."),
         }
         return;
@@ -860,7 +929,12 @@ fn render_hotspots_terminal(findings: &[HotspotFinding], limit: usize, owner: Op
         println!(
             "  {:>2}. {:<30} churn {:>3}  risk {:<6}  score {:.2}",
             index + 1,
-            finding.path.display(),
+            linked_path_label(
+                links,
+                &finding.path,
+                None,
+                finding.path.display().to_string()
+            ),
             finding.churn_commits,
             finding.risk_level.as_str(),
             finding.hotspot_score
@@ -874,14 +948,17 @@ fn render_hotspots_terminal(findings: &[HotspotFinding], limit: usize, owner: Op
         if let Some(primary_owner) = &finding.primary_owner {
             println!(
                 "      primary owner: {}  bus factor {}",
-                primary_owner,
-                finding.bus_factor
+                primary_owner, finding.bus_factor
             );
         }
     }
 }
 
-fn render_health_terminal(report: &HealthReport, ci: Option<u32>) {
+fn render_health_terminal(
+    report: &HealthReport,
+    ci: Option<u32>,
+    links: Option<&TerminalLinkContext>,
+) {
     println!("Repository health");
     println!();
     println!("Debt score: {}", report.debt_score);
@@ -907,7 +984,10 @@ fn render_health_terminal(report: &HealthReport, ci: Option<u32>) {
             format_health_timestamp(comparison.baseline.timestamp)
         );
         if let Some(head_hash) = &comparison.baseline.head_hash {
-            println!("Baseline head: {head_hash}");
+            println!(
+                "Baseline head: {}",
+                linked_commit_label(links, head_hash, head_hash)
+            );
         }
         if let Some(ref_name) = &comparison.baseline.ref_name {
             println!("Baseline ref: {ref_name}");
@@ -990,7 +1070,11 @@ fn render_pr_template_markdown(report: &PrTemplateReport) -> String {
     lines.join("\n")
 }
 
-fn render_outage_terminal(report: &OutageReport, limit: usize) {
+fn render_outage_terminal(
+    report: &OutageReport,
+    limit: usize,
+    links: Option<&TerminalLinkContext>,
+) {
     println!(
         "Top {limit} outage archaeology findings in {} – {}",
         format_outage_timestamp(report.window_start_ts),
@@ -1010,7 +1094,7 @@ fn render_outage_terminal(report: &OutageReport, limit: usize) {
             println!(
                 "  {:>2}. {}  {}  {}  score {:.2}",
                 index + 1,
-                finding.short_oid,
+                linked_commit_label(links, &finding.oid, &finding.short_oid),
                 finding.date,
                 finding.risk_level.as_str(),
                 finding.score
@@ -1024,7 +1108,7 @@ fn render_outage_terminal(report: &OutageReport, limit: usize) {
                     .changed_paths
                     .iter()
                     .take(3)
-                    .map(|path| path.display().to_string())
+                    .map(|path| linked_path_label(links, path, None, path.display().to_string()))
                     .collect::<Vec<_>>()
                     .join(", ");
                 println!("      paths: {preview}");
@@ -1107,29 +1191,44 @@ fn render_diff_review_markdown(report: &DiffReviewReport) -> String {
     lines.join("\n")
 }
 
-fn render_coverage_gap_terminal(report: &CoverageGapReport, limit: usize) {
+fn render_coverage_gap_terminal(
+    report: &CoverageGapReport,
+    limit: usize,
+    links: Option<&TerminalLinkContext>,
+) {
     println!(
         "Top {limit} HIGH-risk functions at or below {:.1}% coverage",
         report.max_coverage
     );
     println!();
-    println!("Coverage report: {}", report.coverage_path.display());
+    println!(
+        "Coverage report: {}",
+        linked_path_label(
+            links,
+            &report.coverage_path,
+            None,
+            report.coverage_path.display().to_string()
+        )
+    );
     println!();
     if report.findings.is_empty() {
         println!("No HIGH-risk coverage gaps were found in the current repository.");
     } else {
         for (index, finding) in report.findings.iter().enumerate() {
-            let risk_flags = if finding.risk_flags.is_empty() {
-                "none".to_string()
-            } else {
-                finding.risk_flags.join(", ")
-            };
             println!(
-                "  {:>2}. {}:{}-{}  {}  coverage {:>5.1}%  commits {:>2}",
+                "  {:>2}. {}  {}  coverage {:>5.1}%  commits {:>2}",
                 index + 1,
-                finding.path.display(),
-                finding.start_line,
-                finding.end_line,
+                linked_path_label(
+                    links,
+                    &finding.path,
+                    Some(finding.start_line),
+                    format!(
+                        "{}:{}-{}",
+                        finding.path.display(),
+                        finding.start_line,
+                        finding.end_line
+                    )
+                ),
                 finding.symbol,
                 finding.coverage_pct,
                 finding.commit_count
@@ -1138,6 +1237,11 @@ fn render_coverage_gap_terminal(report: &CoverageGapReport, limit: usize) {
                 "      instrumented: {} line(s), covered: {}",
                 finding.instrumented_lines, finding.covered_lines
             );
+            let risk_flags = if finding.risk_flags.is_empty() {
+                "none".to_string()
+            } else {
+                finding.risk_flags.join(", ")
+            };
             println!("      risk flags: {risk_flags}");
             println!("      summary: {}", finding.summary);
             if !finding.top_commit_summaries.is_empty() {
@@ -1158,7 +1262,11 @@ fn render_coverage_gap_terminal(report: &CoverageGapReport, limit: usize) {
     }
 }
 
-fn render_ghost_terminal(findings: &[GhostFinding], limit: usize) {
+fn render_ghost_terminal(
+    findings: &[GhostFinding],
+    limit: usize,
+    links: Option<&TerminalLinkContext>,
+) {
     println!("Top {limit} ghost functions by risk-aware archaeology");
     println!();
     if findings.is_empty() {
@@ -1168,11 +1276,19 @@ fn render_ghost_terminal(findings: &[GhostFinding], limit: usize) {
 
     for (index, finding) in findings.iter().enumerate() {
         println!(
-            "  {:>2}. {}:{}-{}  {}  commits {:>2}  call-sites {:>2}",
+            "  {:>2}. {}  {}  commits {:>2}  call-sites {:>2}",
             index + 1,
-            finding.path.display(),
-            finding.start_line,
-            finding.end_line,
+            linked_path_label(
+                links,
+                &finding.path,
+                Some(finding.start_line),
+                format!(
+                    "{}:{}-{}",
+                    finding.path.display(),
+                    finding.start_line,
+                    finding.end_line
+                )
+            ),
             finding.symbol,
             finding.commit_count,
             finding.call_site_count
@@ -1191,7 +1307,11 @@ fn render_ghost_terminal(findings: &[GhostFinding], limit: usize) {
     }
 }
 
-fn render_onboard_terminal(findings: &[OnboardFinding], limit: usize) {
+fn render_onboard_terminal(
+    findings: &[OnboardFinding],
+    limit: usize,
+    links: Option<&TerminalLinkContext>,
+) {
     println!("Top {limit} symbols to understand first");
     println!();
     if findings.is_empty() {
@@ -1201,11 +1321,19 @@ fn render_onboard_terminal(findings: &[OnboardFinding], limit: usize) {
 
     for (index, finding) in findings.iter().enumerate() {
         println!(
-            "  {:>2}. {}:{}-{}  {}  risk {:<6}  score {:.2}",
+            "  {:>2}. {}  {}  risk {:<6}  score {:.2}",
             index + 1,
-            finding.path.display(),
-            finding.start_line,
-            finding.end_line,
+            linked_path_label(
+                links,
+                &finding.path,
+                Some(finding.start_line),
+                format!(
+                    "{}:{}-{}",
+                    finding.path.display(),
+                    finding.start_line,
+                    finding.end_line
+                )
+            ),
             finding.symbol,
             finding.risk_level.as_str(),
             finding.score
@@ -1224,7 +1352,11 @@ fn render_onboard_terminal(findings: &[OnboardFinding], limit: usize) {
     }
 }
 
-fn render_time_bombs_terminal(findings: &[TimeBombFinding], age_threshold: i64) {
+fn render_time_bombs_terminal(
+    findings: &[TimeBombFinding],
+    age_threshold: i64,
+    links: Option<&TerminalLinkContext>,
+) {
     println!(
         "Time bombs (aged markers with threshold: {} days)",
         age_threshold
@@ -1248,10 +1380,14 @@ fn render_time_bombs_terminal(findings: &[TimeBombFinding], age_threshold: i64) 
         println!("CRITICAL:");
         for (index, finding) in critical.iter().enumerate() {
             println!(
-                "  {}. {}:{}  {}",
+                "  {}. {}  {}",
                 index + 1,
-                finding.path.display(),
-                finding.line,
+                linked_path_label(
+                    links,
+                    &finding.path,
+                    Some(finding.line),
+                    format!("{}:{}", finding.path.display(), finding.line)
+                ),
                 kind_emoji(finding.kind)
             );
             println!("      marker: {}", finding.marker);
@@ -1270,10 +1406,14 @@ fn render_time_bombs_terminal(findings: &[TimeBombFinding], age_threshold: i64) 
         println!("WARNING:");
         for (index, finding) in warn.iter().enumerate() {
             println!(
-                "  {}. {}:{}  {}",
+                "  {}. {}  {}",
                 index + 1,
-                finding.path.display(),
-                finding.line,
+                linked_path_label(
+                    links,
+                    &finding.path,
+                    Some(finding.line),
+                    format!("{}:{}", finding.path.display(), finding.line)
+                ),
                 kind_emoji(finding.kind)
             );
             println!("      marker: {}", finding.marker);
@@ -1292,10 +1432,14 @@ fn render_time_bombs_terminal(findings: &[TimeBombFinding], age_threshold: i64) 
         println!("INFO:");
         for (index, finding) in info.iter().enumerate() {
             println!(
-                "  {}. {}:{}  {}",
+                "  {}. {}  {}",
                 index + 1,
-                finding.path.display(),
-                finding.line,
+                linked_path_label(
+                    links,
+                    &finding.path,
+                    Some(finding.line),
+                    format!("{}:{}", finding.path.display(), finding.line)
+                ),
                 kind_emoji(finding.kind)
             );
             println!("      marker: {}", finding.marker);
@@ -1968,7 +2112,170 @@ fn format_target_label(target: &why_locator::QueryTarget) -> String {
     }
 }
 
-fn render_split_terminal(target: &why_locator::QueryTarget, suggestion: Option<&SplitSuggestion>) {
+#[derive(Debug, Clone, Default)]
+struct TerminalLinkContext {
+    remote_url: Option<String>,
+    head_rev: Option<String>,
+}
+
+fn commit_url(links: Option<&TerminalLinkContext>, oid: &str) -> Option<String> {
+    let remote = links?.remote_url.as_deref()?;
+    let repo = parse_github_remote(remote).ok()?;
+    Some(format!(
+        "https://github.com/{}/{}/commit/{oid}",
+        repo.owner, repo.name
+    ))
+}
+
+fn path_url(links: Option<&TerminalLinkContext>, path: &Path, line: Option<u32>) -> Option<String> {
+    let remote = links?.remote_url.as_deref()?;
+    let repo = parse_github_remote(remote).ok()?;
+    let rev = links?.head_rev.as_deref()?;
+
+    let mut url = format!(
+        "https://github.com/{}/{}/blob/{}/{}",
+        repo.owner,
+        repo.name,
+        rev,
+        path.to_string_lossy()
+    );
+    if let Some(line) = line {
+        url.push_str(&format!("#L{line}"));
+    }
+    Some(url)
+}
+
+fn terminal_link(label: impl AsRef<str>, url: &str) -> String {
+    let label = label.as_ref();
+    if !std::io::stdout().is_terminal() {
+        return label.to_string();
+    }
+    format!("\u{1b}]8;;{url}\u{1b}\\{label}\u{1b}]8;;\u{1b}\\")
+}
+
+fn linked_commit_label(links: Option<&TerminalLinkContext>, oid: &str, short_oid: &str) -> String {
+    commit_url(links, oid)
+        .map(|url| terminal_link(short_oid, &url))
+        .unwrap_or_else(|| short_oid.to_string())
+}
+
+fn linked_path_label(
+    links: Option<&TerminalLinkContext>,
+    path: &Path,
+    line: Option<u32>,
+    label: impl AsRef<str>,
+) -> String {
+    let label = label.as_ref();
+    path_url(links, path, line)
+        .map(|url| terminal_link(label, &url))
+        .unwrap_or_else(|| label.to_string())
+}
+
+fn format_target_heading(
+    target: &why_locator::QueryTarget,
+    links: Option<&TerminalLinkContext>,
+) -> String {
+    match target.query_kind {
+        QueryKind::Line => linked_path_label(
+            links,
+            &target.path,
+            target.start_line,
+            format!(
+                "{}:{}",
+                target.path.display(),
+                target.start_line.unwrap_or_default()
+            ),
+        ),
+        QueryKind::Range => linked_path_label(
+            links,
+            &target.path,
+            target.start_line,
+            format!(
+                "{}:{}-{}",
+                target.path.display(),
+                target.start_line.unwrap_or_default(),
+                target.end_line.unwrap_or_default()
+            ),
+        ),
+        QueryKind::Symbol | QueryKind::QualifiedSymbol => linked_path_label(
+            links,
+            &target.path,
+            None,
+            format!(
+                "{}:{}",
+                target.path.display(),
+                target.symbol.as_deref().unwrap_or("symbol")
+            ),
+        ),
+    }
+}
+
+fn format_output_target_heading(
+    target: &why_archaeologist::OutputTarget,
+    links: Option<&TerminalLinkContext>,
+) -> String {
+    match target.query_kind {
+        QueryKind::Line => linked_path_label(
+            links,
+            &target.path,
+            Some(target.start_line),
+            format!("{}:{}", target.path.display(), target.start_line),
+        ),
+        QueryKind::Range => linked_path_label(
+            links,
+            &target.path,
+            Some(target.start_line),
+            format!(
+                "{}:{}-{}",
+                target.path.display(),
+                target.start_line,
+                target.end_line
+            ),
+        ),
+        QueryKind::Symbol | QueryKind::QualifiedSymbol => {
+            linked_path_label(links, &target.path, None, target.path.display().to_string())
+        }
+    }
+}
+
+fn github_remote_url(repo: &Repository, config: &why_context::WhyConfig) -> Option<String> {
+    let remote_name = config.github.remote.trim();
+    if remote_name.is_empty() {
+        return None;
+    }
+    let remote = repo.find_remote(remote_name).ok()?;
+    let url = remote.url()?.trim();
+    if url.is_empty() {
+        return None;
+    }
+    parse_github_remote(url).ok()?;
+    Some(url.to_string())
+}
+
+fn build_terminal_link_context(
+    repo: &Repository,
+    config: &why_context::WhyConfig,
+) -> TerminalLinkContext {
+    TerminalLinkContext {
+        remote_url: github_remote_url(repo, config),
+        head_rev: repo
+            .head()
+            .ok()
+            .and_then(|head| head.peel_to_commit().ok())
+            .map(|commit| commit.id().to_string())
+            .or_else(|| {
+                repo.head()
+                    .ok()
+                    .and_then(|head| head.shorthand().map(str::to_string))
+            }),
+    }
+}
+
+fn render_split_terminal(
+    target: &why_locator::QueryTarget,
+    suggestion: Option<&SplitSuggestion>,
+    links: Option<&TerminalLinkContext>,
+) {
     match suggestion {
         Some(suggestion) => {
             println!(
@@ -1987,7 +2294,12 @@ fn render_split_terminal(target: &why_locator::QueryTarget, suggestion: Option<&
                 );
                 println!(
                     "                           Dominant commit: {} — {}",
-                    block.dominant_commit_short_oid, block.dominant_commit_summary
+                    linked_commit_label(
+                        links,
+                        &block.dominant_commit_oid,
+                        &block.dominant_commit_short_oid
+                    ),
+                    block.dominant_commit_summary
                 );
                 println!(
                     "                           -> Suggested extraction: {}()",
@@ -2015,8 +2327,16 @@ fn render_split_terminal(target: &why_locator::QueryTarget, suggestion: Option<&
     }
 }
 
-fn format_why_report(target: &str, report: &WhyReport, cached: bool) -> String {
-    let mut lines = vec![format!("why: {target}"), String::new()];
+fn format_why_report(
+    target: &why_locator::QueryTarget,
+    report: &WhyReport,
+    cached: bool,
+    links: Option<&TerminalLinkContext>,
+) -> String {
+    let mut lines = vec![
+        format!("why: {}", format_target_heading(target, links)),
+        String::new(),
+    ];
 
     if cached {
         lines.push("[cached]".to_string());
@@ -2081,10 +2401,9 @@ mod tests {
         ExitStatus, HealthBaselineReference, HealthComparison, HealthGateSummary, HealthReport,
         HealthSignalDelta, build_github_enrichment, compute_health_comparison,
         compute_health_delta, determine_health_exit_status, diff_review_mode_label,
-        evaluate_health_gate, format_outage_timestamp, format_why_report,
-        parse_outage_timestamp, parse_synth_risk, render_diff_review_markdown,
-        render_health_terminal, render_outage_terminal, render_pr_template_markdown,
-        sorted_signal_entries,
+        evaluate_health_gate, format_outage_timestamp, format_why_report, parse_outage_timestamp,
+        parse_synth_risk, render_diff_review_markdown, render_health_terminal,
+        render_outage_terminal, render_pr_template_markdown, sorted_signal_entries,
     };
     use git2::Repository;
     use std::collections::{BTreeMap, HashMap};
@@ -2119,7 +2438,13 @@ mod tests {
 
     #[test]
     fn why_report_terminal_output_includes_all_sections() {
-        let output = format_why_report("src/auth.rs:verify_token", &sample_report(), false);
+        let output = format_why_report(
+            &why_locator::parse_target("src/auth.rs:verify_token", None)
+                .expect("target should parse"),
+            &sample_report(),
+            false,
+            None,
+        );
 
         assert!(output.contains("why: src/auth.rs:verify_token"));
         assert!(output.contains("Summary"));
@@ -2133,7 +2458,13 @@ mod tests {
 
     #[test]
     fn why_report_terminal_output_shows_cached_marker_when_requested() {
-        let output = format_why_report("src/auth.rs:verify_token", &sample_report(), true);
+        let output = format_why_report(
+            &why_locator::parse_target("src/auth.rs:verify_token", None)
+                .expect("target should parse"),
+            &sample_report(),
+            true,
+            None,
+        );
         assert!(output.contains("[cached]"));
     }
 
@@ -2147,7 +2478,13 @@ mod tests {
             cost_usd: None,
             ..sample_report()
         };
-        let output = format_why_report("src/auth.rs:verify_token", &report, false);
+        let output = format_why_report(
+            &why_locator::parse_target("src/auth.rs:verify_token", None)
+                .expect("target should parse"),
+            &report,
+            false,
+            None,
+        );
 
         assert!(!output.contains("Evidence\n"));
         assert!(!output.contains("Inference\n"));
@@ -2205,6 +2542,17 @@ mod tests {
     fn render_health_terminal_includes_trend_signals_and_notes() {
         let mut signals = HashMap::new();
         signals.insert("time_bombs".into(), 2);
+        let mut signal_deltas = BTreeMap::new();
+        signal_deltas.insert(
+            "time_bombs".into(),
+            HealthSignalDelta {
+                current: 2,
+                baseline: 1,
+                delta: 1,
+            },
+        );
+        let mut signal_budgets = BTreeMap::new();
+        signal_budgets.insert("time_bombs".into(), 0);
         let report = HealthReport {
             debt_score: 8,
             signals,
@@ -2218,19 +2566,28 @@ mod tests {
                     ref_name: None,
                 },
             )),
-            comparison: None,
-            gate: None,
+            comparison: Some(HealthComparison {
+                baseline: HealthBaselineReference {
+                    source: "file".into(),
+                    timestamp: 1,
+                    head_hash: Some("abc123".into()),
+                    ref_name: Some("main".into()),
+                    debt_score: 7,
+                },
+                score_delta: 1,
+                signal_deltas,
+            }),
+            gate: Some(HealthGateSummary {
+                passed: false,
+                absolute_threshold: Some(7),
+                max_regression: Some(0),
+                signal_budgets,
+                reasons: vec!["health debt score 8 exceeds CI threshold 7".into()],
+            }),
             notes: vec!["health uses implemented scanner signals".into()],
         };
 
-        let mut buffer = Vec::new();
-        {
-            use std::io::Write;
-            writeln!(&mut buffer, "Repository health").expect("write heading");
-            writeln!(&mut buffer).expect("write spacing");
-        }
-        let _ = buffer;
-        render_health_terminal(&report, None);
+        render_health_terminal(&report, Some(7), None);
     }
 
     #[test]
@@ -2420,7 +2777,7 @@ mod tests {
             notes: vec!["Scores are suggestive only.".into()],
         };
 
-        render_outage_terminal(&report, 10);
+        render_outage_terminal(&report, 10, None);
     }
 
     #[test]

@@ -481,7 +481,9 @@ fn hotspots_subcommand_returns_ranked_json_for_fixture_repo() -> Result<()> {
     assert!(findings[0]["hotspot_score"].as_f64().unwrap_or_default() >= 6.0);
     assert_eq!(findings[0]["primary_owner"], "Fixture Bot");
     assert_eq!(findings[0]["bus_factor"], 1);
-    let owners = findings[0]["owners"].as_array().expect("owners should be an array");
+    let owners = findings[0]["owners"]
+        .as_array()
+        .expect("owners should be an array");
     assert_eq!(owners.len(), 1);
     assert_eq!(owners[0]["author"], "Fixture Bot");
     assert_json_golden("cli_hotspots_hotfix_repo", &parsed)?;
@@ -505,7 +507,14 @@ fn hotspots_subcommand_renders_terminal_summary() -> Result<()> {
 #[test]
 fn hotspots_subcommand_filters_by_owner() -> Result<()> {
     let repo = setup_hotfix_repo()?;
-    let output = repo.run_why(&["hotspots", "--limit", "3", "--owner", "Fixture Bot", "--json"])?;
+    let output = repo.run_why(&[
+        "hotspots",
+        "--limit",
+        "3",
+        "--owner",
+        "Fixture Bot",
+        "--json",
+    ])?;
     ensure_success(&output)?;
 
     let stdout = repo.stdout(&output);
@@ -581,6 +590,7 @@ fn health_subcommand_renders_terminal_summary() -> Result<()> {
     assert!(stdout.contains("Signals"));
     assert!(stdout.contains("time_bombs: 1"));
     assert!(stdout.contains("stale_hacks: 0"));
+    assert_terminal_golden("cli_health_timebomb_repo", &stdout)?;
 
     Ok(())
 }
@@ -629,7 +639,12 @@ fn health_subcommand_writes_baseline_snapshot_file() -> Result<()> {
     let baseline_path = repo.path.join("baseline.json");
     let baseline: Value = serde_json::from_str(&std::fs::read_to_string(baseline_path)?)?;
     assert_eq!(baseline["schema_version"], 1);
-    assert!(baseline["snapshot"]["debt_score"].as_u64().unwrap_or_default() > 0);
+    assert!(
+        baseline["snapshot"]["debt_score"]
+            .as_u64()
+            .unwrap_or_default()
+            > 0
+    );
     assert_eq!(baseline["snapshot"]["signals"]["time_bombs"], 1);
     assert_eq!(baseline["snapshot"]["ref_name"], "main");
 
@@ -667,8 +682,19 @@ fn health_subcommand_compares_against_baseline_file() -> Result<()> {
     assert_eq!(parsed["comparison"]["baseline"]["source"], "file");
     assert_eq!(parsed["comparison"]["baseline"]["debt_score"], 2);
     assert_eq!(parsed["comparison"]["score_delta"], 3);
-    assert_eq!(parsed["comparison"]["signal_deltas"]["time_bombs"]["delta"], 1);
+    assert_eq!(
+        parsed["comparison"]["signal_deltas"]["time_bombs"]["delta"],
+        1
+    );
     assert!(parsed["gate"].is_null());
+
+    let terminal = repo.run_why(&["health", "--baseline-file", "baseline.json"])?;
+    ensure_success(&terminal)?;
+    let stdout = repo.stdout(&terminal);
+    assert!(stdout.contains("Baseline: file (score 2 at 1970-01-01 00:00)"));
+    assert!(stdout.contains("Baseline head: abc123"));
+    assert!(stdout.contains("Baseline ref: main"));
+    assert!(stdout.contains("Score delta vs baseline: 3"));
 
     Ok(())
 }
@@ -709,7 +735,10 @@ fn health_regression_gate_fails_when_score_delta_exceeds_budget() -> Result<()> 
 
     let parsed: Value = serde_json::from_str(&repo.stdout(&output))?;
     assert_eq!(parsed["gate"]["passed"], false);
-    assert!(repo.stderr(&output).contains("exceeds allowed regression 0"));
+    assert!(
+        repo.stderr(&output)
+            .contains("exceeds allowed regression 0")
+    );
 
     Ok(())
 }
@@ -751,7 +780,10 @@ fn health_signal_regression_gate_fails_when_signal_budget_is_exceeded() -> Resul
     let parsed: Value = serde_json::from_str(&repo.stdout(&output))?;
     assert_eq!(parsed["gate"]["passed"], false);
     assert_eq!(parsed["gate"]["signal_budgets"]["time_bombs"], 0);
-    assert!(repo.stderr(&output).contains("health signal time_bombs regressed by 1"));
+    assert!(
+        repo.stderr(&output)
+            .contains("health signal time_bombs regressed by 1")
+    );
 
     Ok(())
 }

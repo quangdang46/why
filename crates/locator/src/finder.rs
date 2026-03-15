@@ -741,8 +741,8 @@ mod tests {
     #[test]
     fn lists_go_symbols_from_source() {
         let source = "package main\n\ntype AuthService struct{}\n\nfunc Authenticate(token string) bool {\n    return token != \"\"\n}\n";
-        let symbols = list_all_symbols(SupportedLanguage::Go, source)
-            .expect("go symbols should list");
+        let symbols =
+            list_all_symbols(SupportedLanguage::Go, source).expect("go symbols should list");
 
         assert_eq!(
             symbols,
@@ -756,8 +756,8 @@ mod tests {
     #[test]
     fn lists_java_symbols_from_source() {
         let source = "class AuthService {\n    AuthService() {}\n\n    boolean login() {\n        return true;\n    }\n}\n";
-        let symbols = list_all_symbols(SupportedLanguage::Java, source)
-            .expect("java symbols should list");
+        let symbols =
+            list_all_symbols(SupportedLanguage::Java, source).expect("java symbols should list");
 
         assert_eq!(
             symbols,
