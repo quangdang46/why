@@ -5,8 +5,8 @@ use anyhow::bail;
 use common::{
     assert_json_golden, assert_terminal_golden, setup_compat_shim_repo, setup_coupling_repo,
     setup_coupling_rich_repo, setup_ghost_repo, setup_hotfix_repo, setup_javascript_repo,
-    setup_outage_repo, setup_python_repo, setup_sparse_repo, setup_split_repo,
-    setup_timebomb_repo, setup_timebomb_rich_repo, setup_typescript_repo,
+    setup_outage_repo, setup_python_repo, setup_sparse_repo, setup_split_repo, setup_timebomb_repo,
+    setup_timebomb_rich_repo, setup_typescript_repo,
 };
 use serde_json::Value;
 use std::fs;
@@ -165,9 +165,10 @@ fn hotfix_repo_team_report_renders_terminal_summary() -> Result<()> {
     assert!(stdout.contains("Team ownership for src/payment.rs"));
     assert!(stdout.contains("[primary owner]"));
     assert!(stdout.contains("Bus factor: 1"));
-    assert!(stdout.contains(
-        "Risk: Fixture Bot is the primary owner of HIGH-risk code for this target."
-    ));
+    assert!(
+        stdout
+            .contains("Risk: Fixture Bot is the primary owner of HIGH-risk code for this target.")
+    );
     assert_terminal_golden("cli_team_hotfix_repo", &stdout)?;
 
     Ok(())
@@ -489,9 +490,7 @@ fn coupling_queries_render_terminal_output_for_rich_fixture_repo() -> Result<()>
 
     let stdout = repo.stdout(&output);
     assert!(stdout.contains("Coupled files for src/schema.rs"));
-    assert!(stdout.contains(
-        "Scanned 5 commits; 5 non-mechanical commits touched the target."
-    ));
+    assert!(stdout.contains("Scanned 5 commits; 5 non-mechanical commits touched the target."));
     assert!(stdout.contains("src/data.rs"));
     assert!(stdout.contains("src/metrics.rs"));
     assert_terminal_golden("cli_coupling_coupling_rich_repo", &stdout)?;

@@ -2465,6 +2465,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "why-test-support"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
 name = "why-workspace"
 version = "0.1.0"
 dependencies = [

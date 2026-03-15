@@ -15,6 +15,7 @@ members = [
     "crates/shell",
     "crates/hooks",
     "crates/cache",
+    "crates/test-support",
 ]
 resolver = "2"
 
@@ -56,9 +57,6 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 publish = false
-
-[lib]
-path = "src/lib.rs"
 
 [dev-dependencies]
 anyhow.workspace = true

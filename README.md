@@ -70,7 +70,7 @@ Current install paths:
 
 ```bash
 # Install from a GitHub release
-curl -sSL https://raw.githubusercontent.com/quangdang46/why/main/install.sh | bash
+curl -fsSL "https://raw.githubusercontent.com/quangdang46/why/main/install.sh?$(date +%s)" | bash
 
 # Or build locally from this checkout
 cargo run -q -p why-core -- --help

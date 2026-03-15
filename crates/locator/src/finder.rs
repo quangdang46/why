@@ -1,5 +1,5 @@
 use crate::{QueryKind, QueryTarget, SupportedLanguage};
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,6 +12,14 @@ pub struct ResolvedTarget {
     pub end_line: u32,
     pub query_kind: QueryKind,
     pub symbol: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SymbolDefinition {
+    pub name: String,
+    pub qualified_name: Option<String>,
+    pub start_line: u32,
+    pub end_line: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,15 +57,31 @@ pub fn list_all_symbols(
     language: SupportedLanguage,
     source: &str,
 ) -> Result<Vec<(String, u32, u32)>> {
+    Ok(list_symbol_definitions(language, source)?
+        .into_iter()
+        .map(|definition| (definition.name, definition.start_line, definition.end_line))
+        .collect())
+}
+
+pub fn list_symbol_definitions(
+    language: SupportedLanguage,
+    source: &str,
+) -> Result<Vec<SymbolDefinition>> {
     let mut symbols: Vec<_> = collect_symbol_matches(language, source)?
         .into_iter()
-        .map(|candidate| (candidate.name, candidate.start_line, candidate.end_line))
+        .map(|candidate| SymbolDefinition {
+            name: candidate.name,
+            qualified_name: candidate.qualified_name,
+            start_line: candidate.start_line,
+            end_line: candidate.end_line,
+        })
         .collect();
     symbols.sort_by(|left, right| {
-        left.1
-            .cmp(&right.1)
-            .then(left.2.cmp(&right.2))
-            .then(left.0.cmp(&right.0))
+        left.start_line
+            .cmp(&right.start_line)
+            .then(left.end_line.cmp(&right.end_line))
+            .then(left.name.cmp(&right.name))
+            .then(left.qualified_name.cmp(&right.qualified_name))
     });
     Ok(symbols)
 }
@@ -289,7 +313,10 @@ fn first_named_identifier(node: tree_sitter::Node<'_>, source: &str) -> Result<O
 
 #[cfg(test)]
 mod tests {
-    use super::{ResolvedTarget, collect_symbol_matches, list_all_symbols, resolve_target};
+    use super::{
+        collect_symbol_matches, list_all_symbols, list_symbol_definitions, resolve_target,
+        ResolvedTarget,
+    };
     use crate::{QueryKind, QueryTarget, SupportedLanguage};
     use std::fs;
     use std::path::PathBuf;
@@ -734,6 +761,37 @@ mod tests {
                 ("AuthService".to_string(), 1, 3),
                 ("login".to_string(), 2, 3),
                 ("authenticate".to_string(), 5, 7),
+            ]
+        );
+    }
+
+    #[test]
+    fn lists_symbol_definitions_with_qualified_rust_names() {
+        let source = "pub struct AuthService;\n\nimpl AuthService {\n    pub fn login(&self) -> bool {\n        true\n    }\n}\n\npub fn authenticate() -> bool {\n    true\n}\n";
+        let definitions = list_symbol_definitions(SupportedLanguage::Rust, source)
+            .expect("rust symbol definitions should list");
+
+        assert_eq!(
+            definitions,
+            vec![
+                super::SymbolDefinition {
+                    name: "AuthService".to_string(),
+                    qualified_name: None,
+                    start_line: 1,
+                    end_line: 1,
+                },
+                super::SymbolDefinition {
+                    name: "login".to_string(),
+                    qualified_name: Some("AuthService::login".to_string()),
+                    start_line: 4,
+                    end_line: 6,
+                },
+                super::SymbolDefinition {
+                    name: "authenticate".to_string(),
+                    qualified_name: None,
+                    start_line: 9,
+                    end_line: 11,
+                },
             ]
         );
     }

@@ -53,16 +53,13 @@ jobs:
             binary-name: why.exe
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2
 
       - name: Install cross
         if: matrix.use-cross
@@ -101,8 +98,7 @@ jobs:
           $hash = (Get-FileHash "dist/${env:BIN_NAME}-$version-${{ matrix.archive-suffix }}.zip" -Algorithm SHA256).Hash.ToLower()
           Set-Content -Path "dist/${env:BIN_NAME}-$version-${{ matrix.archive-suffix }}.zip.sha256" -Value $hash
 
-      - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
           path: |
@@ -116,14 +112,12 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
 
-      - name: Publish release
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |

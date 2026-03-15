@@ -72,6 +72,17 @@ acquire_lock() {
     die "Another install is running. If stuck: rm -rf $LOCK_DIR"
 }
 
+remove_installer_path_lines() {
+    local rc="$1"
+    [ -f "$rc" ] || return 0
+
+    local tmp_file
+    tmp_file=$(mktemp "${TMPDIR:-/tmp}/${BINARY_NAME}-rc.XXXXXX")
+    grep -vF "# ${BINARY_NAME} installer" "$rc" > "$tmp_file" || true
+    cat "$tmp_file" > "$rc"
+    rm -f "$tmp_file"
+}
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --dest)
@@ -128,7 +139,7 @@ done
 do_uninstall() {
     rm -f "$DEST/$BINARY_NAME" "$DEST/$BINARY_NAME.exe"
     for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
-        [ -f "$rc" ] && sed -i "/${BINARY_NAME} installer/d" "$rc" 2>/dev/null || true
+        remove_installer_path_lines "$rc"
     done
     log_success "Uninstalled"
     exit 0
@@ -186,6 +197,18 @@ archive_name_for_platform() {
             ;;
         *)
             die "Unsupported platform mapping: $platform"
+            ;;
+    esac
+}
+
+installed_binary_name_for_platform() {
+    local platform="$1"
+    case "$platform" in
+        windows_*)
+            echo "${BINARY_NAME}.exe"
+            ;;
+        *)
+            echo "$BINARY_NAME"
             ;;
     esac
 }
@@ -274,6 +297,8 @@ maybe_add_path() {
 }
 
 build_from_source() {
+    local installed_name="$1"
+
     command -v cargo >/dev/null || die "Rust/cargo not found. Install: https://rustup.rs"
     command -v git >/dev/null || die "git not found"
     git clone --depth 1 "https://github.com/${OWNER}/${REPO}.git" "$TMP/src"
@@ -281,16 +306,18 @@ build_from_source() {
         cd "$TMP/src"
         CARGO_TARGET_DIR="$TMP/target" cargo build --release --locked --package why-core --bin "$BINARY_NAME"
     )
-    install_binary_atomic "$TMP/target/release/$BINARY_NAME" "$DEST/$BINARY_NAME"
+    install_binary_atomic "$TMP/target/release/$installed_name" "$DEST/$installed_name"
 }
 
 print_summary() {
+    local installed_path="$1"
+
     echo ""
-    echo "✓ ${BINARY_NAME} installed → $DEST/$BINARY_NAME"
-    echo "  Version: $("$DEST/$BINARY_NAME" --version 2>/dev/null || echo 'unknown')"
+    echo "✓ ${BINARY_NAME} installed → $installed_path"
+    echo "  Version: $("$installed_path" --version 2>/dev/null || echo 'unknown')"
     echo ""
     echo "  Quick start:"
-    echo "    $BINARY_NAME --help"
+    echo "    $installed_path --help"
 }
 
 main() {
@@ -298,8 +325,10 @@ main() {
     TMP=$(mktemp -d)
     mkdir -p "$DEST"
 
-    local platform archive url checksum_url expected actual checksum_tool bin_path
+    local platform archive url checksum_url expected actual checksum_tool installed_name installed_path bin_path
     platform=$(detect_platform)
+    installed_name=$(installed_binary_name_for_platform "$platform")
+    installed_path="$DEST/$installed_name"
     log_info "Platform: $platform | Dest: $DEST"
 
     if [ "$FROM_SOURCE" -eq 0 ]; then
@@ -330,24 +359,24 @@ main() {
                     ;;
             esac
 
-            bin_path=$(find "$TMP" -type f \( -name "$BINARY_NAME" -o -name "$BINARY_NAME.exe" \) | head -n 1)
+            bin_path=$(find "$TMP" -type f \( -name "$installed_name" -o -name "$BINARY_NAME" \) | head -n 1)
             [ -n "$bin_path" ] || die "Binary not found after extract"
-            install_binary_atomic "$bin_path" "$DEST/$BINARY_NAME"
+            install_binary_atomic "$bin_path" "$installed_path"
         else
             log_warn "Binary download failed — building from source..."
-            build_from_source
+            build_from_source "$installed_name"
         fi
     else
-        build_from_source
+        build_from_source "$installed_name"
     fi
 
     maybe_add_path
 
     if [ "$VERIFY" -eq 1 ]; then
-        "$DEST/$BINARY_NAME" --version
+        "$installed_path" --version
     fi
 
-    print_summary
+    print_summary "$installed_path"
 }
 
 if [[ "${BASH_SOURCE[0]:-}" == "${0:-}" ]] || [[ -z "${BASH_SOURCE[0]:-}" ]]; then

@@ -1,11 +1,13 @@
 mod finder;
 mod languages;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-pub use finder::{ResolvedTarget, list_all_symbols, resolve_target};
+pub use finder::{
+    list_all_symbols, list_symbol_definitions, resolve_target, ResolvedTarget, SymbolDefinition,
+};
 pub use languages::SupportedLanguage;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -151,7 +153,7 @@ fn validate_line_number(line: u32, label: &str) -> Result<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{QueryKind, QueryTarget, SupportedLanguage, detect_language, parse_target};
+    use super::{detect_language, parse_target, QueryKind, QueryTarget, SupportedLanguage};
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -220,11 +222,9 @@ mod tests {
     fn rejects_reversed_range() {
         let error =
             parse_target("src/lib.rs", Some("45:40")).expect_err("reversed range should fail");
-        assert!(
-            error
-                .to_string()
-                .contains("range end must be greater than or equal to range start")
-        );
+        assert!(error
+            .to_string()
+            .contains("range end must be greater than or equal to range start"));
     }
 
     #[test]
@@ -237,11 +237,9 @@ mod tests {
     fn rejects_mixing_colon_target_with_lines_override() {
         let error = parse_target("src/lib.rs:authenticate", Some("10:20"))
             .expect_err("mixed target forms should fail");
-        assert!(
-            error
-                .to_string()
-                .contains("do not combine a colon specifier with --lines")
-        );
+        assert!(error
+            .to_string()
+            .contains("do not combine a colon specifier with --lines"));
     }
 
     #[test]
