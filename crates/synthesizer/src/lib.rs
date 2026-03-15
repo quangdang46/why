@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::thread;
 use std::time::Duration;
+use why_evidence::EvidencePack;
 
 const HAIKU_MODEL: &str = "claude-haiku-4-5";
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -171,6 +172,32 @@ pub fn prompt_contract() -> PromptContract {
             "Do not invent incidents, PR details, or dependencies not present in the evidence pack.",
         ],
     }
+}
+
+pub fn build_system_prompt(contract: &PromptContract) -> String {
+    format!(
+        "You are a careful code archaeology assistant. {} Required fields: {}. Grounding rules: {}",
+        contract.response_format,
+        contract.required_fields.join(", "),
+        contract.grounding_rules.join(" ")
+    )
+}
+
+pub fn build_query_prompt(pack: &EvidencePack) -> String {
+    let evidence_json = serde_json::to_string_pretty(pack)
+        .unwrap_or_else(|_| "{\"error\":\"failed to serialize evidence pack\"}".to_string());
+    format!(
+        "Use this evidence pack to explain why the target exists and the risk of changing it.\n\nEvidence pack:\n{}",
+        evidence_json
+    )
+}
+
+pub fn build_diff_review_prompt(target: &str, packs: &[EvidencePack]) -> String {
+    let packs_json = serde_json::to_string_pretty(packs).unwrap_or_else(|_| "[]".to_string());
+    format!(
+        "Risk analysis for changes in: {}\nFor each function, explain the historical risk of modifying it.\n\nEvidence packs:\n{}",
+        target, packs_json
+    )
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -434,6 +461,7 @@ fn build_http_client(timeout_secs: u64) -> Result<Client> {
     Client::builder()
         .default_headers(headers)
         .timeout(Duration::from_secs(timeout_secs))
+        .https_only(true)
         .build()
         .context("failed to build Anthropic client")
 }
@@ -512,8 +540,13 @@ fn strip_markdown_fences(raw: &str) -> String {
 mod tests {
     use super::{
         ANTHROPIC_VERSION, AnthropicClient, AnthropicConfig, AnthropicRequest, ConfidenceLevel,
-        HttpStatusError, ReportMode, RiskLevel, StatusCode, estimate_cost_usd, heuristic_report,
-        is_retryable_error, parse_message_response, parse_response, prompt_contract, retry_delay,
+        HttpStatusError, ReportMode, RiskLevel, StatusCode, build_diff_review_prompt,
+        build_http_client, build_query_prompt, build_system_prompt, estimate_cost_usd,
+        heuristic_report, is_retryable_error, parse_message_response, parse_response,
+        prompt_contract, retry_delay,
+    };
+    use why_evidence::{
+        CommitSummary, EvidencePack, HistoryInfo, LocalContextInfo, SignalInfo, TargetInfo,
     };
 
     #[test]
@@ -637,6 +670,80 @@ mod tests {
         assert_eq!(report.cost_usd, None);
     }
 
+    fn sample_pack(symbol: &str, issue_ref: &str) -> EvidencePack {
+        EvidencePack {
+            target: TargetInfo {
+                file: "src/auth.rs".into(),
+                symbol: Some(symbol.into()),
+                lines: (10, 18),
+                language: "rust".into(),
+            },
+            local_context: LocalContextInfo {
+                comments: vec!["hotfix preserved for legacy clients".into()],
+                markers: vec!["TODO: remove after rollout".into()],
+                risk_flags: vec!["auth".into(), "token".into()],
+            },
+            history: HistoryInfo {
+                total_commit_count: 1,
+                commits_shown: 1,
+                top_commits: vec![CommitSummary {
+                    oid: "abc12345".into(),
+                    date: "2026-03-14".into(),
+                    author: "alice".into(),
+                    summary: "fix: preserve auth compatibility path".into(),
+                    diff_excerpt: "+ preserve legacy auth fallback".into(),
+                    coverage_pct: 75,
+                    issue_refs: vec![issue_ref.into()],
+                }],
+            },
+            signals: SignalInfo {
+                issue_refs: vec![issue_ref.into()],
+                risk_keywords: vec!["auth".into(), "incident".into()],
+                heuristic_risk: "HIGH".into(),
+                github_items: Vec::new(),
+                github_notes: vec!["GitHub enrichment unavailable".into()],
+            },
+        }
+    }
+
+    #[test]
+    fn build_system_prompt_embeds_contract_details() {
+        let contract = prompt_contract();
+        let prompt = build_system_prompt(&contract);
+
+        assert!(prompt.contains("careful code archaeology assistant"));
+        assert!(prompt.contains(contract.response_format));
+        assert!(prompt.contains("summary, evidence, inference, unknowns, risk_level, confidence"));
+        assert!(prompt.contains("Do not invent incidents, PR details, or dependencies"));
+    }
+
+    #[test]
+    fn build_query_prompt_serializes_evidence_pack() {
+        let prompt = build_query_prompt(&sample_pack("authenticate", "#42"));
+
+        assert!(prompt.contains("Use this evidence pack to explain why the target exists"));
+        assert!(prompt.contains("\"symbol\": \"authenticate\""));
+        assert!(prompt.contains("\"issue_refs\": ["));
+        assert!(prompt.contains("\"#42\""));
+    }
+
+    #[test]
+    fn build_diff_review_prompt_serializes_multiple_packs() {
+        let prompt = build_diff_review_prompt(
+            "main..feature",
+            &[
+                sample_pack("authenticate", "#42"),
+                sample_pack("refresh_session", "#77"),
+            ],
+        );
+
+        assert!(prompt.contains("Risk analysis for changes in: main..feature"));
+        assert!(prompt.contains("For each function, explain the historical risk of modifying it."));
+        assert!(prompt.contains("\"symbol\": \"authenticate\""));
+        assert!(prompt.contains("\"symbol\": \"refresh_session\""));
+        assert!(prompt.contains("\"#77\""));
+    }
+
     #[test]
     fn anthropic_config_defaults_match_plan() {
         let config = AnthropicConfig {
@@ -689,6 +796,17 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some(ANTHROPIC_VERSION)
         );
+    }
+
+    #[test]
+    fn anthropic_client_enforces_https_only_transport() {
+        let client = build_http_client(30).expect("client should build");
+        let error = client
+            .post("http://api.anthropic.com/v1/messages")
+            .send()
+            .expect_err("http requests should be rejected");
+
+        assert!(error.to_string().contains("HTTPS") || error.to_string().contains("http://"));
     }
 
     #[test]

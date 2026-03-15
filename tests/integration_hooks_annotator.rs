@@ -122,4 +122,32 @@ mod unix_only {
         assert!(second.contains("duplicate charge incident"));
         Ok(())
     }
+
+    #[test]
+    fn cli_annotate_rewrites_annotation_when_report_is_served_from_cache() -> Result<()> {
+        let repo = setup_hotfix_repo()?;
+        let source_path = repo.path.join("src/payment.rs");
+        let original_source = fs::read_to_string(&source_path)?;
+
+        let first = repo.run_why(&["src/payment.rs:process_payment", "--annotate"])?;
+        ensure_success(&first)?;
+        let first_stdout = String::from_utf8_lossy(&first.stdout);
+        assert!(first_stdout.contains("Annotation written to"));
+        assert!(fs::read_to_string(&source_path)?.contains("/// [why]"));
+
+        fs::write(&source_path, &original_source)?;
+        assert!(!fs::read_to_string(&source_path)?.contains("/// [why]"));
+
+        let second = repo.run_why(&["src/payment.rs:process_payment", "--annotate"])?;
+        ensure_success(&second)?;
+        let second_stdout = String::from_utf8_lossy(&second.stdout);
+        assert!(second_stdout.contains("[cached]"));
+        assert!(second_stdout.contains("Annotation written to"));
+
+        let rewritten = fs::read_to_string(&source_path)?;
+        assert!(rewritten.contains("/// [why]"));
+        assert!(rewritten.contains("Refresh: `why src/payment.rs:process_payment --annotate`"));
+
+        Ok(())
+    }
 }

@@ -9,6 +9,7 @@ use common::{
 };
 use serde_json::Value;
 use std::fs;
+use std::io::{Read, Write};
 
 fn ensure_success(output: &std::process::Output) -> Result<()> {
     if output.status.success() {
@@ -21,6 +22,35 @@ fn ensure_success(output: &std::process::Output) -> Result<()> {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     )
+}
+
+fn lsp_packet(body: &str) -> String {
+    format!("Content-Length: {}\r\n\r\n{body}", body.len())
+}
+
+fn read_lsp_message(reader: &mut impl Read) -> Result<Value> {
+    let mut header = Vec::new();
+
+    while !header.ends_with(b"\r\n\r\n") {
+        let mut byte = [0u8; 1];
+        reader.read_exact(&mut byte)?;
+        header.push(byte[0]);
+    }
+
+    let headers = std::str::from_utf8(&header[..header.len().saturating_sub(4)])?;
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("Content-Length")
+                .then_some(value.trim())
+        })
+        .ok_or_else(|| anyhow::anyhow!("malformed LSP output: missing Content-Length"))?
+        .parse::<usize>()?;
+
+    let mut body = vec![0u8; content_length];
+    reader.read_exact(&mut body)?;
+    Ok(serde_json::from_slice(&body)?)
 }
 
 #[test]
@@ -1065,6 +1095,25 @@ fn split_queries_render_positive_terminal_suggestion_for_mixed_era_fixture() -> 
 }
 
 #[test]
+fn context_inject_subcommand_emits_shell_wrappers() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let output = repo.run_why(&["context-inject"])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    assert!(stdout.contains("# why context-inject"));
+    assert!(stdout.contains("# eval \"$(why context-inject)\""));
+    assert!(stdout.contains("_why_context_inject_targets()"));
+    assert!(stdout.contains("_why_context_inject_preamble()"));
+    assert!(stdout.contains("_why_context_inject_prompt_tool()"));
+    assert!(stdout.contains("claude()"));
+    assert!(stdout.contains("sgpt()"));
+    assert!(stdout.contains("llm()"));
+
+    Ok(())
+}
+
+#[test]
 fn shell_subcommand_supports_help_reload_and_quit() -> Result<()> {
     let repo = setup_hotfix_repo()?;
     let output = repo.run_why_with_stdin(&["shell"], "help\nreload\nquit\n")?;
@@ -1108,6 +1157,84 @@ fn shell_subcommand_runs_queries_with_default_no_llm_mode() -> Result<()> {
                 .is_some_and(|text| text.contains("No LLM synthesis"))
         })
     }));
+
+    Ok(())
+}
+
+#[test]
+fn lsp_subcommand_returns_hover_markdown_for_hotfix_repo() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let payment_path = repo.path.join("src/payment.rs");
+    let file_uri = if cfg!(windows) {
+        format!(
+            "file:///{}",
+            payment_path.display().to_string().replace('\\', "/")
+        )
+    } else {
+        format!("file://{}", payment_path.display())
+    };
+    let hover_request = format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{{\"textDocument\":{{\"uri\":\"{file_uri}\"}},\"position\":{{\"line\":4,\"character\":8}}}}}}"
+    );
+
+    let mut child = repo.spawn_why(&["lsp"])?;
+    let hover_response = {
+        let stdin = child
+            .stdin
+            .as_mut()
+            .expect("spawned lsp process should expose stdin");
+        stdin.write_all(lsp_packet("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{}}}").as_bytes())?;
+        stdin.flush()?;
+
+        let stdout = child
+            .stdout
+            .as_mut()
+            .expect("spawned lsp process should expose stdout");
+        let initialize_response = read_lsp_message(stdout)?;
+        assert_eq!(initialize_response["id"], 1);
+        assert_eq!(
+            initialize_response["result"]["capabilities"]["hoverProvider"],
+            true
+        );
+
+        stdin.write_all(
+            lsp_packet("{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":{}}").as_bytes(),
+        )?;
+        stdin.write_all(lsp_packet(&hover_request).as_bytes())?;
+        stdin.flush()?;
+
+        loop {
+            let response = read_lsp_message(stdout)?;
+            if response["id"] == 2 {
+                break response;
+            }
+        }
+    };
+
+    let markdown = hover_response["result"]["contents"]["value"]
+        .as_str()
+        .expect("LSP hover response should contain markdown");
+
+    assert!(markdown.contains("**process_payment()** — Risk: **HIGH**"));
+    assert!(markdown.contains("duplicate charge vulnerability"));
+    assert!(markdown.contains("Run `why src/payment.rs:5` for full report."));
+
+    {
+        let stdin = child
+            .stdin
+            .as_mut()
+            .expect("spawned lsp process should expose stdin");
+        stdin.write_all(
+            lsp_packet("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"shutdown\",\"params\":null}")
+                .as_bytes(),
+        )?;
+        stdin.write_all(
+            lsp_packet("{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}").as_bytes(),
+        )?;
+    }
+
+    let output = child.wait_with_output()?;
+    ensure_success(&output)?;
 
     Ok(())
 }

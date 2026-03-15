@@ -8,7 +8,7 @@ use serde_json::Value;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::Mutex;
 use tempfile::TempDir;
 
@@ -59,17 +59,7 @@ impl FixtureRepo {
     }
 
     pub fn run_why_with_stdin(&self, args: &[&str], stdin: &str) -> Result<Output> {
-        let mut command = Command::new(why_binary_path()?);
-        command.args(args);
-        command.current_dir(&self.path);
-
-        let mut child = command
-            .env("ANTHROPIC_API_KEY", "")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .context("failed to spawn why command")?;
+        let mut child = self.spawn_why(args)?;
 
         if let Some(mut child_stdin) = child.stdin.take() {
             child_stdin
@@ -80,6 +70,20 @@ impl FixtureRepo {
         child
             .wait_with_output()
             .context("failed to wait for why command")
+    }
+
+    pub fn spawn_why(&self, args: &[&str]) -> Result<Child> {
+        let mut command = Command::new(why_binary_path()?);
+        command.args(args);
+        command.current_dir(&self.path);
+
+        command
+            .env("ANTHROPIC_API_KEY", "")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("failed to spawn why command")
     }
 
     pub fn stdout(&self, output: &Output) -> String {

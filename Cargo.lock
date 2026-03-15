@@ -2301,6 +2301,7 @@ name = "why-context"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "git2",
  "serde",
  "tempfile",
  "toml",
@@ -2436,6 +2437,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "why-evidence",
 ]
 
 [[package]]

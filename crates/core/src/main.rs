@@ -62,6 +62,10 @@ fn run() -> Result<ExitStatus> {
                 .block_on(why_lsp::run_stdio())?;
             Ok(ExitStatus::Success)
         }
+        Mode::ContextInject => {
+            run_context_inject()?;
+            Ok(ExitStatus::Success)
+        }
         Mode::Hotspots { limit, json } => {
             run_hotspots(limit, json)?;
             Ok(ExitStatus::Success)
@@ -139,6 +143,11 @@ fn run_uninstall_hooks() -> Result<()> {
         .map(|path| path.to_path_buf())
         .unwrap_or_else(|| cwd.clone());
     why_hooks::installer::uninstall(&repo_root)
+}
+
+fn run_context_inject() -> Result<()> {
+    print!("{}", why_hooks::context_inject::render_shell_functions());
+    Ok(())
 }
 
 fn run_hotspots(limit: usize, json: bool) -> Result<()> {
@@ -379,6 +388,21 @@ fn run_query(request: QueryRequest) -> Result<()> {
                     format_why_report(&format_target_label(&request.target), &cached, true)
                 );
             }
+
+            if request.annotate {
+                let result =
+                    analyze_target_with_options(&request.target, &cwd, request.since_days)?;
+                let source_path = repo_root.join(&result.target.path);
+                annotate_file(
+                    &source_path,
+                    result.target.start_line,
+                    &result,
+                    &head_hash,
+                    &format_target_label(&request.target),
+                )?;
+                println!("Annotation written to {}", source_path.display());
+            }
+
             return Ok(());
         }
     }

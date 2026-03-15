@@ -9,9 +9,7 @@ fn render_shell_functions_for(commands: &[&str]) -> String {
     let wrappers = commands
         .iter()
         .map(|command| {
-            format!(
-                "{command}() {{\n  _why_context_inject_prompt_tool {command} \"$@\"\n}}"
-            )
+            format!("{command}() {{\n  _why_context_inject_prompt_tool {command} \"$@\"\n}}")
         })
         .collect::<Vec<_>>()
         .join("\n\n");
@@ -51,14 +49,14 @@ _why_context_inject_preamble() {{
   fi
 
   local combined
-  combined="$({
+  combined="$({{
     while IFS= read -r target; do
       [ -n "$target" ] || continue
       output="$(why "$target" --no-llm --json 2>/dev/null || true)"
       [ -n "$output" ] || continue
       printf 'why context for %s:\n%s\n' "$target" "$output"
     done < <(_why_context_inject_targets)
-  })"
+  }})"
 
   [ -n "$combined" ] || return 0
   printf 'Git archaeology context:\n---\n%s---\n\n' "$combined"

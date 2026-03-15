@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -15,6 +15,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 const CACHE_DIR_NAME: &str = ".why";
 const CACHE_FILE_NAME: &str = "cache.json";
 const HEALTH_SNAPSHOT_LIMIT: usize = 52;
+const MAX_CACHE_FILE_BYTES: u64 = 5 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CacheEntry {
@@ -52,18 +53,7 @@ impl Cache {
         ensure_cache_dir(&dir)?;
 
         let path = dir.join(CACHE_FILE_NAME);
-        let data = if path.exists() {
-            let bytes = fs::read(&path)
-                .with_context(|| format!("failed to read cache file {}", path.display()))?;
-            if bytes.is_empty() {
-                CacheFile::default()
-            } else {
-                serde_json::from_slice(&bytes)
-                    .with_context(|| format!("failed to parse cache file {}", path.display()))?
-            }
-        } else {
-            CacheFile::default()
-        };
+        let data = read_cache_file(&path)?;
 
         Ok(Self {
             path,
@@ -170,10 +160,67 @@ fn now_ts() -> i64 {
         .as_secs() as i64
 }
 
+fn read_cache_file(path: &Path) -> Result<CacheFile> {
+    match safe_cache_file_metadata(path)? {
+        Some(metadata) => {
+            if metadata.len() == 0 {
+                return Ok(CacheFile::default());
+            }
+            if metadata.len() > MAX_CACHE_FILE_BYTES {
+                bail!(
+                    "cache file {} exceeds the {} byte safety limit",
+                    path.display(),
+                    MAX_CACHE_FILE_BYTES
+                );
+            }
+
+            let bytes = fs::read(path)
+                .with_context(|| format!("failed to read cache file {}", path.display()))?;
+            serde_json::from_slice(&bytes)
+                .with_context(|| format!("failed to parse cache file {}", path.display()))
+        }
+        None => Ok(CacheFile::default()),
+    }
+}
+
 fn ensure_cache_dir(path: &Path) -> Result<()> {
-    fs::create_dir_all(path)
-        .with_context(|| format!("failed to create cache directory {}", path.display()))?;
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                bail!("cache directory {} must not be a symlink", path.display());
+            }
+            if !metadata.is_dir() {
+                bail!("cache directory {} is not a directory", path.display());
+            }
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            fs::create_dir_all(path)
+                .with_context(|| format!("failed to create cache directory {}", path.display()))?;
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to inspect cache directory {}", path.display()));
+        }
+    }
+
     set_owner_only_permissions(path, 0o700)
+}
+
+fn safe_cache_file_metadata(path: &Path) -> Result<Option<fs::Metadata>> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                bail!("cache file {} must not be a symlink", path.display());
+            }
+            if !metadata.is_file() {
+                bail!("cache file {} is not a regular file", path.display());
+            }
+            Ok(Some(metadata))
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error)
+            .with_context(|| format!("failed to inspect cache file {}", path.display())),
+    }
 }
 
 fn write_cache_file(path: &Path, payload: &[u8]) -> Result<()> {
@@ -212,13 +259,16 @@ fn set_owner_only_permissions(_path: &Path, _mode: u32) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cache, HealthSnapshot};
+    use super::{Cache, HealthSnapshot, MAX_CACHE_FILE_BYTES};
     use std::collections::HashMap;
     use std::fs;
 
     use anyhow::Result;
     use serde::{Deserialize, Serialize};
     use tempfile::tempdir;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
     struct FakeReport {
@@ -362,6 +412,47 @@ mod tests {
             fs::metadata(cache_file)?.permissions().mode() & 0o777,
             0o600
         );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlinked_cache_directory() -> Result<()> {
+        let dir = tempdir()?;
+        let real_dir = dir.path().join("real-cache-dir");
+        fs::create_dir_all(&real_dir)?;
+        symlink(&real_dir, dir.path().join(".why"))?;
+
+        let error = Cache::open(dir.path(), 10).expect_err("symlinked cache dir should fail");
+        assert!(error.to_string().contains("must not be a symlink"));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlinked_cache_file() -> Result<()> {
+        let dir = tempdir()?;
+        let cache_dir = dir.path().join(".why");
+        fs::create_dir_all(&cache_dir)?;
+        let target = dir.path().join("elsewhere.json");
+        fs::write(&target, b"{}")?;
+        symlink(&target, cache_dir.join("cache.json"))?;
+
+        let error = Cache::open(dir.path(), 10).expect_err("symlinked cache file should fail");
+        assert!(error.to_string().contains("must not be a symlink"));
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_oversized_cache_file() -> Result<()> {
+        let dir = tempdir()?;
+        let cache_dir = dir.path().join(".why");
+        fs::create_dir_all(&cache_dir)?;
+        let cache_path = cache_dir.join("cache.json");
+        fs::write(&cache_path, vec![b'x'; (MAX_CACHE_FILE_BYTES as usize) + 1])?;
+
+        let error = Cache::open(dir.path(), 10).expect_err("oversized cache file should fail");
+        assert!(error.to_string().contains("safety limit"));
         Ok(())
     }
 }

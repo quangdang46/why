@@ -1,6 +1,7 @@
 //! Local code context extraction and heuristics.
 
 use anyhow::{Context, Result};
+use git2::Repository;
 use serde::Deserialize;
 use std::env;
 use std::fs;
@@ -133,7 +134,8 @@ impl WhyConfig {
 }
 
 pub fn load_config(start_dir: &Path) -> Result<WhyConfig> {
-    let Some(config_path) = find_config_path(start_dir) else {
+    let search_root = config_search_root(start_dir);
+    let Some(config_path) = find_config_path(start_dir, search_root.as_deref()) else {
         return Ok(WhyConfig::default());
     };
 
@@ -147,12 +149,13 @@ pub fn load_config_from_path(config_path: &Path) -> Result<WhyConfig> {
         .with_context(|| format!("failed to parse config file {}", config_path.display()))
 }
 
-fn find_config_path(start_dir: &Path) -> Option<PathBuf> {
+fn find_config_path(start_dir: &Path, search_root: Option<&Path>) -> Option<PathBuf> {
     let mut current = if start_dir.is_dir() {
         start_dir.to_path_buf()
     } else {
         start_dir.parent()?.to_path_buf()
     };
+    let search_root = search_root.map(Path::to_path_buf);
 
     loop {
         let candidate = current.join(".why.toml");
@@ -160,10 +163,29 @@ fn find_config_path(start_dir: &Path) -> Option<PathBuf> {
             return Some(candidate);
         }
 
+        if search_root.as_ref().is_some_and(|root| *root == current) {
+            return None;
+        }
+
         if !current.pop() {
             return None;
         }
     }
+}
+
+fn config_search_root(start_dir: &Path) -> Option<PathBuf> {
+    let anchor = if start_dir.is_dir() {
+        start_dir
+    } else {
+        start_dir.parent()?
+    };
+
+    Some(
+        Repository::discover(anchor)
+            .ok()
+            .and_then(|repo| repo.workdir().map(Path::to_path_buf))
+            .unwrap_or_else(|| anchor.to_path_buf()),
+    )
 }
 
 fn default_risk_level() -> String {
@@ -203,12 +225,14 @@ mod tests {
     use super::{
         DEFAULT_CACHE_MAX_ENTRIES, DEFAULT_COUPLING_RATIO_THRESHOLD, DEFAULT_COUPLING_SCAN_COMMITS,
         DEFAULT_MAX_COMMITS, DEFAULT_MECHANICAL_THRESHOLD_FILES, DEFAULT_RECENCY_WINDOW_DAYS,
-        DEFAULT_RISK_LEVEL, WhyConfig, find_config_path, load_config, load_config_from_path,
+        DEFAULT_RISK_LEVEL, WhyConfig, config_search_root, find_config_path, load_config,
+        load_config_from_path,
     };
     use anyhow::Result;
     use std::env;
     use std::fs;
     use std::path::Path;
+    use std::process::Command;
     use tempfile::TempDir;
 
     #[test]
@@ -311,7 +335,72 @@ remote = "upstream"
         let config_path = tempdir.path().join(".why.toml");
         fs::write(&config_path, "[risk]\ndefault_level = \"LOW\"\n")?;
 
-        assert_eq!(find_config_path(&nested_dir), Some(config_path));
+        assert_eq!(find_config_path(&nested_dir, None), Some(config_path));
+
+        Ok(())
+    }
+
+    #[test]
+    fn repo_search_root_uses_git_workdir_boundary() -> Result<()> {
+        let tempdir = TempDir::new()?;
+        let repo_root = tempdir.path().join("repo");
+        let nested_dir = repo_root.join("src/lib");
+        fs::create_dir_all(&nested_dir)?;
+        git_init(&repo_root)?;
+
+        assert_eq!(config_search_root(&nested_dir), Some(repo_root));
+
+        Ok(())
+    }
+
+    #[test]
+    fn config_search_stops_at_repo_root() -> Result<()> {
+        let tempdir = TempDir::new()?;
+        let repo_root = tempdir.path().join("repo");
+        let nested_dir = repo_root.join("src/lib");
+        fs::create_dir_all(&nested_dir)?;
+        git_init(&repo_root)?;
+
+        let outside_config = tempdir.path().join(".why.toml");
+        fs::write(&outside_config, "[risk]\ndefault_level = \"HIGH\"\n")?;
+
+        assert_eq!(
+            find_config_path(&nested_dir, Some(repo_root.as_path())),
+            None
+        );
+        assert_eq!(load_config(&nested_dir)?.risk.default_level, DEFAULT_RISK_LEVEL);
+
+        Ok(())
+    }
+
+    #[test]
+    fn config_search_does_not_inherit_parent_config_outside_repo() -> Result<()> {
+        let tempdir = TempDir::new()?;
+        let outer_dir = tempdir.path().join("outer");
+        let nested_dir = outer_dir.join("work/src");
+        fs::create_dir_all(&nested_dir)?;
+
+        fs::write(tempdir.path().join(".why.toml"), "[risk]\ndefault_level = \"HIGH\"\n")?;
+        fs::write(outer_dir.join(".why.toml"), "[risk]\ndefault_level = \"MEDIUM\"\n")?;
+
+        assert_eq!(load_config(&nested_dir)?.risk.default_level, DEFAULT_RISK_LEVEL);
+
+        Ok(())
+    }
+
+    #[test]
+    fn load_config_keeps_repo_local_config_visible() -> Result<()> {
+        let tempdir = TempDir::new()?;
+        let repo_root = tempdir.path().join("repo");
+        let nested_dir = repo_root.join("src/lib");
+        fs::create_dir_all(&nested_dir)?;
+        git_init(&repo_root)?;
+
+        let repo_config = repo_root.join(".why.toml");
+        fs::write(&repo_config, "[risk]\ndefault_level = \"HIGH\"\n")?;
+        fs::write(tempdir.path().join(".why.toml"), "[risk]\ndefault_level = \"LOW\"\n")?;
+
+        assert_eq!(load_config(&nested_dir)?.risk.default_level, "HIGH");
 
         Ok(())
     }
@@ -355,6 +444,29 @@ remote = "upstream"
         assert_eq!(config.github.token, None);
 
         Ok(())
+    }
+
+    fn git_init(path: &Path) -> Result<()> {
+        let output = Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(path)
+            .output()?;
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let fallback = Command::new("git")
+            .arg("init")
+            .current_dir(path)
+            .output()?;
+        if fallback.status.success() {
+            return Ok(());
+        }
+
+        anyhow::bail!(
+            "git init failed: {}",
+            String::from_utf8_lossy(&fallback.stderr)
+        )
     }
 
     #[test]

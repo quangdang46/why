@@ -597,6 +597,26 @@ fn dedupe_github_refs(issue_refs: &[String]) -> Vec<GitHubRef> {
     refs
 }
 
+pub fn select_single_github_ref(issue_refs: &[String]) -> Result<GitHubRef> {
+    let refs = dedupe_github_refs(issue_refs);
+    match refs.as_slice() {
+        [issue] => Ok(issue.clone()),
+        [] => bail!(
+            "GitHub comment posting requires exactly one #123-style issue/PR reference; none were found"
+        ),
+        _ => {
+            let rendered = refs
+                .iter()
+                .map(|issue| format!("#{}", issue.number))
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!(
+                "GitHub comment posting requires exactly one #123-style issue/PR reference; found multiple refs: {rendered}"
+            )
+        }
+    }
+}
+
 fn is_terminal_github_degradation(note: &str) -> bool {
     note.contains("rate limiting")
         || note.contains("authentication failed")
@@ -1147,5 +1167,39 @@ mod tests {
             refs,
             vec![GitHubRef { number: 7 }, GitHubRef { number: 42 }]
         );
+    }
+
+    #[test]
+    fn test_select_single_github_ref_returns_unique_issue() {
+        let issue = select_single_github_ref(&[
+            "#42".to_string(),
+            "garbage".to_string(),
+            "#42".to_string(),
+        ])
+        .expect("single GitHub ref should be selected");
+
+        assert_eq!(issue, GitHubRef { number: 42 });
+    }
+
+    #[test]
+    fn test_select_single_github_ref_rejects_missing_refs() {
+        let error = select_single_github_ref(&["garbage".to_string()])
+            .expect_err("missing GitHub refs should fail");
+
+        assert!(error.to_string().contains("exactly one #123-style issue/PR reference"));
+        assert!(error.to_string().contains("none were found"));
+    }
+
+    #[test]
+    fn test_select_single_github_ref_rejects_multiple_refs() {
+        let error = select_single_github_ref(&[
+            "#42".to_string(),
+            "#7".to_string(),
+            "#42".to_string(),
+        ])
+        .expect_err("multiple GitHub refs should fail");
+
+        assert!(error.to_string().contains("exactly one #123-style issue/PR reference"));
+        assert!(error.to_string().contains("#7, #42"));
     }
 }

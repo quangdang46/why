@@ -6,7 +6,7 @@ use why_locator::{QueryTarget, parse_target};
 #[command(name = "why")]
 #[command(
     about = "Ask your codebase why a line, range, symbol, or repo hotspot exists",
-    after_help = "Examples:\n  why src/auth.rs:42\n  why src/auth.rs --lines 40:45 --no-llm\n  why src/auth.rs:verify_token --json\n  why src/auth.rs:verify_token --annotate\n  why src/auth.rs:AuthService::login --team\n  why src/auth.rs:verify_token --blame-chain\n  why src/auth.rs:verify_token --evolution\n  why hotspots --limit 10\n  why health\n  why health --ci 80\n  why pr-template\n  why coverage-gap --coverage lcov.info\n  why ghost --limit 10\n  why onboard --limit 10\n  why time-bombs --age-days 180"
+    after_help = "Examples:\n  why src/auth.rs:42\n  why src/auth.rs --lines 40:45 --no-llm\n  why src/auth.rs:verify_token --json\n  why src/auth.rs:verify_token --annotate\n  why src/auth.rs:AuthService::login --team\n  why src/auth.rs:verify_token --blame-chain\n  why src/auth.rs:verify_token --evolution\n  why hotspots --limit 10\n  why health\n  why health --ci 80\n  why pr-template\n  why coverage-gap --coverage lcov.info\n  why ghost --limit 10\n  why onboard --limit 10\n  why time-bombs --age-days 180\n  eval \"$(why context-inject)\""
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -75,6 +75,8 @@ pub enum Command {
     Shell,
     /// Run the LSP hover server over stdio.
     Lsp,
+    /// Emit shell wrappers that prepend archaeology context to supported AI tools.
+    ContextInject,
     /// Rank repository hotspots using churn × heuristic risk scoring.
     Hotspots {
         /// Maximum number of findings to return.
@@ -188,6 +190,7 @@ pub enum Mode {
     Mcp,
     Shell,
     Lsp,
+    ContextInject,
     Hotspots {
         limit: usize,
         json: bool,
@@ -283,6 +286,24 @@ impl Cli {
                     bail!("the lsp subcommand does not accept query flags or a target");
                 }
                 Ok(Mode::Lsp)
+            }
+            Some(Command::ContextInject) => {
+                if self.target.is_some()
+                    || self.lines.is_some()
+                    || self.json
+                    || self.no_llm
+                    || self.no_cache
+                    || self.split
+                    || self.coupled
+                    || self.since.is_some()
+                    || self.team
+                    || self.blame_chain
+                    || self.evolution
+                    || self.annotate
+                {
+                    bail!("the context-inject subcommand does not accept query flags or a target");
+                }
+                Ok(Mode::ContextInject)
             }
             Some(Command::Hotspots { limit, json }) => {
                 if self.target.is_some()
@@ -748,6 +769,16 @@ mod tests {
         let cli = Cli::parse_from(["why", "lsp"]);
         assert_eq!(cli.command, Some(Command::Lsp));
         assert_eq!(cli.parse_mode().expect("lsp should parse"), Mode::Lsp);
+    }
+
+    #[test]
+    fn parses_context_inject_subcommand() {
+        let cli = Cli::parse_from(["why", "context-inject"]);
+        assert_eq!(cli.command, Some(Command::ContextInject));
+        assert_eq!(
+            cli.parse_mode().expect("context-inject should parse"),
+            Mode::ContextInject
+        );
     }
 
     #[test]
