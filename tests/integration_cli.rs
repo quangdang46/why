@@ -4,8 +4,9 @@ use anyhow::Result;
 use anyhow::bail;
 use common::{
     assert_json_golden, assert_terminal_golden, setup_compat_shim_repo, setup_coupling_repo,
-    setup_ghost_repo, setup_hotfix_repo, setup_javascript_repo, setup_python_repo,
-    setup_sparse_repo, setup_split_repo, setup_timebomb_repo, setup_typescript_repo,
+    setup_ghost_repo, setup_hotfix_repo, setup_javascript_repo, setup_outage_repo,
+    setup_python_repo, setup_sparse_repo, setup_split_repo, setup_timebomb_repo,
+    setup_typescript_repo,
 };
 use serde_json::Value;
 use std::fs;
@@ -752,6 +753,73 @@ fn coverage_gap_subcommand_renders_terminal_summary() -> Result<()> {
     assert!(stdout.contains("process_payment"));
     assert!(stdout.contains("coverage   0.0%") || stdout.contains("coverage  0.0%"));
     assert!(stdout.contains("risk flags:"));
+    assert!(stdout.contains("Notes"));
+
+    Ok(())
+}
+
+#[test]
+fn explain_outage_subcommand_returns_ranked_json_for_fixture_repo() -> Result<()> {
+    let repo = setup_outage_repo()?;
+    let output = repo.run_why(&[
+        "explain-outage",
+        "--from",
+        "2024-01-02T00:00",
+        "--to",
+        "2024-01-03T23:59",
+        "--limit",
+        "5",
+        "--json",
+    ])?;
+    ensure_success(&output)?;
+
+    let parsed: Value = serde_json::from_str(&repo.stdout(&output))?;
+    assert_eq!(
+        parsed["findings"].as_array().map(|items| items.len()),
+        Some(2)
+    );
+    assert_eq!(parsed["findings"][0]["risk_level"], "HIGH");
+    assert!(
+        parsed["findings"][0]["summary"]
+            .as_str()
+            .is_some_and(|text| text.contains("hotfix: rollback auth guard after outage"))
+    );
+    assert_eq!(parsed["findings"][0]["blast_radius_files"], 2);
+    assert_eq!(parsed["findings"][0]["issue_refs"][0], "#42");
+    assert!(
+        parsed["findings"][0]["changed_paths"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|path| path == "src/auth.rs"))
+    );
+    assert!(
+        parsed["notes"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
+
+    Ok(())
+}
+
+#[test]
+fn explain_outage_subcommand_renders_terminal_summary() -> Result<()> {
+    let repo = setup_outage_repo()?;
+    let output = repo.run_why(&[
+        "explain-outage",
+        "--from",
+        "2024-01-02T00:00",
+        "--to",
+        "2024-01-03T23:59",
+        "--limit",
+        "5",
+    ])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    assert!(stdout.contains("Top 5 outage archaeology findings"));
+    assert!(stdout.contains("hotfix: rollback auth guard after outage (#42)"));
+    assert!(stdout.contains("blast radius: 2 file(s)"));
+    assert!(stdout.contains("issue refs: #42"));
+    assert!(stdout.contains("guidance:"));
     assert!(stdout.contains("Notes"));
 
     Ok(())

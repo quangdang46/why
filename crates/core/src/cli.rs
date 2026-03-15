@@ -7,7 +7,7 @@ use why_locator::{QueryTarget, parse_target};
 #[command(name = "why")]
 #[command(
     about = "Ask your codebase why a line, range, symbol, or repo hotspot exists",
-    after_help = "Examples:\n  why src/auth.rs:42\n  why src/auth.rs --lines 40:45 --no-llm\n  why src/auth.rs:verify_token --json\n  why src/auth.rs:verify_token --annotate\n  why src/auth.rs:AuthService::login --team\n  why src/auth.rs:verify_token --blame-chain\n  why src/auth.rs:verify_token --evolution\n  why hotspots --limit 10\n  why health\n  why health --ci 80\n  why pr-template\n  why diff-review --no-llm\n  why coverage-gap --coverage lcov.info\n  why ghost --limit 10\n  why onboard --limit 10\n  why time-bombs --age-days 180\n  eval \"$(why context-inject)\""
+    after_help = "Examples:\n  why src/auth.rs:42\n  why src/auth.rs --lines 40:45 --no-llm\n  why src/auth.rs:verify_token --json\n  why src/auth.rs:verify_token --annotate\n  why src/auth.rs:AuthService::login --team\n  why src/auth.rs:verify_token --blame-chain\n  why src/auth.rs:verify_token --evolution\n  why hotspots --limit 10\n  why health\n  why health --ci 80\n  why pr-template\n  why diff-review --no-llm\n  why explain-outage --from 2025-11-03T14:00 --to 2025-11-03T16:30\n  why coverage-gap --coverage lcov.info\n  why ghost --limit 10\n  why onboard --limit 10\n  why time-bombs --age-days 180\n  eval \"$(why context-inject)\""
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -100,6 +100,24 @@ pub enum Command {
     },
     /// Generate a reviewer-friendly PR template from the staged diff.
     PrTemplate {
+        /// Emit machine-readable output.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Rank suspicious commits inside a bounded incident window.
+    ExplainOutage {
+        /// Inclusive window start timestamp in ISO-8601 form (for example 2025-11-03T14:00).
+        #[arg(long, value_name = "TIMESTAMP")]
+        from: String,
+
+        /// Inclusive window end timestamp in ISO-8601 form (for example 2025-11-03T16:30).
+        #[arg(long, value_name = "TIMESTAMP")]
+        to: String,
+
+        /// Maximum number of findings to return.
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+
         /// Emit machine-readable output.
         #[arg(long)]
         json: bool,
@@ -219,6 +237,12 @@ pub enum Mode {
         ci: Option<u32>,
     },
     PrTemplate {
+        json: bool,
+    },
+    ExplainOutage {
+        from: String,
+        to: String,
+        limit: usize,
         json: bool,
     },
     DiffReview {
@@ -383,6 +407,42 @@ impl Cli {
                     bail!("the pr-template subcommand does not accept query flags or a target");
                 }
                 Ok(Mode::PrTemplate { json })
+            }
+            Some(Command::ExplainOutage {
+                from,
+                to,
+                limit,
+                json,
+            }) => {
+                if self.target.is_some()
+                    || self.lines.is_some()
+                    || self.no_llm
+                    || self.no_cache
+                    || self.split
+                    || self.coupled
+                    || self.since.is_some()
+                    || self.team
+                    || self.blame_chain
+                    || self.evolution
+                    || self.annotate
+                {
+                    bail!("the explain-outage subcommand does not accept query flags or a target");
+                }
+                if from.trim().is_empty() {
+                    bail!("--from must not be empty");
+                }
+                if to.trim().is_empty() {
+                    bail!("--to must not be empty");
+                }
+                if limit == 0 {
+                    bail!("--limit must be greater than zero");
+                }
+                Ok(Mode::ExplainOutage {
+                    from: from.trim().to_string(),
+                    to: to.trim().to_string(),
+                    limit,
+                    json,
+                })
             }
             Some(Command::DiffReview {
                 json,
@@ -895,6 +955,51 @@ mod tests {
     }
 
     #[test]
+    fn parses_explain_outage_subcommand() {
+        let cli = Cli::parse_from([
+            "why",
+            "explain-outage",
+            "--from",
+            "2025-11-03T14:00",
+            "--to",
+            "2025-11-03T16:30",
+            "--limit",
+            "7",
+            "--json",
+        ]);
+        assert_eq!(
+            cli.parse_mode().expect("explain-outage should parse"),
+            Mode::ExplainOutage {
+                from: "2025-11-03T14:00".into(),
+                to: "2025-11-03T16:30".into(),
+                limit: 7,
+                json: true,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_explain_outage_with_defaults() {
+        let cli = Cli::parse_from([
+            "why",
+            "explain-outage",
+            "--from",
+            "2025-11-03T14:00",
+            "--to",
+            "2025-11-03T16:30",
+        ]);
+        assert_eq!(
+            cli.parse_mode().expect("explain-outage should parse"),
+            Mode::ExplainOutage {
+                from: "2025-11-03T14:00".into(),
+                to: "2025-11-03T16:30".into(),
+                limit: 10,
+                json: false,
+            }
+        );
+    }
+
+    #[test]
     fn parses_diff_review_subcommand() {
         let cli = Cli::parse_from([
             "why",
@@ -958,11 +1063,7 @@ mod tests {
         let error = cli
             .parse_mode()
             .expect_err("diff-review should reject empty github refs");
-        assert!(
-            error
-                .to_string()
-                .contains("--github-ref must not be empty")
-        );
+        assert!(error.to_string().contains("--github-ref must not be empty"));
     }
 
     #[test]
@@ -1009,11 +1110,7 @@ mod tests {
         let error = cli
             .parse_mode()
             .expect_err("diff-review should reject blank github refs");
-        assert!(
-            error
-                .to_string()
-                .contains("--github-ref must not be empty")
-        );
+        assert!(error.to_string().contains("--github-ref must not be empty"));
     }
 
     #[test]
@@ -1288,6 +1385,79 @@ mod tests {
                 .to_string()
                 .contains("unexpected argument '--no-cache' found")
         );
+    }
+
+    #[test]
+    fn rejects_query_flags_for_explain_outage() {
+        let error = Cli::try_parse_from([
+            "why",
+            "explain-outage",
+            "--from",
+            "2025-11-03T14:00",
+            "--to",
+            "2025-11-03T16:30",
+            "--no-cache",
+        ])
+        .expect_err("clap should reject query flags for explain-outage");
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--no-cache' found")
+        );
+    }
+
+    #[test]
+    fn rejects_zero_limit_for_explain_outage() {
+        let cli = Cli::parse_from([
+            "why",
+            "explain-outage",
+            "--from",
+            "2025-11-03T14:00",
+            "--to",
+            "2025-11-03T16:30",
+            "--limit",
+            "0",
+        ]);
+        let error = cli
+            .parse_mode()
+            .expect_err("explain-outage should reject a zero limit");
+        assert!(
+            error
+                .to_string()
+                .contains("--limit must be greater than zero")
+        );
+    }
+
+    #[test]
+    fn rejects_empty_from_for_explain_outage() {
+        let cli = Cli::parse_from([
+            "why",
+            "explain-outage",
+            "--from",
+            "   ",
+            "--to",
+            "2025-11-03T16:30",
+        ]);
+        let error = cli
+            .parse_mode()
+            .expect_err("explain-outage should reject blank from values");
+        assert!(error.to_string().contains("--from must not be empty"));
+    }
+
+    #[test]
+    fn rejects_empty_to_for_explain_outage() {
+        let cli = Cli::parse_from([
+            "why",
+            "explain-outage",
+            "--from",
+            "2025-11-03T14:00",
+            "--to",
+            "   ",
+        ]);
+        let error = cli
+            .parse_mode()
+            .expect_err("explain-outage should reject blank to values");
+        assert!(error.to_string().contains("--to must not be empty"));
     }
 
     #[test]

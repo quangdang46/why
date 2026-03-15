@@ -7,6 +7,7 @@ use clap_complete::{Generator, Shell, generate};
 use clap_mangen::Man;
 use cli::{Cli, CompletionShell, Mode, QueryRequest};
 use git2::Repository;
+use time::{OffsetDateTime, PrimitiveDateTime};
 use why_annotator::writer::annotate_file;
 use why_archaeologist::{
     ArchaeologyResult, BlameChainResult, EvolutionHistoryResult, TeamReport, analyze_blame_chain,
@@ -20,8 +21,8 @@ use why_evidence::{
 };
 use why_locator::QueryKind;
 use why_scanner::{
-    CouplingReport, CoverageGapReport, DiffReviewPlan, DiffReviewTarget, GhostFinding,
-    HealthDelta, HealthReport, HotspotFinding, OnboardFinding, PrTemplateReport, Severity,
+    CouplingReport, CoverageGapReport, DiffReviewPlan, DiffReviewTarget, GhostFinding, HealthDelta,
+    HealthReport, HotspotFinding, OnboardFinding, OutageReport, PrTemplateReport, Severity,
     TimeBombFinding, TimeBombKind,
 };
 use why_splitter::SplitSuggestion;
@@ -77,6 +78,15 @@ fn run() -> Result<ExitStatus> {
         Mode::Health { json, ci } => run_health(json, ci),
         Mode::PrTemplate { json } => {
             run_pr_template(json)?;
+            Ok(ExitStatus::Success)
+        }
+        Mode::ExplainOutage {
+            from,
+            to,
+            limit,
+            json,
+        } => {
+            run_explain_outage(&from, &to, limit, json)?;
             Ok(ExitStatus::Success)
         }
         Mode::DiffReview {
@@ -241,6 +251,25 @@ fn run_pr_template(json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print!("{}", render_pr_template_markdown(&report));
+    }
+
+    Ok(())
+}
+
+fn run_explain_outage(from: &str, to: &str, limit: usize, json: bool) -> Result<()> {
+    let window_start_ts = parse_outage_timestamp(from, "--from")?;
+    let window_end_ts = parse_outage_timestamp(to, "--to")?;
+    if window_end_ts < window_start_ts {
+        anyhow::bail!("--to must be greater than or equal to --from");
+    }
+
+    let cwd = std::env::current_dir()?;
+    let report = why_scanner::scan_outage_window(&cwd, window_start_ts, window_end_ts, limit)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        render_outage_terminal(&report, limit);
     }
 
     Ok(())
@@ -811,6 +840,61 @@ fn render_pr_template_markdown(report: &PrTemplateReport) -> String {
     lines.join("\n")
 }
 
+fn render_outage_terminal(report: &OutageReport, limit: usize) {
+    println!(
+        "Top {limit} outage archaeology findings in {} – {}",
+        format_outage_timestamp(report.window_start_ts),
+        format_outage_timestamp(report.window_end_ts)
+    );
+    println!();
+
+    if report.findings.is_empty() {
+        println!("No source commits were found in the requested outage window.");
+    } else {
+        for (index, finding) in report.findings.iter().enumerate() {
+            let issue_refs = if finding.issue_refs.is_empty() {
+                "none".to_string()
+            } else {
+                finding.issue_refs.join(", ")
+            };
+            println!(
+                "  {:>2}. {}  {}  {}  score {:.2}",
+                index + 1,
+                finding.short_oid,
+                finding.date,
+                finding.risk_level.as_str(),
+                finding.score
+            );
+            println!("      summary: {}", finding.summary);
+            println!("      author: {}", finding.author);
+            println!("      blast radius: {} file(s)", finding.blast_radius_files);
+            println!("      issue refs: {issue_refs}");
+            if !finding.changed_paths.is_empty() {
+                let preview = finding
+                    .changed_paths
+                    .iter()
+                    .take(3)
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                println!("      paths: {preview}");
+            }
+            println!("      guidance: {}", finding.change_guidance);
+            for note in &finding.notes {
+                println!("      note: {note}");
+            }
+        }
+    }
+
+    if !report.notes.is_empty() {
+        println!();
+        println!("Notes");
+        for note in &report.notes {
+            println!("  - {note}");
+        }
+    }
+}
+
 fn render_diff_review_markdown(report: &DiffReviewReport) -> String {
     let mut lines = vec!["# Diff review".to_string(), String::new()];
 
@@ -1093,6 +1177,42 @@ fn kind_emoji(kind: TimeBombKind) -> &'static str {
     }
 }
 
+fn parse_outage_timestamp(raw: &str, flag: &str) -> Result<i64> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("{flag} must not be empty");
+    }
+
+    OffsetDateTime::parse(
+        trimmed,
+        &time::format_description::well_known::Iso8601::DEFAULT,
+    )
+    .map(|value| value.unix_timestamp())
+    .or_else(|_| {
+        PrimitiveDateTime::parse(
+            trimmed,
+            &time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]"),
+        )
+        .map(|value| value.assume_utc().unix_timestamp())
+    })
+    .map_err(|_| anyhow!("{flag} must be a valid ISO-8601 timestamp"))
+}
+
+fn format_outage_timestamp(timestamp: i64) -> String {
+    OffsetDateTime::from_unix_timestamp(timestamp)
+        .map(|value| {
+            format!(
+                "{:04}-{:02}-{:02} {:02}:{:02}",
+                value.year(),
+                u8::from(value.month()),
+                value.day(),
+                value.hour(),
+                value.minute()
+            )
+        })
+        .unwrap_or_else(|_| timestamp.to_string())
+}
+
 fn sorted_signal_entries(signals: &std::collections::HashMap<String, u32>) -> Vec<(String, u32)> {
     let mut entries = signals
         .iter()
@@ -1290,19 +1410,21 @@ fn synthesize_diff_review(
     collected: &DiffReviewCollected,
     no_llm: bool,
 ) -> Result<DiffReviewReport> {
-    let fallback = || heuristic_diff_review_report(
-        format!(
-            "Heuristic diff review of {} staged target(s).",
-            collected.entries.len()
-        ),
-        collected
-            .entries
-            .iter()
-            .map(|entry| heuristic_diff_review_finding(entry))
-            .collect(),
-        heuristic_diff_review_focus(&collected),
-        collected.notes.clone(),
-    );
+    let fallback = || {
+        heuristic_diff_review_report(
+            format!(
+                "Heuristic diff review of {} staged target(s).",
+                collected.entries.len()
+            ),
+            collected
+                .entries
+                .iter()
+                .map(|entry| heuristic_diff_review_finding(entry))
+                .collect(),
+            heuristic_diff_review_focus(&collected),
+            collected.notes.clone(),
+        )
+    };
 
     if no_llm {
         return Ok(fallback());
@@ -1433,12 +1555,14 @@ fn heuristic_diff_review_finding(entry: &DiffReviewCollectedTarget) -> DiffRevie
             .result
             .commits
             .first()
-            .map(|commit| format!(
-                "Recent history includes {} ({}) and {} relevant commit(s) overall.",
-                commit.summary,
-                commit.date,
-                entry.result.commits.len()
-            ))
+            .map(|commit| {
+                format!(
+                    "Recent history includes {} ({}) and {} relevant commit(s) overall.",
+                    commit.summary,
+                    commit.date,
+                    entry.result.commits.len()
+                )
+            })
             .unwrap_or_else(|| "No relevant commit history was available for this target.".into()),
     }
 }
@@ -1448,10 +1572,12 @@ fn heuristic_diff_review_focus(collected: &DiffReviewCollected) -> Vec<String> {
         .entries
         .iter()
         .filter(|entry| matches!(entry.result.risk_level, why_archaeologist::RiskLevel::HIGH))
-        .map(|entry| format!(
-            "Review {} carefully because archaeology marked it HIGH risk.",
-            format_target_label(&entry.target.target)
-        ))
+        .map(|entry| {
+            format!(
+                "Review {} carefully because archaeology marked it HIGH risk.",
+                format_target_label(&entry.target.target)
+            )
+        })
         .collect::<Vec<_>>();
 
     if focus.is_empty() && !collected.entries.is_empty() {
@@ -1485,7 +1611,9 @@ fn post_diff_review_comment(
 ) -> Result<GitHubComment> {
     let remote_name = config.github.remote.trim();
     if remote_name.is_empty() {
-        return Err(anyhow!("GitHub comment posting requires a configured GitHub remote"));
+        return Err(anyhow!(
+            "GitHub comment posting requires a configured GitHub remote"
+        ));
     }
 
     let remote = repo
@@ -1649,19 +1777,17 @@ fn format_why_report(target: &str, report: &WhyReport, cached: bool) -> String {
 mod tests {
     use super::{
         ExitStatus, HealthReport, build_github_enrichment, compute_health_delta,
-        diff_review_mode_label, format_why_report, parse_synth_risk, render_diff_review_markdown,
-        render_health_terminal, render_pr_template_markdown, sorted_signal_entries,
-        synthesize_diff_review,
+        diff_review_mode_label, format_outage_timestamp, format_why_report, parse_outage_timestamp,
+        parse_synth_risk, render_diff_review_markdown, render_health_terminal,
+        render_outage_terminal, render_pr_template_markdown, sorted_signal_entries,
     };
     use git2::Repository;
     use std::collections::HashMap;
     use std::fs;
-    use why_archaeologist::{ArchaeologyResult, CommitEvidence, LocalContext, OutputTarget};
+    use why_archaeologist::CommitEvidence;
     use why_cache::HealthSnapshot;
     use why_context::{GitHubConfig, WhyConfig};
-    use why_evidence::EvidencePack;
-    use why_locator::{QueryKind, QueryTarget};
-    use why_scanner::{DiffReviewPlan, DiffReviewTarget, StagedChange, StagedDiffFile, StagedLineRange};
+    use why_scanner::{OutageFinding, OutageReport};
     use why_synthesizer::{
         ConfidenceLevel, DiffReviewFinding, DiffReviewReport, ReportMode, RiskLevel, WhyReport,
     };
@@ -1818,6 +1944,53 @@ mod tests {
     }
 
     #[test]
+    fn parse_outage_timestamp_accepts_partial_iso8601() {
+        let ts =
+            parse_outage_timestamp("2025-11-03T14:00", "--from").expect("timestamp should parse");
+        assert_eq!(format_outage_timestamp(ts), "2025-11-03 14:00");
+    }
+
+    #[test]
+    fn parse_outage_timestamp_rejects_invalid_values() {
+        let error = parse_outage_timestamp("not-a-time", "--from")
+            .expect_err("invalid timestamps should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("--from must be a valid ISO-8601 timestamp")
+        );
+    }
+
+    #[test]
+    fn render_outage_terminal_handles_findings() {
+        let report = OutageReport {
+            window_start_ts: parse_outage_timestamp("2025-11-03T14:00", "--from").unwrap(),
+            window_end_ts: parse_outage_timestamp("2025-11-03T16:30", "--to").unwrap(),
+            findings: vec![OutageFinding {
+                oid: "abcdef1234567890".into(),
+                short_oid: "abcdef1".into(),
+                author: "alice".into(),
+                date: "2025-11-03".into(),
+                summary: "hotfix: rollback auth guard after outage (#42)".into(),
+                risk_level: why_archaeologist::RiskLevel::HIGH,
+                risk_summary: why_archaeologist::RiskLevel::HIGH.summary().into(),
+                change_guidance: why_archaeologist::RiskLevel::HIGH.change_guidance().into(),
+                blast_radius_files: 2,
+                changed_paths: vec![
+                    std::path::PathBuf::from("src/auth.rs"),
+                    std::path::PathBuf::from("src/util.rs"),
+                ],
+                issue_refs: vec!["#42".into()],
+                score: 4.2,
+                notes: vec!["Representative touched paths: src/auth.rs, src/util.rs.".into()],
+            }],
+            notes: vec!["Scores are suggestive only.".into()],
+        };
+
+        render_outage_terminal(&report, 10);
+    }
+
+    #[test]
     fn render_diff_review_markdown_includes_expected_sections() {
         let markdown = render_diff_review_markdown(&DiffReviewReport {
             summary: "The staged diff touches one risky auth path.".into(),
@@ -1827,16 +2000,15 @@ mod tests {
                 symbol: Some("authenticate".into()),
                 risk_level: RiskLevel::HIGH,
                 confidence: ConfidenceLevel::MediumHigh,
-                why_it_matters: "The function was repeatedly patched for session regressions.".into(),
+                why_it_matters: "The function was repeatedly patched for session regressions."
+                    .into(),
             }],
             reviewer_focus: vec!["Verify logout invalidation coverage.".into()],
             unknowns: vec!["No linked incident doc was present in sampled commits.".into()],
             notes: vec!["Heuristic fallback was not needed.".into()],
             mode: ReportMode::Synthesized,
             cost_usd: Some(0.0012),
-            github_comment_url: Some(
-                "https://github.com/acme/why/issues/42#issuecomment-1".into(),
-            ),
+            github_comment_url: Some("https://github.com/acme/why/issues/42#issuecomment-1".into()),
         });
 
         assert!(markdown.contains("# Diff review"));
@@ -1845,7 +2017,10 @@ mod tests {
         assert!(markdown.contains("## Reviewer focus"));
         assert!(markdown.contains("## Unknowns"));
         assert!(markdown.contains("## Notes"));
-        assert!(markdown.contains("GitHub comment: https://github.com/acme/why/issues/42#issuecomment-1"));
+        assert!(
+            markdown
+                .contains("GitHub comment: https://github.com/acme/why/issues/42#issuecomment-1")
+        );
         assert!(markdown.contains("Mode: synthesized"));
         assert!(markdown.contains("Estimated cost: ~$0.0012"));
     }
@@ -1853,7 +2028,10 @@ mod tests {
     #[test]
     fn diff_review_mode_label_matches_report_modes() {
         assert_eq!(diff_review_mode_label(ReportMode::Heuristic), "heuristic");
-        assert_eq!(diff_review_mode_label(ReportMode::Synthesized), "synthesized");
+        assert_eq!(
+            diff_review_mode_label(ReportMode::Synthesized),
+            "synthesized"
+        );
     }
 
     #[test]

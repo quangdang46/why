@@ -39,3 +39,4 @@ why-hooks = { path = "../hooks" }
 why-shell = { path = "../shell" }
 why-lsp = { path = "../lsp" }
 tokio.workspace = true
+time = { workspace = true, features = ["macros", "parsing"] }

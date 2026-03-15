@@ -217,6 +217,11 @@ pub fn setup_ghost_repo() -> Result<FixtureRepo> {
 }
 
 #[allow(dead_code)]
+pub fn setup_outage_repo() -> Result<FixtureRepo> {
+    setup_fixture("outage_repo")
+}
+
+#[allow(dead_code)]
 pub fn setup_split_repo() -> Result<FixtureRepo> {
     setup_fixture("split_repo")
 }
