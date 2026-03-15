@@ -1865,9 +1865,9 @@ fn synthesize_diff_review(
             collected
                 .entries
                 .iter()
-                .map(|entry| heuristic_diff_review_finding(entry))
+                .map(heuristic_diff_review_finding)
                 .collect(),
-            heuristic_diff_review_focus(&collected),
+            heuristic_diff_review_focus(collected),
             collected.notes.clone(),
         )
     };

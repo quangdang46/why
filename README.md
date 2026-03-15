@@ -273,6 +273,7 @@ Current repo state:
 - `--no-cache` bypasses cache reads and forces a fresh query
 - the cache file also stores rolling health snapshots for future trend-oriented reporting
 - up to 52 health snapshots are retained
+- CI enforces health regression budgets with `.github/health-baseline.json` and compares pull requests against the base branch's baseline when available
 
 Operator expectations:
 - treat `.why/` as local runtime state, not source-controlled project state
@@ -286,6 +287,27 @@ No persistent index — `why` reads git history on demand.
 Fast enough for interactive use (~1–3 seconds per query).
 
 ---
+
+### Health regression gate in CI
+
+GitHub Actions runs `why health` with a checked-in baseline and fails on any debt-score or signal regression:
+
+```bash
+cargo run -p why-core --bin why -- health \
+  --baseline-file .github/health-baseline.json \
+  --require-baseline \
+  --max-regression 0 \
+  --max-signal-regression time_bombs=0 \
+  --max-signal-regression high_risk_files=0 \
+  --max-signal-regression hotspot_files=0 \
+  --max-signal-regression stale_hacks=0
+```
+
+Update `.github/health-baseline.json` intentionally after a known-good mainline shift by re-running:
+
+```bash
+cargo run -p why-core --bin why -- health --json --write-baseline .github/health-baseline.json
+```
 
 ## Roadmap
 

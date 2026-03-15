@@ -41,6 +41,51 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --all-features
 
+  health-gate:
+    name: Health regression gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Select health baseline
+        id: health-baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline_path="$RUNNER_TEMP/health-baseline.json"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            if git fetch --no-tags --depth=1 origin "${{ github.base_ref }}" && git show FETCH_HEAD:.github/health-baseline.json > "$baseline_path" 2>/dev/null; then
+              echo "Using baseline from origin/${{ github.base_ref }}"
+            else
+              cp .github/health-baseline.json "$baseline_path"
+              echo "Using baseline from current checkout"
+            fi
+          else
+            cp .github/health-baseline.json "$baseline_path"
+            echo "Using baseline from current checkout"
+          fi
+          echo "path=$baseline_path" >> "$GITHUB_OUTPUT"
+
+      - name: Run health regression gate
+        run: |
+          cargo run -p why-core --bin why -- health \
+            --baseline-file "${{ steps.health-baseline.outputs.path }}" \
+            --require-baseline \
+            --max-regression 0 \
+            --max-signal-regression time_bombs=0 \
+            --max-signal-regression high_risk_files=0 \
+            --max-signal-regression hotspot_files=0 \
+            --max-signal-regression stale_hacks=0
+
   snapshots:
     name: Snapshot tests
     runs-on: ubuntu-latest

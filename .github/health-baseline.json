@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "snapshot": {
+    "timestamp": 1773578981,
+    "debt_score": 48,
+    "signals": {
+      "high_risk_files": 12,
+      "stale_hacks": 0,
+      "time_bombs": 4,
+      "hotspot_files": 12
+    },
+    "head_hash": "503c79cf982ff0bdd582e404268c980fe90185ad",
+    "ref_name": "main"
+  }
+}
