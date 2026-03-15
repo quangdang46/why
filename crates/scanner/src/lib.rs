@@ -37,7 +37,10 @@ pub use health::{HealthDelta, HealthReport, scan_health};
 pub use hotspots::{HotspotFinding, scan_hotspots};
 pub use onboard::{OnboardFinding, scan_onboard};
 pub use outage::{OutageFinding, OutageReport, scan_outage, scan_outage_window};
-pub use pr_template::{PrTemplateReport, StagedChange, StagedFile, scan_pr_template};
+pub use pr_template::{
+    DiffReviewPlan, DiffReviewTarget, PrTemplateReport, StagedChange, StagedDiffFile,
+    StagedFile, StagedLineRange, scan_diff_review, scan_pr_template,
+};
 pub use time_bombs::{Severity, TimeBombFinding, TimeBombKind, scan_time_bombs};
 
 pub(crate) fn is_source_file(path: &Path) -> bool {

@@ -1,11 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use git2::{Delta, DiffOptions, Repository};
+use git2::{Delta, DiffOptions, Patch, Repository};
 use serde::Serialize;
+use why_locator::{QueryKind, QueryTarget, SupportedLanguage, list_all_symbols};
 
-use crate::{HotspotFinding, TimeBombFinding, scan_hotspots, scan_time_bombs};
+use crate::{HotspotFinding, TimeBombFinding, is_source_file, scan_hotspots, scan_time_bombs};
 
 const TIME_BOMB_AGE_DAYS: i64 = 180;
 
@@ -22,6 +24,33 @@ pub struct PrTemplateReport {
 pub struct StagedFile {
     pub path: PathBuf,
     pub change: StagedChange,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct StagedLineRange {
+    pub start_line: u32,
+    pub end_line: u32,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct StagedDiffFile {
+    pub path: PathBuf,
+    pub change: StagedChange,
+    pub changed_ranges: Vec<StagedLineRange>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct DiffReviewTarget {
+    pub target: QueryTarget,
+    pub symbol: Option<String>,
+    pub change: StagedChange,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct DiffReviewPlan {
+    pub staged_files: Vec<StagedDiffFile>,
+    pub targets: Vec<DiffReviewTarget>,
+    pub skipped: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -92,7 +121,42 @@ pub fn scan_pr_template(repo_root: &Path) -> Result<PrTemplateReport> {
     })
 }
 
+pub fn scan_diff_review(repo_root: &Path) -> Result<DiffReviewPlan> {
+    let repo = Repository::discover(repo_root).with_context(|| {
+        format!(
+            "failed to discover git repository from {}",
+            repo_root.display()
+        )
+    })?;
+    let workdir = repo
+        .workdir()
+        .context("repository does not have a working directory")?;
+    let staged_files = staged_diff_files(&repo)?;
+
+    let mut targets = Vec::new();
+    let mut skipped = Vec::new();
+    for file in &staged_files {
+        targets.extend(build_diff_review_targets(workdir, file, &mut skipped)?);
+    }
+
+    Ok(DiffReviewPlan {
+        staged_files,
+        targets,
+        skipped,
+    })
+}
+
 fn staged_files(repo: &Repository) -> Result<Vec<StagedFile>> {
+    Ok(staged_diff_files(repo)?
+        .into_iter()
+        .map(|file| StagedFile {
+            path: file.path,
+            change: file.change,
+        })
+        .collect())
+}
+
+fn staged_diff_files(repo: &Repository) -> Result<Vec<StagedDiffFile>> {
     let head_tree = repo.head().ok().and_then(|head| head.peel_to_tree().ok());
     let index = repo.index().context("failed to read git index")?;
     let mut options = DiffOptions::new();
@@ -102,8 +166,9 @@ fn staged_files(repo: &Repository) -> Result<Vec<StagedFile>> {
 
     let mut files = diff
         .deltas()
-        .filter_map(|delta| staged_file_from_delta(&delta))
-        .collect::<Vec<_>>();
+        .enumerate()
+        .filter_map(|(index, delta)| staged_diff_file_from_delta(&diff, index, &delta))
+        .collect::<Result<Vec<_>>>()?;
     files.sort_by(|left, right| {
         left.path
             .cmp(&right.path)
@@ -113,7 +178,11 @@ fn staged_files(repo: &Repository) -> Result<Vec<StagedFile>> {
     Ok(files)
 }
 
-fn staged_file_from_delta(delta: &git2::DiffDelta<'_>) -> Option<StagedFile> {
+fn staged_diff_file_from_delta(
+    diff: &git2::Diff<'_>,
+    index: usize,
+    delta: &git2::DiffDelta<'_>,
+) -> Option<Result<StagedDiffFile>> {
     let change = match delta.status() {
         Delta::Added => StagedChange::Added,
         Delta::Modified => StagedChange::Modified,
@@ -130,7 +199,168 @@ fn staged_file_from_delta(delta: &git2::DiffDelta<'_>) -> Option<StagedFile> {
         .or_else(|| delta.old_file().path())?
         .to_path_buf();
 
-    Some(StagedFile { path, change })
+    Some(staged_ranges_for_delta(diff, index).map(|changed_ranges| StagedDiffFile {
+        path,
+        change,
+        changed_ranges,
+    }))
+}
+
+fn staged_ranges_for_delta(diff: &git2::Diff<'_>, index: usize) -> Result<Vec<StagedLineRange>> {
+    let Some(patch) = Patch::from_diff(diff, index).context("failed to inspect staged patch")? else {
+        return Ok(Vec::new());
+    };
+
+    let mut ranges = Vec::new();
+    for hunk_index in 0..patch.num_hunks() {
+        let (hunk, _) = patch
+            .hunk(hunk_index)
+            .with_context(|| format!("failed to inspect staged patch hunk {}", hunk_index + 1))?;
+        ranges.push(staged_line_range_from_hunk(&hunk));
+    }
+    ranges.sort_by(|left, right| {
+        left.start_line
+            .cmp(&right.start_line)
+            .then(left.end_line.cmp(&right.end_line))
+    });
+    ranges.dedup();
+    Ok(ranges)
+}
+
+fn staged_line_range_from_hunk(hunk: &git2::DiffHunk<'_>) -> StagedLineRange {
+    let start_line = hunk.new_start().max(1);
+    let end_line = if hunk.new_lines() == 0 {
+        start_line
+    } else {
+        start_line + hunk.new_lines() - 1
+    };
+    StagedLineRange {
+        start_line,
+        end_line,
+    }
+}
+
+fn build_diff_review_targets(
+    workdir: &Path,
+    file: &StagedDiffFile,
+    skipped: &mut Vec<String>,
+) -> Result<Vec<DiffReviewTarget>> {
+    if matches!(file.change, StagedChange::Deleted) {
+        skipped.push(format!(
+            "Skipped {} because deleted files have no working-tree source to analyze.",
+            file.path.display()
+        ));
+        return Ok(Vec::new());
+    }
+
+    if !is_source_file(&file.path) {
+        skipped.push(format!(
+            "Skipped {} because it is not a supported source file.",
+            file.path.display()
+        ));
+        return Ok(Vec::new());
+    }
+
+    let absolute_path = workdir.join(&file.path);
+    if !absolute_path.is_file() {
+        skipped.push(format!(
+            "Skipped {} because the working-tree file is unavailable.",
+            file.path.display()
+        ));
+        return Ok(Vec::new());
+    }
+
+    let language = match SupportedLanguage::detect(&absolute_path) {
+        Ok(language) => language,
+        Err(_) => {
+            skipped.push(format!(
+                "Skipped {} because its language is not supported for symbol analysis.",
+                file.path.display()
+            ));
+            return Ok(Vec::new());
+        }
+    };
+
+    let source = fs::read_to_string(&absolute_path)
+        .with_context(|| format!("failed to read source file {}", absolute_path.display()))?;
+    build_diff_review_targets_for_source(file, language, &source, skipped)
+}
+
+fn build_diff_review_targets_for_source(
+    file: &StagedDiffFile,
+    language: SupportedLanguage,
+    source: &str,
+    skipped: &mut Vec<String>,
+) -> Result<Vec<DiffReviewTarget>> {
+    let symbols = list_all_symbols(language, source)?;
+    let mut targets = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    for (symbol, start_line, end_line) in symbols {
+        if !overlaps_changed_ranges(start_line, end_line, &file.changed_ranges) {
+            continue;
+        }
+
+        if !seen.insert((start_line, end_line, Some(symbol.clone()))) {
+            continue;
+        }
+
+        targets.push(DiffReviewTarget {
+            target: QueryTarget {
+                path: file.path.clone(),
+                start_line: Some(start_line),
+                end_line: Some(end_line),
+                symbol: None,
+                query_kind: QueryKind::Range,
+            },
+            symbol: Some(symbol),
+            change: file.change,
+        });
+    }
+
+    if !targets.is_empty() {
+        return Ok(targets);
+    }
+
+    if file.changed_ranges.is_empty() {
+        skipped.push(format!(
+            "Skipped {} because the staged diff did not expose analyzable changed line ranges.",
+            file.path.display()
+        ));
+        return Ok(Vec::new());
+    }
+
+    for range in &file.changed_ranges {
+        if !seen.insert((range.start_line, range.end_line, None)) {
+            continue;
+        }
+
+        targets.push(DiffReviewTarget {
+            target: QueryTarget {
+                path: file.path.clone(),
+                start_line: Some(range.start_line),
+                end_line: Some(range.end_line),
+                symbol: None,
+                query_kind: QueryKind::Range,
+            },
+            symbol: None,
+            change: file.change,
+        });
+    }
+    skipped.push(format!(
+        "Fell back to line-range analysis for {} because no changed symbols could be resolved.",
+        file.path.display()
+    ));
+
+    Ok(targets)
+}
+
+fn overlaps_changed_ranges(start_line: u32, end_line: u32, ranges: &[StagedLineRange]) -> bool {
+    ranges.iter().any(|range| {
+        let overlap_start = start_line.max(range.start_line);
+        let overlap_end = end_line.min(range.end_line);
+        overlap_start <= overlap_end
+    })
 }
 
 fn build_title(staged_files: &[StagedFile]) -> String {
@@ -252,8 +482,12 @@ fn build_test_plan(staged_files: &[StagedFile]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{PrTemplateReport, StagedChange, StagedFile, build_title};
+    use super::{
+        DiffReviewTarget, PrTemplateReport, StagedChange, StagedDiffFile, StagedFile,
+        StagedLineRange, build_diff_review_targets_for_source, build_title,
+    };
     use std::path::PathBuf;
+    use why_locator::{QueryKind, SupportedLanguage};
 
     #[test]
     fn title_uses_single_file_change_when_available() {
@@ -275,5 +509,71 @@ mod tests {
         };
         let json = serde_json::to_string(&report).expect("report should serialize");
         assert!(json.contains("title_suggestion"));
+    }
+
+    #[test]
+    fn diff_review_targets_select_overlapping_symbols() {
+        let file = StagedDiffFile {
+            path: PathBuf::from("src/lib.rs"),
+            change: StagedChange::Modified,
+            changed_ranges: vec![StagedLineRange {
+                start_line: 5,
+                end_line: 5,
+            }],
+        };
+        let source = r#"fn alpha() {
+    let left = 1;
+}
+
+fn beta() {
+    let right = 2;
+}
+"#;
+        let mut skipped = Vec::new();
+
+        let targets =
+            build_diff_review_targets_for_source(&file, SupportedLanguage::Rust, source, &mut skipped)
+                .expect("diff review targets should build");
+
+        assert!(skipped.is_empty());
+        assert_eq!(
+            targets,
+            vec![DiffReviewTarget {
+                target: why_locator::QueryTarget {
+                    path: PathBuf::from("src/lib.rs"),
+                    start_line: Some(5),
+                    end_line: Some(7),
+                    symbol: None,
+                    query_kind: QueryKind::Range,
+                },
+                symbol: Some("beta".into()),
+                change: StagedChange::Modified,
+            }]
+        );
+    }
+
+    #[test]
+    fn diff_review_targets_fall_back_to_changed_ranges_when_no_symbol_matches() {
+        let file = StagedDiffFile {
+            path: PathBuf::from("src/lib.rs"),
+            change: StagedChange::Modified,
+            changed_ranges: vec![StagedLineRange {
+                start_line: 1,
+                end_line: 1,
+            }],
+        };
+        let source = "// crate docs only\n\nconst VALUE: usize = 1;\n";
+        let mut skipped = Vec::new();
+
+        let targets =
+            build_diff_review_targets_for_source(&file, SupportedLanguage::Rust, source, &mut skipped)
+                .expect("diff review targets should build");
+
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].symbol, None);
+        assert_eq!(targets[0].target.start_line, Some(1));
+        assert_eq!(targets[0].target.end_line, Some(1));
+        assert_eq!(skipped.len(), 1);
+        assert!(skipped[0].contains("Fell back to line-range analysis"));
     }
 }

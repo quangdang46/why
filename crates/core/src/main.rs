@@ -1,6 +1,6 @@
 mod cli;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use clap::CommandFactory;
 use clap::Parser;
 use clap_complete::{Generator, Shell, generate};
@@ -15,17 +15,21 @@ use why_archaeologist::{
 use why_cache::{Cache, HealthSnapshot};
 use why_context::load_config;
 use why_evidence::{
-    EvidenceCommit, EvidenceContext, EvidenceTarget, GitHubClient, GitHubEnrichment,
-    enrich_github_refs,
+    EvidenceCommit, EvidenceContext, EvidencePack, EvidenceTarget, GitHubClient, GitHubComment,
+    GitHubEnrichment, enrich_github_refs, parse_github_ref, select_single_github_ref,
 };
 use why_locator::QueryKind;
 use why_scanner::{
-    CouplingReport, CoverageGapReport, GhostFinding, HealthDelta, HealthReport, HotspotFinding,
-    OnboardFinding, PrTemplateReport, Severity, TimeBombFinding, TimeBombKind,
+    CouplingReport, CoverageGapReport, DiffReviewPlan, DiffReviewTarget, GhostFinding,
+    HealthDelta, HealthReport, HotspotFinding, OnboardFinding, PrTemplateReport, Severity,
+    TimeBombFinding, TimeBombKind,
 };
 use why_splitter::SplitSuggestion;
 use why_synthesizer::{
-    AnthropicClient, AnthropicRequest, WhyReport, heuristic_report, parse_response, prompt_contract,
+    AnthropicClient, AnthropicRequest, ConfidenceLevel, DiffReviewFinding, DiffReviewReport,
+    ReportMode, WhyReport, build_diff_review_prompt, build_system_prompt,
+    heuristic_diff_review_report, heuristic_report, parse_diff_review_response, parse_response,
+    prompt_contract,
 };
 
 fn main() {
@@ -73,6 +77,15 @@ fn run() -> Result<ExitStatus> {
         Mode::Health { json, ci } => run_health(json, ci),
         Mode::PrTemplate { json } => {
             run_pr_template(json)?;
+            Ok(ExitStatus::Success)
+        }
+        Mode::DiffReview {
+            json,
+            no_llm,
+            post_github_comment,
+            github_ref,
+        } => {
+            run_diff_review(json, no_llm, post_github_comment, github_ref.as_deref())?;
             Ok(ExitStatus::Success)
         }
         Mode::CoverageGap {
@@ -123,6 +136,20 @@ fn run() -> Result<ExitStatus> {
 enum ExitStatus {
     Success,
     HealthCiFailure { message: String },
+}
+
+#[derive(Debug, Clone)]
+struct DiffReviewCollectedTarget {
+    target: DiffReviewTarget,
+    result: ArchaeologyResult,
+    evidence_pack: EvidencePack,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DiffReviewCollected {
+    entries: Vec<DiffReviewCollectedTarget>,
+    issue_refs: Vec<String>,
+    notes: Vec<String>,
 }
 
 fn run_install_hooks(warn_only: bool) -> Result<()> {
@@ -214,6 +241,44 @@ fn run_pr_template(json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print!("{}", render_pr_template_markdown(&report));
+    }
+
+    Ok(())
+}
+
+fn run_diff_review(
+    json: bool,
+    no_llm: bool,
+    post_github_comment: bool,
+    github_ref_override: Option<&str>,
+) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let repo = Repository::discover(&cwd)?;
+    let config = load_config(&cwd)?;
+    let plan = why_scanner::scan_diff_review(&cwd)?;
+    let collected = collect_diff_review(&plan, &cwd, &repo, &config)?;
+    let mut report = synthesize_diff_review(&plan, &collected, no_llm)?;
+
+    let markdown = render_diff_review_markdown(&report);
+    if post_github_comment {
+        let comment = post_diff_review_comment(
+            &config,
+            &repo,
+            github_ref_override,
+            collected.issue_refs.clone(),
+            &markdown,
+        )?;
+        report.github_comment_url = Some(comment.html_url.clone());
+        if !json {
+            println!("Posted GitHub comment: {}", comment.html_url);
+            println!();
+        }
+    }
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", render_diff_review_markdown(&report));
     }
 
     Ok(())
@@ -746,6 +811,68 @@ fn render_pr_template_markdown(report: &PrTemplateReport) -> String {
     lines.join("\n")
 }
 
+fn render_diff_review_markdown(report: &DiffReviewReport) -> String {
+    let mut lines = vec!["# Diff review".to_string(), String::new()];
+
+    lines.push("## Summary".to_string());
+    lines.push(report.summary.clone());
+    lines.push(String::new());
+
+    if let Some(url) = &report.github_comment_url {
+        lines.push(format!("GitHub comment: {url}"));
+        lines.push(String::new());
+    }
+
+    if !report.findings.is_empty() {
+        lines.push("## Findings".to_string());
+        for finding in &report.findings {
+            lines.push(format!(
+                "- {} — {} ({})",
+                finding.target,
+                finding.risk_level.as_str(),
+                finding.confidence.as_str()
+            ));
+            lines.push(format!("  - Path: {}", finding.path));
+            if let Some(symbol) = &finding.symbol {
+                lines.push(format!("  - Symbol: {symbol}"));
+            }
+            lines.push(format!("  - Why it matters: {}", finding.why_it_matters));
+        }
+        lines.push(String::new());
+    }
+
+    if !report.reviewer_focus.is_empty() {
+        lines.push("## Reviewer focus".to_string());
+        for item in &report.reviewer_focus {
+            lines.push(format!("- {item}"));
+        }
+        lines.push(String::new());
+    }
+
+    if !report.unknowns.is_empty() {
+        lines.push("## Unknowns".to_string());
+        for item in &report.unknowns {
+            lines.push(format!("- {item}"));
+        }
+        lines.push(String::new());
+    }
+
+    if !report.notes.is_empty() {
+        lines.push("## Notes".to_string());
+        for item in &report.notes {
+            lines.push(format!("- {item}"));
+        }
+        lines.push(String::new());
+    }
+
+    lines.push(format!("Mode: {}", diff_review_mode_label(report.mode)));
+    if let Some(cost_usd) = report.cost_usd {
+        lines.push(format!("Estimated cost: ~${cost_usd:.4}"));
+    }
+
+    lines.join("\n")
+}
+
 fn render_coverage_gap_terminal(report: &CoverageGapReport, limit: usize) {
     println!(
         "Top {limit} HIGH-risk functions at or below {:.1}% coverage",
@@ -1151,6 +1278,234 @@ fn parse_synth_risk(value: &str) -> why_synthesizer::RiskLevel {
     }
 }
 
+fn diff_review_mode_label(mode: ReportMode) -> &'static str {
+    match mode {
+        ReportMode::Heuristic => "heuristic",
+        ReportMode::Synthesized => "synthesized",
+    }
+}
+
+fn synthesize_diff_review(
+    plan: &DiffReviewPlan,
+    collected: &DiffReviewCollected,
+    no_llm: bool,
+) -> Result<DiffReviewReport> {
+    let fallback = || heuristic_diff_review_report(
+        format!(
+            "Heuristic diff review of {} staged target(s).",
+            collected.entries.len()
+        ),
+        collected
+            .entries
+            .iter()
+            .map(|entry| heuristic_diff_review_finding(entry))
+            .collect(),
+        heuristic_diff_review_focus(&collected),
+        collected.notes.clone(),
+    );
+
+    if no_llm {
+        return Ok(fallback());
+    }
+
+    let client = match AnthropicClient::from_env() {
+        Ok(client) => client,
+        Err(_) => return Ok(fallback()),
+    };
+
+    let target_label = diff_review_target_label(plan);
+    let response = match client.send(&AnthropicRequest {
+        system_prompt: build_system_prompt(&prompt_contract()),
+        user_prompt: build_diff_review_prompt(
+            &target_label,
+            &collected
+                .entries
+                .iter()
+                .map(|entry| entry.evidence_pack.clone())
+                .collect::<Vec<_>>(),
+        ),
+    }) {
+        Ok(response) => response,
+        Err(_) => return Ok(fallback()),
+    };
+
+    match parse_diff_review_response(&response.text) {
+        Ok(mut report) => {
+            report.cost_usd = Some(response.cost_usd);
+            if report.notes.is_empty() {
+                report.notes = collected.notes.clone();
+            } else {
+                for note in &collected.notes {
+                    if !report.notes.contains(note) {
+                        report.notes.push(note.clone());
+                    }
+                }
+            }
+            Ok(report)
+        }
+        Err(_) => Ok(fallback()),
+    }
+}
+
+fn collect_diff_review(
+    plan: &DiffReviewPlan,
+    cwd: &std::path::Path,
+    repo: &Repository,
+    config: &why_context::WhyConfig,
+) -> Result<DiffReviewCollected> {
+    let mut collected = DiffReviewCollected {
+        entries: Vec::new(),
+        issue_refs: Vec::new(),
+        notes: plan.skipped.clone(),
+    };
+
+    for target in &plan.targets {
+        let result = analyze_target_with_options(&target.target, cwd, None)?;
+        collected.issue_refs.extend(
+            result
+                .commits
+                .iter()
+                .flat_map(|commit| commit.issue_refs.iter().cloned()),
+        );
+        let github = build_github_enrichment(repo, config, &result.commits);
+        collected.notes.extend(github.notes.iter().cloned());
+        let evidence_pack = evidence_pack_from_result(target, &result, &github);
+        collected.entries.push(DiffReviewCollectedTarget {
+            target: target.clone(),
+            result,
+            evidence_pack,
+        });
+    }
+
+    collected.notes.sort();
+    collected.notes.dedup();
+    collected.issue_refs.sort();
+    collected.issue_refs.dedup();
+    Ok(collected)
+}
+
+fn evidence_pack_from_result(
+    target: &DiffReviewTarget,
+    result: &ArchaeologyResult,
+    github: &GitHubEnrichment,
+) -> EvidencePack {
+    why_evidence::build(
+        &EvidenceTarget {
+            file: result.target.path.display().to_string(),
+            symbol: target.symbol.clone(),
+            lines: (
+                result.target.start_line as usize,
+                result.target.end_line as usize,
+            ),
+            language: infer_language(&result.target.path),
+        },
+        &result
+            .commits
+            .iter()
+            .map(|commit| EvidenceCommit {
+                oid: commit.oid.clone(),
+                date: commit.date.clone(),
+                author: commit.author.clone(),
+                summary: commit.summary.clone(),
+                diff_excerpt: commit.diff_excerpt.clone(),
+                coverage_score: commit.coverage_score,
+                issue_refs: commit.issue_refs.clone(),
+            })
+            .collect::<Vec<_>>(),
+        &EvidenceContext {
+            comments: result.local_context.comments.clone(),
+            markers: result.local_context.markers.clone(),
+            risk_flags: result.local_context.risk_flags.clone(),
+            heuristic_risk: result.risk_level.as_str().to_string(),
+        },
+        github,
+    )
+}
+
+fn heuristic_diff_review_finding(entry: &DiffReviewCollectedTarget) -> DiffReviewFinding {
+    DiffReviewFinding {
+        target: format_target_label(&entry.target.target),
+        path: entry.target.target.path.display().to_string(),
+        symbol: entry.target.symbol.clone(),
+        risk_level: parse_synth_risk(entry.result.risk_level.as_str()),
+        confidence: ConfidenceLevel::Low,
+        why_it_matters: entry
+            .result
+            .commits
+            .first()
+            .map(|commit| format!(
+                "Recent history includes {} ({}) and {} relevant commit(s) overall.",
+                commit.summary,
+                commit.date,
+                entry.result.commits.len()
+            ))
+            .unwrap_or_else(|| "No relevant commit history was available for this target.".into()),
+    }
+}
+
+fn heuristic_diff_review_focus(collected: &DiffReviewCollected) -> Vec<String> {
+    let mut focus = collected
+        .entries
+        .iter()
+        .filter(|entry| matches!(entry.result.risk_level, why_archaeologist::RiskLevel::HIGH))
+        .map(|entry| format!(
+            "Review {} carefully because archaeology marked it HIGH risk.",
+            format_target_label(&entry.target.target)
+        ))
+        .collect::<Vec<_>>();
+
+    if focus.is_empty() && !collected.entries.is_empty() {
+        focus.push("Review changed targets with the thinnest historical evidence first.".into());
+    }
+
+    focus
+}
+
+fn diff_review_target_label(plan: &DiffReviewPlan) -> String {
+    let preview = plan
+        .staged_files
+        .iter()
+        .take(3)
+        .map(|file| file.path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if preview.is_empty() {
+        "staged diff".into()
+    } else {
+        format!("staged diff touching {preview}")
+    }
+}
+
+fn post_diff_review_comment(
+    config: &why_context::WhyConfig,
+    repo: &Repository,
+    github_ref_override: Option<&str>,
+    issue_refs: Vec<String>,
+    body: &str,
+) -> Result<GitHubComment> {
+    let remote_name = config.github.remote.trim();
+    if remote_name.is_empty() {
+        return Err(anyhow!("GitHub comment posting requires a configured GitHub remote"));
+    }
+
+    let remote = repo
+        .find_remote(remote_name)
+        .map_err(|error| anyhow!("failed to read GitHub remote '{remote_name}': {error}"))?;
+    let remote_url = remote
+        .url()
+        .filter(|url| !url.trim().is_empty())
+        .ok_or_else(|| anyhow!("GitHub remote '{remote_name}' has no URL"))?;
+    let client = GitHubClient::from_config(config, remote_url)?;
+
+    let issue = match github_ref_override {
+        Some(value) => parse_github_ref(value)
+            .ok_or_else(|| anyhow!("invalid GitHub reference '{value}'; expected #123"))?,
+        None => select_single_github_ref(&issue_refs)?,
+    };
+
+    client.post_issue_comment(&issue, body)
+}
+
 fn infer_language(path: &std::path::Path) -> String {
     match path.extension().and_then(|ext| ext.to_str()) {
         Some("rs") => "rust",
@@ -1293,16 +1648,23 @@ fn format_why_report(target: &str, report: &WhyReport, cached: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExitStatus, HealthReport, build_github_enrichment, compute_health_delta, format_why_report,
+        ExitStatus, HealthReport, build_github_enrichment, compute_health_delta,
+        diff_review_mode_label, format_why_report, parse_synth_risk, render_diff_review_markdown,
         render_health_terminal, render_pr_template_markdown, sorted_signal_entries,
+        synthesize_diff_review,
     };
     use git2::Repository;
     use std::collections::HashMap;
     use std::fs;
-    use why_archaeologist::CommitEvidence;
+    use why_archaeologist::{ArchaeologyResult, CommitEvidence, LocalContext, OutputTarget};
     use why_cache::HealthSnapshot;
     use why_context::{GitHubConfig, WhyConfig};
-    use why_synthesizer::{ConfidenceLevel, ReportMode, RiskLevel, WhyReport};
+    use why_evidence::EvidencePack;
+    use why_locator::{QueryKind, QueryTarget};
+    use why_scanner::{DiffReviewPlan, DiffReviewTarget, StagedChange, StagedDiffFile, StagedLineRange};
+    use why_synthesizer::{
+        ConfidenceLevel, DiffReviewFinding, DiffReviewReport, ReportMode, RiskLevel, WhyReport,
+    };
 
     fn sample_report() -> WhyReport {
         WhyReport {
@@ -1453,6 +1815,52 @@ mod tests {
         assert!(markdown.contains("## Test plan"));
         assert!(markdown.contains("## Staged files"));
         assert!(markdown.contains("crates/core/src/main.rs (modified)"));
+    }
+
+    #[test]
+    fn render_diff_review_markdown_includes_expected_sections() {
+        let markdown = render_diff_review_markdown(&DiffReviewReport {
+            summary: "The staged diff touches one risky auth path.".into(),
+            findings: vec![DiffReviewFinding {
+                target: "src/auth.rs:authenticate".into(),
+                path: "src/auth.rs".into(),
+                symbol: Some("authenticate".into()),
+                risk_level: RiskLevel::HIGH,
+                confidence: ConfidenceLevel::MediumHigh,
+                why_it_matters: "The function was repeatedly patched for session regressions.".into(),
+            }],
+            reviewer_focus: vec!["Verify logout invalidation coverage.".into()],
+            unknowns: vec!["No linked incident doc was present in sampled commits.".into()],
+            notes: vec!["Heuristic fallback was not needed.".into()],
+            mode: ReportMode::Synthesized,
+            cost_usd: Some(0.0012),
+            github_comment_url: Some(
+                "https://github.com/acme/why/issues/42#issuecomment-1".into(),
+            ),
+        });
+
+        assert!(markdown.contains("# Diff review"));
+        assert!(markdown.contains("## Findings"));
+        assert!(markdown.contains("src/auth.rs:authenticate — HIGH (medium-high)"));
+        assert!(markdown.contains("## Reviewer focus"));
+        assert!(markdown.contains("## Unknowns"));
+        assert!(markdown.contains("## Notes"));
+        assert!(markdown.contains("GitHub comment: https://github.com/acme/why/issues/42#issuecomment-1"));
+        assert!(markdown.contains("Mode: synthesized"));
+        assert!(markdown.contains("Estimated cost: ~$0.0012"));
+    }
+
+    #[test]
+    fn diff_review_mode_label_matches_report_modes() {
+        assert_eq!(diff_review_mode_label(ReportMode::Heuristic), "heuristic");
+        assert_eq!(diff_review_mode_label(ReportMode::Synthesized), "synthesized");
+    }
+
+    #[test]
+    fn parse_synth_risk_maps_unknown_values_to_low() {
+        assert_eq!(parse_synth_risk("HIGH"), RiskLevel::HIGH);
+        assert_eq!(parse_synth_risk("MEDIUM"), RiskLevel::MEDIUM);
+        assert_eq!(parse_synth_risk("anything-else"), RiskLevel::LOW);
     }
 
     #[test]

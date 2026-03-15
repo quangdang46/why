@@ -1,12 +1,13 @@
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
+use why_evidence::parse_github_ref;
 use why_locator::{QueryTarget, parse_target};
 
 #[derive(Debug, Parser)]
 #[command(name = "why")]
 #[command(
     about = "Ask your codebase why a line, range, symbol, or repo hotspot exists",
-    after_help = "Examples:\n  why src/auth.rs:42\n  why src/auth.rs --lines 40:45 --no-llm\n  why src/auth.rs:verify_token --json\n  why src/auth.rs:verify_token --annotate\n  why src/auth.rs:AuthService::login --team\n  why src/auth.rs:verify_token --blame-chain\n  why src/auth.rs:verify_token --evolution\n  why hotspots --limit 10\n  why health\n  why health --ci 80\n  why pr-template\n  why coverage-gap --coverage lcov.info\n  why ghost --limit 10\n  why onboard --limit 10\n  why time-bombs --age-days 180\n  eval \"$(why context-inject)\""
+    after_help = "Examples:\n  why src/auth.rs:42\n  why src/auth.rs --lines 40:45 --no-llm\n  why src/auth.rs:verify_token --json\n  why src/auth.rs:verify_token --annotate\n  why src/auth.rs:AuthService::login --team\n  why src/auth.rs:verify_token --blame-chain\n  why src/auth.rs:verify_token --evolution\n  why hotspots --limit 10\n  why health\n  why health --ci 80\n  why pr-template\n  why diff-review --no-llm\n  why coverage-gap --coverage lcov.info\n  why ghost --limit 10\n  why onboard --limit 10\n  why time-bombs --age-days 180\n  eval \"$(why context-inject)\""
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -102,6 +103,24 @@ pub enum Command {
         /// Emit machine-readable output.
         #[arg(long)]
         json: bool,
+    },
+    /// Review the staged diff with archaeology-backed risk findings.
+    DiffReview {
+        /// Emit machine-readable output.
+        #[arg(long)]
+        json: bool,
+
+        /// Skip LLM synthesis and use heuristic review output only.
+        #[arg(long)]
+        no_llm: bool,
+
+        /// Post the rendered review as a GitHub issue/PR comment.
+        #[arg(long)]
+        post_github_comment: bool,
+
+        /// Explicit GitHub issue/PR reference to use when posting (for example #42).
+        #[arg(long, value_name = "#123")]
+        github_ref: Option<String>,
     },
     /// Cross-reference HIGH-risk functions against LCOV or llvm-cov JSON coverage.
     CoverageGap {
@@ -201,6 +220,12 @@ pub enum Mode {
     },
     PrTemplate {
         json: bool,
+    },
+    DiffReview {
+        json: bool,
+        no_llm: bool,
+        post_github_comment: bool,
+        github_ref: Option<String>,
     },
     CoverageGap {
         coverage: String,
@@ -358,6 +383,49 @@ impl Cli {
                     bail!("the pr-template subcommand does not accept query flags or a target");
                 }
                 Ok(Mode::PrTemplate { json })
+            }
+            Some(Command::DiffReview {
+                json,
+                no_llm,
+                post_github_comment,
+                github_ref,
+            }) => {
+                if self.target.is_some()
+                    || self.lines.is_some()
+                    || self.no_cache
+                    || self.split
+                    || self.coupled
+                    || self.since.is_some()
+                    || self.team
+                    || self.blame_chain
+                    || self.evolution
+                    || self.annotate
+                    || self.json
+                {
+                    bail!("the diff-review subcommand does not accept query flags or a target");
+                }
+                let github_ref = match github_ref {
+                    Some(github_ref) => {
+                        let trimmed = github_ref.trim();
+                        if trimmed.is_empty() {
+                            bail!("--github-ref must not be empty");
+                        }
+                        if !post_github_comment {
+                            bail!("--github-ref requires --post-github-comment");
+                        }
+                        if parse_github_ref(trimmed).is_none() {
+                            bail!("--github-ref must use #123 syntax");
+                        }
+                        Some(trimmed.to_string())
+                    }
+                    None => None,
+                };
+                Ok(Mode::DiffReview {
+                    json,
+                    no_llm,
+                    post_github_comment,
+                    github_ref,
+                })
             }
             Some(Command::CoverageGap {
                 coverage,
@@ -823,6 +891,128 @@ mod tests {
         assert_eq!(
             cli.parse_mode().expect("pr-template should parse"),
             Mode::PrTemplate { json: true }
+        );
+    }
+
+    #[test]
+    fn parses_diff_review_subcommand() {
+        let cli = Cli::parse_from([
+            "why",
+            "diff-review",
+            "--json",
+            "--no-llm",
+            "--post-github-comment",
+            "--github-ref",
+            "#42",
+        ]);
+        assert_eq!(
+            cli.parse_mode().expect("diff-review should parse"),
+            Mode::DiffReview {
+                json: true,
+                no_llm: true,
+                post_github_comment: true,
+                github_ref: Some("#42".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_diff_review_without_optional_flags() {
+        let cli = Cli::parse_from(["why", "diff-review"]);
+        assert_eq!(
+            cli.parse_mode().expect("diff-review should parse"),
+            Mode::DiffReview {
+                json: false,
+                no_llm: false,
+                post_github_comment: false,
+                github_ref: None,
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_query_flags_for_diff_review() {
+        let error = Cli::try_parse_from(["why", "diff-review", "--no-cache"])
+            .expect_err("clap should reject query flags for diff-review");
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--no-cache' found")
+        );
+    }
+
+    #[test]
+    fn rejects_positional_target_for_diff_review() {
+        let error = Cli::try_parse_from(["why", "diff-review", "src/lib.rs:42"])
+            .expect_err("clap should reject positional targets for diff-review");
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument 'src/lib.rs:42' found")
+        );
+    }
+
+    #[test]
+    fn rejects_empty_github_ref_for_diff_review() {
+        let cli = Cli::parse_from(["why", "diff-review", "--github-ref", "   "]);
+        let error = cli
+            .parse_mode()
+            .expect_err("diff-review should reject empty github refs");
+        assert!(
+            error
+                .to_string()
+                .contains("--github-ref must not be empty")
+        );
+    }
+
+    #[test]
+    fn rejects_github_ref_without_comment_posting() {
+        let cli = Cli::parse_from(["why", "diff-review", "--github-ref", "#42"]);
+        let error = cli
+            .parse_mode()
+            .expect_err("diff-review should require comment posting when github ref is supplied");
+        assert!(
+            error
+                .to_string()
+                .contains("--github-ref requires --post-github-comment")
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_github_ref_for_diff_review() {
+        let cli = Cli::parse_from([
+            "why",
+            "diff-review",
+            "--post-github-comment",
+            "--github-ref",
+            "42",
+        ]);
+        let error = cli
+            .parse_mode()
+            .expect_err("diff-review should reject invalid github refs");
+        assert!(
+            error
+                .to_string()
+                .contains("--github-ref must use #123 syntax")
+        );
+    }
+
+    #[test]
+    fn rejects_empty_github_ref_after_trim_for_diff_review() {
+        let cli = Cli::parse_from([
+            "why",
+            "diff-review",
+            "--post-github-comment",
+            "--github-ref",
+            "   ",
+        ]);
+        let error = cli
+            .parse_mode()
+            .expect_err("diff-review should reject blank github refs");
+        assert!(
+            error
+                .to_string()
+                .contains("--github-ref must not be empty")
         );
     }
 

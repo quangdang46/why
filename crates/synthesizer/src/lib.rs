@@ -154,6 +154,52 @@ struct RawWhyReport {
     notes: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DiffReviewFinding {
+    pub target: String,
+    pub path: String,
+    pub symbol: Option<String>,
+    pub risk_level: RiskLevel,
+    pub confidence: ConfidenceLevel,
+    pub why_it_matters: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DiffReviewReport {
+    pub summary: String,
+    pub findings: Vec<DiffReviewFinding>,
+    pub reviewer_focus: Vec<String>,
+    pub unknowns: Vec<String>,
+    pub notes: Vec<String>,
+    pub mode: ReportMode,
+    pub cost_usd: Option<f64>,
+    pub github_comment_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawDiffReviewFinding {
+    target: String,
+    path: String,
+    #[serde(default)]
+    symbol: Option<String>,
+    risk_level: String,
+    confidence: String,
+    why_it_matters: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawDiffReviewReport {
+    summary: String,
+    #[serde(default)]
+    findings: Vec<RawDiffReviewFinding>,
+    #[serde(default)]
+    reviewer_focus: Vec<String>,
+    #[serde(default)]
+    unknowns: Vec<String>,
+    #[serde(default)]
+    notes: Vec<String>,
+}
+
 pub fn prompt_contract() -> PromptContract {
     PromptContract {
         response_format: "Return a single JSON object with no prose before or after it.",
@@ -195,7 +241,7 @@ pub fn build_query_prompt(pack: &EvidencePack) -> String {
 pub fn build_diff_review_prompt(target: &str, packs: &[EvidencePack]) -> String {
     let packs_json = serde_json::to_string_pretty(packs).unwrap_or_else(|_| "[]".to_string());
     format!(
-        "Risk analysis for changes in: {}\nFor each function, explain the historical risk of modifying it.\n\nEvidence packs:\n{}",
+        "Risk analysis for changes in: {}\nReturn a single JSON object with fields: summary, findings, reviewer_focus, unknowns, notes.\nEach finding must include: target, path, symbol, risk_level, confidence, why_it_matters.\nUse only the supplied evidence packs.\n\nEvidence packs:\n{}",
         target, packs_json
     )
 }
@@ -425,6 +471,38 @@ pub fn parse_response(raw: &str) -> Result<WhyReport> {
     })
 }
 
+pub fn parse_diff_review_response(raw: &str) -> Result<DiffReviewReport> {
+    let cleaned = strip_markdown_fences(raw);
+    let parsed: RawDiffReviewReport = serde_json::from_str(&cleaned)
+        .map_err(|error| anyhow!("failed to parse DiffReviewReport JSON: {error}"))?;
+
+    let findings = parsed
+        .findings
+        .into_iter()
+        .map(|finding| {
+            Ok(DiffReviewFinding {
+                target: finding.target,
+                path: finding.path,
+                symbol: finding.symbol,
+                risk_level: finding.risk_level.parse()?,
+                confidence: finding.confidence.parse()?,
+                why_it_matters: finding.why_it_matters,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(DiffReviewReport {
+        summary: parsed.summary,
+        findings,
+        reviewer_focus: parsed.reviewer_focus,
+        unknowns: parsed.unknowns,
+        notes: parsed.notes,
+        mode: ReportMode::Synthesized,
+        cost_usd: None,
+        github_comment_url: None,
+    })
+}
+
 pub fn heuristic_report(
     summary: impl Into<String>,
     risk_level: RiskLevel,
@@ -443,6 +521,24 @@ pub fn heuristic_report(
         mode: ReportMode::Heuristic,
         notes,
         cost_usd: None,
+    }
+}
+
+pub fn heuristic_diff_review_report(
+    summary: impl Into<String>,
+    findings: Vec<DiffReviewFinding>,
+    reviewer_focus: Vec<String>,
+    notes: Vec<String>,
+) -> DiffReviewReport {
+    DiffReviewReport {
+        summary: summary.into(),
+        findings,
+        reviewer_focus,
+        unknowns: vec!["No model synthesis was available for this diff review.".to_string()],
+        notes,
+        mode: ReportMode::Heuristic,
+        cost_usd: None,
+        github_comment_url: None,
     }
 }
 
@@ -539,11 +635,12 @@ fn strip_markdown_fences(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ANTHROPIC_VERSION, AnthropicClient, AnthropicConfig, AnthropicRequest, ConfidenceLevel,
-        HttpStatusError, ReportMode, RiskLevel, StatusCode, build_diff_review_prompt,
-        build_http_client, build_query_prompt, build_system_prompt, estimate_cost_usd,
-        heuristic_report, is_retryable_error, parse_message_response, parse_response,
-        prompt_contract, retry_delay,
+        ANTHROPIC_VERSION, AnthropicClient, AnthropicConfig, AnthropicRequest,
+        ConfidenceLevel, DiffReviewFinding, HttpStatusError, ReportMode, RiskLevel, StatusCode,
+        build_diff_review_prompt, build_http_client, build_query_prompt, build_system_prompt,
+        estimate_cost_usd, heuristic_diff_review_report, heuristic_report, is_retryable_error,
+        parse_diff_review_response, parse_message_response, parse_response, prompt_contract,
+        retry_delay,
     };
     use why_evidence::{
         CommitSummary, EvidencePack, HistoryInfo, LocalContextInfo, SignalInfo, TargetInfo,
@@ -738,10 +835,61 @@ mod tests {
         );
 
         assert!(prompt.contains("Risk analysis for changes in: main..feature"));
-        assert!(prompt.contains("For each function, explain the historical risk of modifying it."));
+        assert!(prompt.contains("Return a single JSON object with fields: summary, findings, reviewer_focus, unknowns, notes."));
         assert!(prompt.contains("\"symbol\": \"authenticate\""));
         assert!(prompt.contains("\"symbol\": \"refresh_session\""));
         assert!(prompt.contains("\"#77\""));
+    }
+
+    #[test]
+    fn parses_valid_response_into_diff_review_report() {
+        let report = parse_diff_review_response(
+            r#"{
+                "summary":"The staged diff touches one historically risky auth path.",
+                "findings":[{
+                    "target":"src/auth.rs:authenticate",
+                    "path":"src/auth.rs",
+                    "symbol":"authenticate",
+                    "risk_level":"HIGH",
+                    "confidence":"medium-high",
+                    "why_it_matters":"The function was repeatedly patched for logout/session regressions."
+                }],
+                "reviewer_focus":["Verify logout invalidation coverage."],
+                "unknowns":["No linked incident doc was present in the sampled commits."],
+                "notes":["Keep evidence and inference separate."]
+            }"#,
+        )
+        .expect("response should parse");
+
+        assert_eq!(report.summary, "The staged diff touches one historically risky auth path.");
+        assert_eq!(report.findings.len(), 1);
+        assert_eq!(report.findings[0].risk_level, RiskLevel::HIGH);
+        assert_eq!(report.findings[0].confidence, ConfidenceLevel::MediumHigh);
+        assert_eq!(report.mode, ReportMode::Synthesized);
+    }
+
+    #[test]
+    fn heuristic_diff_review_report_marks_low_confidence_without_key() {
+        let report = heuristic_diff_review_report(
+            "Heuristic diff review of staged changes.",
+            vec![DiffReviewFinding {
+                target: "src/auth.rs:authenticate".into(),
+                path: "src/auth.rs".into(),
+                symbol: Some("authenticate".into()),
+                risk_level: RiskLevel::HIGH,
+                confidence: ConfidenceLevel::Low,
+                why_it_matters: "Repeated auth fixes show a risky change surface.".into(),
+            }],
+            vec!["Review auth regression coverage.".into()],
+            vec!["Heuristic-only diff review.".into()],
+        );
+
+        assert_eq!(report.mode, ReportMode::Heuristic);
+        assert_eq!(report.cost_usd, None);
+        assert_eq!(
+            report.unknowns,
+            vec!["No model synthesis was available for this diff review."]
+        );
     }
 
     #[test]
