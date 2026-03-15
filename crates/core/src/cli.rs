@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use why_evidence::parse_github_ref;
@@ -84,6 +86,10 @@ pub enum Command {
         #[arg(long, default_value_t = 20)]
         limit: usize,
 
+        /// Only include hotspots whose ownership history includes this author.
+        #[arg(long, value_name = "AUTHOR")]
+        owner: Option<String>,
+
         /// Emit machine-readable output.
         #[arg(long)]
         json: bool,
@@ -97,6 +103,26 @@ pub enum Command {
         /// Exit with code 3 when the debt score exceeds this threshold.
         #[arg(long, value_name = "THRESHOLD", value_parser = clap::value_parser!(u32).range(0..=100))]
         ci: Option<u32>,
+
+        /// Load a baseline snapshot from a JSON file for regression checks.
+        #[arg(long, value_name = "PATH")]
+        baseline_file: Option<PathBuf>,
+
+        /// Write the current health snapshot to a JSON file.
+        #[arg(long, value_name = "PATH")]
+        write_baseline: Option<PathBuf>,
+
+        /// Fail when the debt score increases by more than this amount.
+        #[arg(long, value_name = "POINTS")]
+        max_regression: Option<u32>,
+
+        /// Fail when a specific signal increases by more than the allowed amount.
+        #[arg(long, value_name = "SIGNAL=COUNT")]
+        max_signal_regression: Vec<String>,
+
+        /// Fail if a requested baseline file cannot be loaded.
+        #[arg(long)]
+        require_baseline: bool,
     },
     /// Generate a reviewer-friendly PR template from the staged diff.
     PrTemplate {
@@ -230,11 +256,17 @@ pub enum Mode {
     ContextInject,
     Hotspots {
         limit: usize,
+        owner: Option<String>,
         json: bool,
     },
     Health {
         json: bool,
         ci: Option<u32>,
+        baseline_file: Option<PathBuf>,
+        write_baseline: Option<PathBuf>,
+        max_regression: Option<u32>,
+        max_signal_regression: Vec<String>,
+        require_baseline: bool,
     },
     PrTemplate {
         json: bool,
@@ -277,6 +309,21 @@ pub enum Mode {
         age_days: i64,
         json: bool,
     },
+}
+
+fn parse_signal_budget(raw: &str) -> Result<(String, u32)> {
+    let (signal, count) = raw
+        .split_once('=')
+        .ok_or_else(|| anyhow::anyhow!("signal budgets must use SIGNAL=COUNT format"))?;
+    let signal = signal.trim();
+    if signal.is_empty() {
+        bail!("signal budget names must not be empty");
+    }
+    let count = count
+        .trim()
+        .parse::<u32>()
+        .map_err(|_| anyhow::anyhow!("signal budget counts must be non-negative integers"))?;
+    Ok((signal.to_string(), count))
 }
 
 impl Cli {
@@ -354,7 +401,7 @@ impl Cli {
                 }
                 Ok(Mode::ContextInject)
             }
-            Some(Command::Hotspots { limit, json }) => {
+            Some(Command::Hotspots { limit, owner, json }) => {
                 if self.target.is_some()
                     || self.lines.is_some()
                     || self.no_llm
@@ -372,9 +419,21 @@ impl Cli {
                 if limit == 0 {
                     bail!("--limit must be greater than zero");
                 }
-                Ok(Mode::Hotspots { limit, json })
+                let owner = owner.map(|owner| owner.trim().to_string());
+                if owner.as_deref().is_some_and(str::is_empty) {
+                    bail!("--owner must not be empty");
+                }
+                Ok(Mode::Hotspots { limit, owner, json })
             }
-            Some(Command::Health { json, ci }) => {
+            Some(Command::Health {
+                json,
+                ci,
+                baseline_file,
+                write_baseline,
+                max_regression,
+                max_signal_regression,
+                require_baseline,
+            }) => {
                 if self.target.is_some()
                     || self.lines.is_some()
                     || self.no_llm
@@ -389,7 +448,26 @@ impl Cli {
                 {
                     bail!("the health subcommand does not accept query flags or a target");
                 }
-                Ok(Mode::Health { json, ci })
+                if baseline_file.is_none() && require_baseline {
+                    bail!("--require-baseline requires --baseline-file");
+                }
+                if baseline_file.is_none() && (max_regression.is_some() || !max_signal_regression.is_empty()) {
+                    bail!(
+                        "health regression budgets require --baseline-file"
+                    );
+                }
+                for budget in &max_signal_regression {
+                    parse_signal_budget(budget)?;
+                }
+                Ok(Mode::Health {
+                    json,
+                    ci,
+                    baseline_file,
+                    write_baseline,
+                    max_regression,
+                    max_signal_regression,
+                    require_baseline,
+                })
             }
             Some(Command::PrTemplate { json }) => {
                 if self.target.is_some()
@@ -916,7 +994,21 @@ mod tests {
             cli.parse_mode().expect("hotspots should parse"),
             Mode::Hotspots {
                 limit: 7,
+                owner: None,
                 json: true,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_hotspots_owner_filter() {
+        let cli = Cli::parse_from(["why", "hotspots", "--limit", "7", "--owner", "Fixture Bot"]);
+        assert_eq!(
+            cli.parse_mode().expect("hotspots owner filter should parse"),
+            Mode::Hotspots {
+                limit: 7,
+                owner: Some("Fixture Bot".into()),
+                json: false,
             }
         );
     }
@@ -929,6 +1021,11 @@ mod tests {
             Mode::Health {
                 json: true,
                 ci: None,
+                baseline_file: None,
+                write_baseline: None,
+                max_regression: None,
+                max_signal_regression: Vec::new(),
+                require_baseline: false,
             }
         );
     }
@@ -941,6 +1038,43 @@ mod tests {
             Mode::Health {
                 json: true,
                 ci: Some(80),
+                baseline_file: None,
+                write_baseline: None,
+                max_regression: None,
+                max_signal_regression: Vec::new(),
+                require_baseline: false,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_health_regression_subcommand() {
+        let cli = Cli::parse_from([
+            "why",
+            "health",
+            "--json",
+            "--baseline-file",
+            "baseline.json",
+            "--write-baseline",
+            "next.json",
+            "--max-regression",
+            "2",
+            "--max-signal-regression",
+            "time_bombs=0",
+            "--max-signal-regression",
+            "stale_hacks=1",
+            "--require-baseline",
+        ]);
+        assert_eq!(
+            cli.parse_mode().expect("health regression should parse"),
+            Mode::Health {
+                json: true,
+                ci: None,
+                baseline_file: Some(std::path::PathBuf::from("baseline.json")),
+                write_baseline: Some(std::path::PathBuf::from("next.json")),
+                max_regression: Some(2),
+                max_signal_regression: vec!["time_bombs=0".into(), "stale_hacks=1".into()],
+                require_baseline: true,
             }
         );
     }
@@ -1487,6 +1621,41 @@ mod tests {
         let error = Cli::try_parse_from(["why", "health", "--ci", "101"])
             .expect_err("health ci should reject thresholds above 100");
         assert!(error.to_string().contains("101"));
+    }
+
+    #[test]
+    fn rejects_require_baseline_without_baseline_file() {
+        let error = Cli::parse_from(["why", "health", "--require-baseline"])
+            .parse_mode()
+            .expect_err("health should reject orphaned require-baseline");
+        assert!(error.to_string().contains("--require-baseline requires --baseline-file"));
+    }
+
+    #[test]
+    fn rejects_invalid_health_signal_budget() {
+        let error = Cli::parse_from([
+            "why",
+            "health",
+            "--baseline-file",
+            "baseline.json",
+            "--max-signal-regression",
+            "time_bombs",
+        ])
+        .parse_mode()
+        .expect_err("health should reject invalid signal budgets");
+        assert!(error.to_string().contains("SIGNAL=COUNT"));
+    }
+
+    #[test]
+    fn rejects_health_regression_budget_without_baseline_file() {
+        let error = Cli::parse_from(["why", "health", "--max-regression", "1"])
+            .parse_mode()
+            .expect_err("health should reject orphaned regression budgets");
+        assert!(
+            error
+                .to_string()
+                .contains("health regression budgets require --baseline-file")
+        );
     }
 
     #[test]

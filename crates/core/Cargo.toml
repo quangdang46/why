@@ -24,6 +24,7 @@ clap.workspace = true
 clap_complete.workspace = true
 clap_mangen.workspace = true
 git2.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 why-archaeologist = { path = "../archaeologist" }
 why-annotator = { path = "../annotator" }

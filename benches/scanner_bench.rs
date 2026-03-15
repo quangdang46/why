@@ -37,6 +37,7 @@ fn bench_scan_hotspots(c: &mut Criterion) {
             scan_hotspots(
                 std::hint::black_box(fixture.path()),
                 std::hint::black_box(10),
+                std::hint::black_box(None),
             )
         })
     });

@@ -635,8 +635,8 @@ fn strip_markdown_fences(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ANTHROPIC_VERSION, AnthropicClient, AnthropicConfig, AnthropicRequest,
-        ConfidenceLevel, DiffReviewFinding, HttpStatusError, ReportMode, RiskLevel, StatusCode,
+        ANTHROPIC_VERSION, AnthropicClient, AnthropicConfig, AnthropicRequest, ConfidenceLevel,
+        DiffReviewFinding, HttpStatusError, ReportMode, RiskLevel, StatusCode,
         build_diff_review_prompt, build_http_client, build_query_prompt, build_system_prompt,
         estimate_cost_usd, heuristic_diff_review_report, heuristic_report, is_retryable_error,
         parse_diff_review_response, parse_message_response, parse_response, prompt_contract,
@@ -861,7 +861,10 @@ mod tests {
         )
         .expect("response should parse");
 
-        assert_eq!(report.summary, "The staged diff touches one historically risky auth path.");
+        assert_eq!(
+            report.summary,
+            "The staged diff touches one historically risky auth path."
+        );
         assert_eq!(report.findings.len(), 1);
         assert_eq!(report.findings[0].risk_level, RiskLevel::HIGH);
         assert_eq!(report.findings[0].confidence, ConfidenceLevel::MediumHigh);

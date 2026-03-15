@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use anyhow::Result;
@@ -19,16 +19,50 @@ pub struct HealthDelta {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct HealthSignalDelta {
+    pub current: u32,
+    pub baseline: u32,
+    pub delta: i64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct HealthBaselineReference {
+    pub source: String,
+    pub timestamp: i64,
+    pub head_hash: Option<String>,
+    pub ref_name: Option<String>,
+    pub debt_score: u32,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct HealthComparison {
+    pub baseline: HealthBaselineReference,
+    pub score_delta: i64,
+    pub signal_deltas: BTreeMap<String, HealthSignalDelta>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct HealthGateSummary {
+    pub passed: bool,
+    pub absolute_threshold: Option<u32>,
+    pub max_regression: Option<u32>,
+    pub signal_budgets: BTreeMap<String, u32>,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct HealthReport {
     pub debt_score: u32,
     pub signals: HashMap<String, u32>,
     pub delta: Option<HealthDelta>,
+    pub comparison: Option<HealthComparison>,
+    pub gate: Option<HealthGateSummary>,
     pub notes: Vec<String>,
 }
 
 pub fn scan_health(repo_root: &Path) -> Result<HealthReport> {
     let time_bombs = scan_time_bombs(repo_root, TIME_BOMB_AGE_DAYS)?;
-    let hotspots = scan_hotspots(repo_root, usize::MAX)?;
+    let hotspots = scan_hotspots(repo_root, usize::MAX, None)?;
 
     let total_time_bombs = time_bombs.len() as u32;
     let stale_hacks = time_bombs
@@ -54,6 +88,8 @@ pub fn scan_health(repo_root: &Path) -> Result<HealthReport> {
         debt_score,
         signals,
         delta: None,
+        comparison: None,
+        gate: None,
         notes: vec![
             "Current health aggregation uses implemented scanner signals only: time bombs, high-risk files, hotspot quartile, and stale hacks.".into(),
             "Plan-only metrics such as ghost functions, coverage gaps, and bus-factor hotspots are not included until those scanners exist.".into(),
@@ -177,6 +213,8 @@ git commit -m 'feat: add util helper' >/dev/null
         assert_eq!(report.signals.get("high_risk_files").copied(), Some(1));
         assert_eq!(report.signals.get("hotspot_files").copied(), Some(1));
         assert!(report.delta.is_none());
+        assert!(report.comparison.is_none());
+        assert!(report.gate.is_none());
         assert_eq!(report.notes.len(), 2);
         Ok(())
     }
@@ -188,6 +226,9 @@ git commit -m 'feat: add util helper' >/dev/null
             risk_level: why_archaeologist::RiskLevel::LOW,
             hotspot_score: 1.0,
             top_commit_summaries: Vec::new(),
+            owners: Vec::new(),
+            bus_factor: 0,
+            primary_owner: None,
         }
     }
 }

@@ -1,5 +1,9 @@
 mod cli;
 
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::{Path, PathBuf};
+
 use anyhow::{Result, anyhow};
 use clap::CommandFactory;
 use clap::Parser;
@@ -7,6 +11,7 @@ use clap_complete::{Generator, Shell, generate};
 use clap_mangen::Man;
 use cli::{Cli, CompletionShell, Mode, QueryRequest};
 use git2::Repository;
+use serde::{Deserialize, Serialize};
 use time::{OffsetDateTime, PrimitiveDateTime};
 use why_annotator::writer::annotate_file;
 use why_archaeologist::{
@@ -21,8 +26,9 @@ use why_evidence::{
 };
 use why_locator::QueryKind;
 use why_scanner::{
-    CouplingReport, CoverageGapReport, DiffReviewPlan, DiffReviewTarget, GhostFinding, HealthDelta,
-    HealthReport, HotspotFinding, OnboardFinding, OutageReport, PrTemplateReport, Severity,
+    CouplingReport, CoverageGapReport, DiffReviewPlan, DiffReviewTarget, GhostFinding,
+    HealthBaselineReference, HealthComparison, HealthDelta, HealthGateSummary, HealthReport,
+    HealthSignalDelta, HotspotFinding, OnboardFinding, OutageReport, PrTemplateReport, Severity,
     TimeBombFinding, TimeBombKind,
 };
 use why_splitter::SplitSuggestion;
@@ -39,6 +45,10 @@ fn main() {
         Ok(ExitStatus::HealthCiFailure { message }) => {
             eprintln!("why: {message}");
             std::process::exit(3);
+        }
+        Ok(ExitStatus::HealthRegressionFailure { message }) => {
+            eprintln!("why: {message}");
+            std::process::exit(4);
         }
         Err(error) => {
             eprintln!("why: {error}");
@@ -71,11 +81,43 @@ fn run() -> Result<ExitStatus> {
             run_context_inject()?;
             Ok(ExitStatus::Success)
         }
-        Mode::Hotspots { limit, json } => {
-            run_hotspots(limit, json)?;
+        Mode::Hotspots { limit, owner, json } => {
+            run_hotspots(limit, owner.as_deref(), json)?;
             Ok(ExitStatus::Success)
         }
-        Mode::Health { json, ci } => run_health(json, ci),
+        Mode::Health {
+            json,
+            ci,
+            baseline_file,
+            write_baseline,
+            max_regression,
+            max_signal_regression,
+            require_baseline,
+        } => run_health(
+            json,
+            ci,
+            HealthBaselineOptions {
+                baseline_file,
+                write_baseline,
+                max_regression,
+                max_signal_regression: max_signal_regression
+                    .into_iter()
+                    .map(|raw| {
+                        let (signal, count) = raw
+                            .split_once('=')
+                            .expect("health signal budgets should be validated by CLI");
+                        (
+                            signal.trim().to_string(),
+                            count
+                                .trim()
+                                .parse::<u32>()
+                                .expect("health signal budget counts should be valid"),
+                        )
+                    })
+                    .collect(),
+                require_baseline,
+            },
+        ),
         Mode::PrTemplate { json } => {
             run_pr_template(json)?;
             Ok(ExitStatus::Success)
@@ -146,6 +188,28 @@ fn run() -> Result<ExitStatus> {
 enum ExitStatus {
     Success,
     HealthCiFailure { message: String },
+    HealthRegressionFailure { message: String },
+}
+
+#[derive(Debug, Clone)]
+struct HealthBaselineOptions {
+    baseline_file: Option<PathBuf>,
+    write_baseline: Option<PathBuf>,
+    max_regression: Option<u32>,
+    max_signal_regression: Vec<(String, u32)>,
+    require_baseline: bool,
+}
+
+#[derive(Debug, Clone)]
+struct HealthReportContext {
+    report: HealthReport,
+    snapshot: HealthSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct HealthBaselineFile {
+    schema_version: u32,
+    snapshot: HealthSnapshot,
 }
 
 #[derive(Debug, Clone)]
@@ -187,21 +251,45 @@ fn run_context_inject() -> Result<()> {
     Ok(())
 }
 
-fn run_hotspots(limit: usize, json: bool) -> Result<()> {
+fn run_hotspots(limit: usize, owner: Option<&str>, json: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
-    let findings = why_scanner::scan_hotspots(&cwd, limit)?;
+    let findings = why_scanner::scan_hotspots(&cwd, limit, owner)?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&findings)?);
     } else {
-        render_hotspots_terminal(&findings, limit);
+        render_hotspots_terminal(&findings, limit, owner);
     }
 
     Ok(())
 }
 
-fn run_health(json: bool, ci: Option<u32>) -> Result<ExitStatus> {
-    let report = collect_health_report()?;
+fn run_health(json: bool, ci: Option<u32>, baseline: HealthBaselineOptions) -> Result<ExitStatus> {
+    let context = collect_health_report()?;
+    let mut report = context.report;
+
+    let regression_gate_enabled = baseline.max_regression.is_some()
+        || !baseline.max_signal_regression.is_empty();
+
+    if let Some(path) = baseline.baseline_file.as_deref() {
+        let baseline_snapshot = load_health_baseline(path, baseline.require_baseline)?;
+        if let Some(baseline_snapshot) = baseline_snapshot {
+            report.comparison = Some(compute_health_comparison(&context.snapshot, &baseline_snapshot));
+            if regression_gate_enabled || ci.is_some() {
+                report.gate = Some(evaluate_health_gate(
+                    &context.snapshot,
+                    report.comparison.as_ref().expect("comparison should be set"),
+                    ci,
+                    baseline.max_regression,
+                    &baseline.max_signal_regression,
+                ));
+            }
+        }
+    }
+
+    if let Some(path) = baseline.write_baseline.as_deref() {
+        write_health_baseline(path, &context.snapshot)?;
+    }
 
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -209,18 +297,15 @@ fn run_health(json: bool, ci: Option<u32>) -> Result<ExitStatus> {
         render_health_terminal(&report, ci);
     }
 
-    Ok(match ci {
-        Some(threshold) if report.debt_score > threshold => ExitStatus::HealthCiFailure {
-            message: format!(
-                "health debt score {} exceeds CI threshold {}",
-                report.debt_score, threshold
-            ),
-        },
-        _ => ExitStatus::Success,
-    })
+    Ok(determine_health_exit_status(
+        &report,
+        ci,
+        baseline.max_regression,
+        !baseline.max_signal_regression.is_empty(),
+    ))
 }
 
-fn collect_health_report() -> Result<HealthReport> {
+fn collect_health_report() -> Result<HealthReportContext> {
     let cwd = std::env::current_dir()?;
     let repo = Repository::discover(&cwd)?;
     let repo_root = repo
@@ -234,13 +319,22 @@ fn collect_health_report() -> Result<HealthReport> {
     if let Some(previous) = cache.health_snapshots().last() {
         report.delta = Some(compute_health_delta(report.debt_score, previous));
     }
-    cache.insert_health_snapshot(HealthSnapshot {
+
+    let snapshot = HealthSnapshot {
         timestamp: current_unix_timestamp(),
         debt_score: report.debt_score,
-        details: report.signals.clone(),
-    })?;
+        signals: report.signals.clone(),
+        head_hash: repo
+            .head()
+            .ok()
+            .and_then(|head| head.peel_to_commit().ok())
+            .map(|commit| commit.id().to_string()),
+        ref_name: repo.head().ok().and_then(|head| head.shorthand().map(str::to_string)),
+    };
 
-    Ok(report)
+    cache.insert_health_snapshot(snapshot.clone())?;
+
+    Ok(HealthReportContext { report, snapshot })
 }
 
 fn run_pr_template(json: bool) -> Result<()> {
@@ -748,11 +842,17 @@ fn render_evolution_terminal(report: &EvolutionHistoryResult) {
     }
 }
 
-fn render_hotspots_terminal(findings: &[HotspotFinding], limit: usize) {
-    println!("Top {limit} hotspots by churn × risk");
+fn render_hotspots_terminal(findings: &[HotspotFinding], limit: usize, owner: Option<&str>) {
+    match owner {
+        Some(owner) => println!("Top {limit} hotspots by churn × risk for owner {owner}"),
+        None => println!("Top {limit} hotspots by churn × risk"),
+    }
     println!();
     if findings.is_empty() {
-        println!("No source hotspots were found in the current repository.");
+        match owner {
+            Some(owner) => println!("No source hotspots were found for owner {owner} in the current repository."),
+            None => println!("No source hotspots were found in the current repository."),
+        }
         return;
     }
 
@@ -769,6 +869,13 @@ fn render_hotspots_terminal(findings: &[HotspotFinding], limit: usize) {
             println!(
                 "      top history: {}",
                 finding.top_commit_summaries.join(" | ")
+            );
+        }
+        if let Some(primary_owner) = &finding.primary_owner {
+            println!(
+                "      primary owner: {}  bus factor {}",
+                primary_owner,
+                finding.bus_factor
             );
         }
     }
@@ -791,6 +898,49 @@ fn render_health_terminal(report: &HealthReport, ci: Option<u32>) {
             "PASS"
         };
         println!("CI gate: {status} (threshold {threshold})");
+    }
+    if let Some(comparison) = &report.comparison {
+        println!(
+            "Baseline: {} (score {} at {})",
+            comparison.baseline.source,
+            comparison.baseline.debt_score,
+            format_health_timestamp(comparison.baseline.timestamp)
+        );
+        if let Some(head_hash) = &comparison.baseline.head_hash {
+            println!("Baseline head: {head_hash}");
+        }
+        if let Some(ref_name) = &comparison.baseline.ref_name {
+            println!("Baseline ref: {ref_name}");
+        }
+        println!("Score delta vs baseline: {}", comparison.score_delta);
+        if !comparison.signal_deltas.is_empty() {
+            println!("Signal deltas");
+            for (name, delta) in &comparison.signal_deltas {
+                println!(
+                    "  - {name}: {} (baseline {}, delta {})",
+                    delta.current, delta.baseline, delta.delta
+                );
+            }
+        }
+    }
+    if let Some(gate) = &report.gate {
+        let status = if gate.passed { "PASS" } else { "FAIL" };
+        println!("Regression gate: {status}");
+        if let Some(threshold) = gate.absolute_threshold {
+            println!("  absolute threshold: {threshold}");
+        }
+        if let Some(max_regression) = gate.max_regression {
+            println!("  max regression: {max_regression}");
+        }
+        if !gate.signal_budgets.is_empty() {
+            println!("  signal budgets:");
+            for (name, budget) in &gate.signal_budgets {
+                println!("    - {name}: {budget}");
+            }
+        }
+        for reason in &gate.reasons {
+            println!("  - {reason}");
+        }
     }
     println!();
     println!("Signals");
@@ -1199,18 +1349,7 @@ fn parse_outage_timestamp(raw: &str, flag: &str) -> Result<i64> {
 }
 
 fn format_outage_timestamp(timestamp: i64) -> String {
-    OffsetDateTime::from_unix_timestamp(timestamp)
-        .map(|value| {
-            format!(
-                "{:04}-{:02}-{:02} {:02}:{:02}",
-                value.year(),
-                u8::from(value.month()),
-                value.day(),
-                value.hour(),
-                value.minute()
-            )
-        })
-        .unwrap_or_else(|_| timestamp.to_string())
+    format_health_timestamp(timestamp)
 }
 
 fn sorted_signal_entries(signals: &std::collections::HashMap<String, u32>) -> Vec<(String, u32)> {
@@ -1287,6 +1426,169 @@ fn compute_health_delta(current_score: u32, previous: &HealthSnapshot) -> Health
         amount,
         previous_score: previous.debt_score,
     }
+}
+
+fn compute_health_comparison(
+    current: &HealthSnapshot,
+    baseline: &HealthSnapshot,
+) -> HealthComparison {
+    let mut signal_names = BTreeSet::new();
+    signal_names.extend(current.signals.keys().cloned());
+    signal_names.extend(baseline.signals.keys().cloned());
+
+    let signal_deltas = signal_names
+        .into_iter()
+        .map(|name| {
+            let current_value = current.signals.get(&name).copied().unwrap_or_default();
+            let baseline_value = baseline.signals.get(&name).copied().unwrap_or_default();
+            (
+                name,
+                HealthSignalDelta {
+                    current: current_value,
+                    baseline: baseline_value,
+                    delta: current_value as i64 - baseline_value as i64,
+                },
+            )
+        })
+        .collect();
+
+    HealthComparison {
+        baseline: HealthBaselineReference {
+            source: "file".into(),
+            timestamp: baseline.timestamp,
+            head_hash: baseline.head_hash.clone(),
+            ref_name: baseline.ref_name.clone(),
+            debt_score: baseline.debt_score,
+        },
+        score_delta: current.debt_score as i64 - baseline.debt_score as i64,
+        signal_deltas,
+    }
+}
+
+fn evaluate_health_gate(
+    current: &HealthSnapshot,
+    comparison: &HealthComparison,
+    absolute_threshold: Option<u32>,
+    max_regression: Option<u32>,
+    signal_budgets: &[(String, u32)],
+) -> HealthGateSummary {
+    let mut reasons = Vec::new();
+
+    if let Some(threshold) = absolute_threshold {
+        if current.debt_score > threshold {
+            reasons.push(format!(
+                "health debt score {} exceeds CI threshold {}",
+                current.debt_score, threshold
+            ));
+        }
+    }
+
+    if let Some(budget) = max_regression {
+        if comparison.score_delta > budget as i64 {
+            reasons.push(format!(
+                "health debt score regressed by {} which exceeds allowed regression {}",
+                comparison.score_delta, budget
+            ));
+        }
+    }
+
+    let signal_budgets_map = signal_budgets.iter().cloned().collect::<BTreeMap<_, _>>();
+    for (signal, budget) in &signal_budgets_map {
+        let delta = comparison
+            .signal_deltas
+            .get(signal)
+            .map(|entry| entry.delta)
+            .unwrap_or_default();
+        if delta > *budget as i64 {
+            reasons.push(format!(
+                "health signal {signal} regressed by {delta} which exceeds allowed regression {budget}"
+            ));
+        }
+    }
+
+    HealthGateSummary {
+        passed: reasons.is_empty(),
+        absolute_threshold,
+        max_regression,
+        signal_budgets: signal_budgets_map,
+        reasons,
+    }
+}
+
+fn determine_health_exit_status(
+    report: &HealthReport,
+    ci: Option<u32>,
+    max_regression: Option<u32>,
+    has_signal_regression_budget: bool,
+) -> ExitStatus {
+    let ci_failure_message = ci.and_then(|threshold| {
+        (report.debt_score > threshold).then(|| {
+            format!(
+                "health debt score {} exceeds CI threshold {}",
+                report.debt_score, threshold
+            )
+        })
+    });
+    let regression_gate_enabled = max_regression.is_some() || has_signal_regression_budget;
+
+    if regression_gate_enabled {
+        if let Some(gate) = &report.gate {
+            if !gate.passed {
+                if let Some(message) = gate
+                    .reasons
+                    .iter()
+                    .find(|reason| !reason.contains("exceeds CI threshold"))
+                    .cloned()
+                {
+                    return ExitStatus::HealthRegressionFailure { message };
+                }
+            }
+        }
+    }
+
+    if let Some(message) = ci_failure_message {
+        return ExitStatus::HealthCiFailure { message };
+    }
+
+    ExitStatus::Success
+}
+
+fn load_health_baseline(path: &Path, require_baseline: bool) -> Result<Option<HealthSnapshot>> {
+    match fs::read_to_string(path) {
+        Ok(contents) => {
+            let baseline: HealthBaselineFile = serde_json::from_str(&contents)?;
+            Ok(Some(baseline.snapshot))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && !require_baseline => Ok(None),
+        Err(error) => Err(anyhow!(
+            "failed to load health baseline {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+fn write_health_baseline(path: &Path, snapshot: &HealthSnapshot) -> Result<()> {
+    let payload = HealthBaselineFile {
+        schema_version: 1,
+        snapshot: snapshot.clone(),
+    };
+    fs::write(path, serde_json::to_string_pretty(&payload)?)?;
+    Ok(())
+}
+
+fn format_health_timestamp(timestamp: i64) -> String {
+    OffsetDateTime::from_unix_timestamp(timestamp)
+        .map(|value| {
+            format!(
+                "{:04}-{:02}-{:02} {:02}:{:02}",
+                value.year(),
+                u8::from(value.month()),
+                value.day(),
+                value.hour(),
+                value.minute()
+            )
+        })
+        .unwrap_or_else(|_| timestamp.to_string())
 }
 
 fn current_unix_timestamp() -> i64 {
@@ -1776,13 +2078,16 @@ fn format_why_report(target: &str, report: &WhyReport, cached: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExitStatus, HealthReport, build_github_enrichment, compute_health_delta,
-        diff_review_mode_label, format_outage_timestamp, format_why_report, parse_outage_timestamp,
-        parse_synth_risk, render_diff_review_markdown, render_health_terminal,
-        render_outage_terminal, render_pr_template_markdown, sorted_signal_entries,
+        ExitStatus, HealthBaselineReference, HealthComparison, HealthGateSummary, HealthReport,
+        HealthSignalDelta, build_github_enrichment, compute_health_comparison,
+        compute_health_delta, determine_health_exit_status, diff_review_mode_label,
+        evaluate_health_gate, format_outage_timestamp, format_why_report,
+        parse_outage_timestamp, parse_synth_risk, render_diff_review_markdown,
+        render_health_terminal, render_outage_terminal, render_pr_template_markdown,
+        sorted_signal_entries,
     };
     use git2::Repository;
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::fs;
     use why_archaeologist::CommitEvidence;
     use why_cache::HealthSnapshot;
@@ -1874,7 +2179,9 @@ mod tests {
         let previous = HealthSnapshot {
             timestamp: 1,
             debt_score: 5,
-            details: HashMap::new(),
+            signals: HashMap::new(),
+            head_hash: None,
+            ref_name: None,
         };
         let delta = compute_health_delta(9, &previous);
         assert_eq!(delta.direction, "↑");
@@ -1906,9 +2213,13 @@ mod tests {
                 &HealthSnapshot {
                     timestamp: 1,
                     debt_score: 5,
-                    details: HashMap::new(),
+                    signals: HashMap::new(),
+                    head_hash: None,
+                    ref_name: None,
                 },
             )),
+            comparison: None,
+            gate: None,
             notes: vec!["health uses implemented scanner signals".into()],
         };
 
@@ -1920,6 +2231,128 @@ mod tests {
         }
         let _ = buffer;
         render_health_terminal(&report, None);
+    }
+
+    #[test]
+    fn compute_health_comparison_tracks_score_and_signal_deltas() {
+        let mut current_signals = HashMap::new();
+        current_signals.insert("time_bombs".into(), 2);
+        current_signals.insert("hotspot_files".into(), 1);
+        let mut baseline_signals = HashMap::new();
+        baseline_signals.insert("time_bombs".into(), 1);
+        baseline_signals.insert("stale_hacks".into(), 3);
+
+        let comparison = compute_health_comparison(
+            &HealthSnapshot {
+                timestamp: 10,
+                debt_score: 7,
+                signals: current_signals,
+                head_hash: Some("newhead".into()),
+                ref_name: Some("main".into()),
+            },
+            &HealthSnapshot {
+                timestamp: 5,
+                debt_score: 4,
+                signals: baseline_signals,
+                head_hash: Some("oldhead".into()),
+                ref_name: Some("origin/main".into()),
+            },
+        );
+
+        assert_eq!(comparison.baseline.source, "file");
+        assert_eq!(comparison.baseline.debt_score, 4);
+        assert_eq!(comparison.score_delta, 3);
+        assert_eq!(comparison.signal_deltas["time_bombs"].delta, 1);
+        assert_eq!(comparison.signal_deltas["hotspot_files"].delta, 1);
+        assert_eq!(comparison.signal_deltas["stale_hacks"].delta, -3);
+    }
+
+    #[test]
+    fn evaluate_health_gate_collects_regression_reasons() {
+        let mut signal_deltas = BTreeMap::new();
+        signal_deltas.insert(
+            "time_bombs".into(),
+            HealthSignalDelta {
+                current: 2,
+                baseline: 1,
+                delta: 1,
+            },
+        );
+
+        let gate = evaluate_health_gate(
+            &HealthSnapshot {
+                timestamp: 10,
+                debt_score: 8,
+                signals: HashMap::new(),
+                head_hash: None,
+                ref_name: Some("main".into()),
+            },
+            &HealthComparison {
+                baseline: HealthBaselineReference {
+                    source: "file".into(),
+                    timestamp: 1,
+                    head_hash: None,
+                    ref_name: Some("main".into()),
+                    debt_score: 4,
+                },
+                score_delta: 4,
+                signal_deltas,
+            },
+            Some(7),
+            Some(2),
+            &[("time_bombs".into(), 0)],
+        );
+
+        assert!(!gate.passed);
+        assert_eq!(gate.absolute_threshold, Some(7));
+        assert_eq!(gate.max_regression, Some(2));
+        assert_eq!(gate.signal_budgets["time_bombs"], 0);
+        assert_eq!(gate.reasons.len(), 3);
+    }
+
+    #[test]
+    fn determine_health_exit_status_prefers_regression_failures() {
+        let status = determine_health_exit_status(
+            &HealthReport {
+                debt_score: 9,
+                signals: HashMap::new(),
+                delta: None,
+                comparison: Some(HealthComparison {
+                    baseline: HealthBaselineReference {
+                        source: "file".into(),
+                        timestamp: 1,
+                        head_hash: None,
+                        ref_name: None,
+                        debt_score: 5,
+                    },
+                    score_delta: 4,
+                    signal_deltas: BTreeMap::new(),
+                }),
+                gate: Some(HealthGateSummary {
+                    passed: false,
+                    absolute_threshold: Some(8),
+                    max_regression: Some(0),
+                    signal_budgets: BTreeMap::new(),
+                    reasons: vec![
+                        "health debt score 9 exceeds CI threshold 8".into(),
+                        "health debt score regressed by 4 which exceeds allowed regression 0"
+                            .into(),
+                    ],
+                }),
+                notes: Vec::new(),
+            },
+            Some(8),
+            Some(0),
+            false,
+        );
+
+        assert_eq!(
+            status,
+            ExitStatus::HealthRegressionFailure {
+                message: "health debt score regressed by 4 which exceeds allowed regression 0"
+                    .into()
+            }
+        );
     }
 
     #[test]
@@ -2050,6 +2483,20 @@ mod tests {
             status,
             ExitStatus::HealthCiFailure {
                 message: "health debt score 9 exceeds CI threshold 4".into()
+            }
+        );
+    }
+
+    #[test]
+    fn health_regression_failure_exit_status_is_distinct() {
+        let status = ExitStatus::HealthRegressionFailure {
+            message: "health debt score regressed by 4 which exceeds allowed regression 0".into(),
+        };
+        assert_eq!(
+            status,
+            ExitStatus::HealthRegressionFailure {
+                message: "health debt score regressed by 4 which exceeds allowed regression 0"
+                    .into()
             }
         );
     }

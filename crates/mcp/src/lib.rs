@@ -233,7 +233,7 @@ fn call_tool(params: Option<Value>) -> std::result::Result<Value, McpError> {
                 ));
             }
             serde_json::to_value(
-                scan_hotspots(&cwd, limit)
+                scan_hotspots(&cwd, limit, None)
                     .map_err(|error| McpError::tool_error(error.to_string()))?,
             )
             .map_err(|error| {

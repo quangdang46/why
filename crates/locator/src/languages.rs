@@ -5,8 +5,10 @@ use tree_sitter::{Language, Query};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SupportedLanguage {
     Rust,
+    Go,
     JavaScript,
     TypeScript,
+    Java,
     Python,
 }
 
@@ -19,11 +21,13 @@ impl SupportedLanguage {
 
         match extension {
             "rs" => Ok(Self::Rust),
+            "go" => Ok(Self::Go),
             "js" => Ok(Self::JavaScript),
             "ts" | "tsx" => Ok(Self::TypeScript),
+            "java" => Ok(Self::Java),
             "py" => Ok(Self::Python),
             _ => bail!(
-                "unsupported file extension .{} for {}; supported extensions: .rs, .js, .ts, .tsx, .py",
+                "unsupported file extension .{} for {}; supported extensions: .rs, .go, .js, .ts, .tsx, .java, .py",
                 extension,
                 path.display()
             ),
@@ -33,8 +37,10 @@ impl SupportedLanguage {
     pub fn grammar_name(self) -> &'static str {
         match self {
             Self::Rust => "rust",
+            Self::Go => "go",
             Self::JavaScript => "javascript",
             Self::TypeScript => "typescript",
+            Self::Java => "java",
             Self::Python => "python",
         }
     }
@@ -59,6 +65,19 @@ impl SupportedLanguage {
   body: (declaration_list
     (function_item
       name: (identifier) @symbol.name) @symbol.definition))
+"#
+            }
+            Self::Go => {
+                r#"
+(function_declaration
+  name: (identifier) @symbol.name) @symbol.definition
+
+(method_declaration
+  name: (field_identifier) @symbol.name) @symbol.definition
+
+(type_declaration
+  (type_spec
+    name: (type_identifier) @symbol.name)) @symbol.definition
 "#
             }
             Self::JavaScript => {
@@ -113,6 +132,27 @@ impl SupportedLanguage {
   name: (type_identifier) @symbol.name) @symbol.definition
 "#
             }
+            Self::Java => {
+                r#"
+(class_declaration
+  name: (identifier) @symbol.name) @symbol.definition
+
+(interface_declaration
+  name: (identifier) @symbol.name) @symbol.definition
+
+(enum_declaration
+  name: (identifier) @symbol.name) @symbol.definition
+
+(record_declaration
+  name: (identifier) @symbol.name) @symbol.definition
+
+(method_declaration
+  name: (identifier) @symbol.name) @symbol.definition
+
+(constructor_declaration
+  name: (identifier) @symbol.name) @symbol.definition
+"#
+            }
             Self::Python => {
                 r#"
 (function_definition
@@ -132,8 +172,10 @@ impl SupportedLanguage {
     pub fn tree_sitter_language(self) -> Language {
         match self {
             Self::Rust => tree_sitter_rust::language(),
+            Self::Go => tree_sitter_go::language(),
             Self::JavaScript => tree_sitter_javascript::language(),
             Self::TypeScript => tree_sitter_typescript::language_typescript(),
+            Self::Java => tree_sitter_java::language(),
             Self::Python => tree_sitter_python::language(),
         }
     }
@@ -155,6 +197,10 @@ mod tests {
             SupportedLanguage::Rust
         );
         assert_eq!(
+            SupportedLanguage::detect(Path::new("src/main.go")).unwrap(),
+            SupportedLanguage::Go
+        );
+        assert_eq!(
             SupportedLanguage::detect(Path::new("src/app.ts")).unwrap(),
             SupportedLanguage::TypeScript
         );
@@ -167,6 +213,10 @@ mod tests {
             SupportedLanguage::JavaScript
         );
         assert_eq!(
+            SupportedLanguage::detect(Path::new("src/Main.java")).unwrap(),
+            SupportedLanguage::Java
+        );
+        assert_eq!(
             SupportedLanguage::detect(Path::new("src/main.py")).unwrap(),
             SupportedLanguage::Python
         );
@@ -174,7 +224,7 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_language_extensions() {
-        let error = SupportedLanguage::detect(Path::new("src/main.go"))
+        let error = SupportedLanguage::detect(Path::new("src/main.kt"))
             .expect_err("unsupported extension should fail");
         assert!(error.to_string().contains("unsupported file extension"));
     }
@@ -183,8 +233,10 @@ mod tests {
     fn exposes_non_empty_symbol_queries() {
         for language in [
             SupportedLanguage::Rust,
+            SupportedLanguage::Go,
             SupportedLanguage::JavaScript,
             SupportedLanguage::TypeScript,
+            SupportedLanguage::Java,
             SupportedLanguage::Python,
         ] {
             assert!(!language.grammar_name().is_empty());
@@ -196,8 +248,10 @@ mod tests {
     fn loads_tree_sitter_queries_for_each_supported_language() {
         for language in [
             SupportedLanguage::Rust,
+            SupportedLanguage::Go,
             SupportedLanguage::JavaScript,
             SupportedLanguage::TypeScript,
+            SupportedLanguage::Java,
             SupportedLanguage::Python,
         ] {
             let query = language.load_symbol_query().expect("query should compile");

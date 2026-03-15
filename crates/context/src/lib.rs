@@ -368,7 +368,10 @@ remote = "upstream"
             find_config_path(&nested_dir, Some(repo_root.as_path())),
             None
         );
-        assert_eq!(load_config(&nested_dir)?.risk.default_level, DEFAULT_RISK_LEVEL);
+        assert_eq!(
+            load_config(&nested_dir)?.risk.default_level,
+            DEFAULT_RISK_LEVEL
+        );
 
         Ok(())
     }
@@ -380,10 +383,19 @@ remote = "upstream"
         let nested_dir = outer_dir.join("work/src");
         fs::create_dir_all(&nested_dir)?;
 
-        fs::write(tempdir.path().join(".why.toml"), "[risk]\ndefault_level = \"HIGH\"\n")?;
-        fs::write(outer_dir.join(".why.toml"), "[risk]\ndefault_level = \"MEDIUM\"\n")?;
+        fs::write(
+            tempdir.path().join(".why.toml"),
+            "[risk]\ndefault_level = \"HIGH\"\n",
+        )?;
+        fs::write(
+            outer_dir.join(".why.toml"),
+            "[risk]\ndefault_level = \"MEDIUM\"\n",
+        )?;
 
-        assert_eq!(load_config(&nested_dir)?.risk.default_level, DEFAULT_RISK_LEVEL);
+        assert_eq!(
+            load_config(&nested_dir)?.risk.default_level,
+            DEFAULT_RISK_LEVEL
+        );
 
         Ok(())
     }
@@ -398,7 +410,10 @@ remote = "upstream"
 
         let repo_config = repo_root.join(".why.toml");
         fs::write(&repo_config, "[risk]\ndefault_level = \"HIGH\"\n")?;
-        fs::write(tempdir.path().join(".why.toml"), "[risk]\ndefault_level = \"LOW\"\n")?;
+        fs::write(
+            tempdir.path().join(".why.toml"),
+            "[risk]\ndefault_level = \"LOW\"\n",
+        )?;
 
         assert_eq!(load_config(&nested_dir)?.risk.default_level, "HIGH");
 
@@ -455,10 +470,7 @@ remote = "upstream"
             return Ok(());
         }
 
-        let fallback = Command::new("git")
-            .arg("init")
-            .current_dir(path)
-            .output()?;
+        let fallback = Command::new("git").arg("init").current_dir(path).output()?;
         if fallback.status.success() {
             return Ok(());
         }

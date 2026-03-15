@@ -109,7 +109,7 @@ pub fn scan_pr_template(repo_root: &Path) -> Result<PrTemplateReport> {
         });
     }
 
-    let hotspots = scan_hotspots(workdir, usize::MAX)?;
+    let hotspots = scan_hotspots(workdir, usize::MAX, None)?;
     let time_bombs = scan_time_bombs(workdir, TIME_BOMB_AGE_DAYS)?;
 
     Ok(PrTemplateReport {
@@ -199,15 +199,18 @@ fn staged_diff_file_from_delta(
         .or_else(|| delta.old_file().path())?
         .to_path_buf();
 
-    Some(staged_ranges_for_delta(diff, index).map(|changed_ranges| StagedDiffFile {
-        path,
-        change,
-        changed_ranges,
-    }))
+    Some(
+        staged_ranges_for_delta(diff, index).map(|changed_ranges| StagedDiffFile {
+            path,
+            change,
+            changed_ranges,
+        }),
+    )
 }
 
 fn staged_ranges_for_delta(diff: &git2::Diff<'_>, index: usize) -> Result<Vec<StagedLineRange>> {
-    let Some(patch) = Patch::from_diff(diff, index).context("failed to inspect staged patch")? else {
+    let Some(patch) = Patch::from_diff(diff, index).context("failed to inspect staged patch")?
+    else {
         return Ok(Vec::new());
     };
 
@@ -531,9 +534,13 @@ fn beta() {
 "#;
         let mut skipped = Vec::new();
 
-        let targets =
-            build_diff_review_targets_for_source(&file, SupportedLanguage::Rust, source, &mut skipped)
-                .expect("diff review targets should build");
+        let targets = build_diff_review_targets_for_source(
+            &file,
+            SupportedLanguage::Rust,
+            source,
+            &mut skipped,
+        )
+        .expect("diff review targets should build");
 
         assert!(skipped.is_empty());
         assert_eq!(
@@ -565,9 +572,13 @@ fn beta() {
         let source = "// crate docs only\n\nconst VALUE: usize = 1;\n";
         let mut skipped = Vec::new();
 
-        let targets =
-            build_diff_review_targets_for_source(&file, SupportedLanguage::Rust, source, &mut skipped)
-                .expect("diff review targets should build");
+        let targets = build_diff_review_targets_for_source(
+            &file,
+            SupportedLanguage::Rust,
+            source,
+            &mut skipped,
+        )
+        .expect("diff review targets should build");
 
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].symbol, None);

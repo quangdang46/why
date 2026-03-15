@@ -5,7 +5,8 @@ use anyhow::{Context, Result};
 use git2::{DiffOptions, Repository, Sort};
 use serde::Serialize;
 use why_archaeologist::{
-    RiskLevel, blame_commit_evidence, discover_repository, extract_local_context, infer_risk_level,
+    RiskLevel, TeamOwner, blame_commit_evidence, discover_repository, extract_local_context,
+    infer_risk_level, summarize_ownership,
 };
 use why_context::load_config;
 
@@ -17,9 +18,16 @@ pub struct HotspotFinding {
     pub risk_level: RiskLevel,
     pub hotspot_score: f32,
     pub top_commit_summaries: Vec<String>,
+    pub owners: Vec<TeamOwner>,
+    pub bus_factor: usize,
+    pub primary_owner: Option<String>,
 }
 
-pub fn scan_hotspots(repo_root: &Path, limit: usize) -> Result<Vec<HotspotFinding>> {
+pub fn scan_hotspots(
+    repo_root: &Path,
+    limit: usize,
+    owner_filter: Option<&str>,
+) -> Result<Vec<HotspotFinding>> {
     let repo = discover_repository(repo_root)?;
     let workdir = repo
         .workdir()
@@ -27,7 +35,7 @@ pub fn scan_hotspots(repo_root: &Path, limit: usize) -> Result<Vec<HotspotFindin
     let config = load_config(workdir)?;
 
     let mut findings = Vec::new();
-    collect_hotspots(&repo, workdir, workdir, &config, &mut findings)?;
+    collect_hotspots(&repo, workdir, workdir, &config, owner_filter, &mut findings)?;
     findings.sort_by(|left, right| {
         right
             .hotspot_score
@@ -45,6 +53,7 @@ fn collect_hotspots(
     workdir: &Path,
     dir: &Path,
     config: &why_context::WhyConfig,
+    owner_filter: Option<&str>,
     findings: &mut Vec<HotspotFinding>,
 ) -> Result<()> {
     for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
@@ -58,7 +67,7 @@ fn collect_hotspots(
             if should_skip_dir(&path) {
                 continue;
             }
-            collect_hotspots(repo, workdir, &path, config, findings)?;
+            collect_hotspots(repo, workdir, &path, config, owner_filter, findings)?;
             continue;
         }
 
@@ -66,7 +75,7 @@ fn collect_hotspots(
             continue;
         }
 
-        if let Some(finding) = analyze_file_hotspot(repo, workdir, &path, config)? {
+        if let Some(finding) = analyze_file_hotspot(repo, workdir, &path, config, owner_filter)? {
             findings.push(finding);
         }
     }
@@ -79,6 +88,7 @@ fn analyze_file_hotspot(
     workdir: &Path,
     path: &Path,
     config: &why_context::WhyConfig,
+    owner_filter: Option<&str>,
 ) -> Result<Option<HotspotFinding>> {
     let relative_path = path
         .strip_prefix(workdir)
@@ -104,6 +114,19 @@ fn analyze_file_hotspot(
         .take(3)
         .map(|commit| commit.summary.clone())
         .collect();
+    let ownership = summarize_ownership(&commits);
+    let primary_owner = ownership.owners.first().map(|owner| owner.author.clone());
+
+    if let Some(owner_filter) = owner_filter {
+        let normalized = owner_filter.trim().to_ascii_lowercase();
+        if !ownership
+            .owners
+            .iter()
+            .any(|owner| owner.author.to_ascii_lowercase() == normalized)
+        {
+            return Ok(None);
+        }
+    }
 
     Ok(Some(HotspotFinding {
         path: relative_path.to_path_buf(),
@@ -111,6 +134,9 @@ fn analyze_file_hotspot(
         risk_level,
         hotspot_score,
         top_commit_summaries,
+        owners: ownership.owners,
+        bus_factor: ownership.bus_factor,
+        primary_owner,
     }))
 }
 
@@ -237,6 +263,56 @@ done
         Ok(dir)
     }
 
+    fn setup_multi_owner_hotspot_repo() -> Result<TempDir> {
+        let dir = TempDir::new().context("failed to create tempdir for multi-owner hotspot fixture")?;
+        let script = r#"
+set -euo pipefail
+cd "$1"
+git init -b main >/dev/null 2>&1 || git init >/dev/null 2>&1
+git config user.email alice@example.com
+git config user.name 'Alice Analyst'
+mkdir -p src
+cat > src/auth.rs <<'EOF'
+pub fn verify_token(token: &str) -> bool {
+    // SECURITY: keep legacy validation during staged rollout
+    token.starts_with("secure-")
+}
+EOF
+cat > src/util.rs <<'EOF'
+pub fn helper(value: i32) -> i32 {
+    value + 1
+}
+EOF
+git add src/auth.rs src/util.rs
+git commit -m 'feat: add auth and util helpers' >/dev/null
+git config user.email bob@example.com
+git config user.name 'Bob Builder'
+cat > src/auth.rs <<'EOF'
+pub fn verify_token(token: &str) -> bool {
+    // SECURITY: keep legacy validation during staged rollout
+    // HACK: temporary rollback guard
+    token.starts_with("secure-") && token.len() > 1
+}
+EOF
+git add src/auth.rs
+git commit -m 'security hotfix: tighten token validation' >/dev/null
+"#;
+        let output = Command::new("bash")
+            .arg("-c")
+            .arg(script)
+            .arg("bash")
+            .arg(dir.path())
+            .output()
+            .context("failed to create multi-owner hotspot fixture")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "multi-owner hotspot fixture setup failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(dir)
+    }
+
     #[test]
     fn weights_risk_levels_for_hotspot_scoring() {
         assert_eq!(risk_weight(RiskLevel::HIGH), 3.0);
@@ -247,7 +323,7 @@ done
     #[test]
     fn scan_hotspots_ranks_high_churn_high_risk_files_first() -> Result<()> {
         let fixture = setup_hotspot_repo()?;
-        let findings = scan_hotspots(fixture.path(), 5)?;
+        let findings = scan_hotspots(fixture.path(), 5, None)?;
 
         assert!(!findings.is_empty());
         assert_eq!(findings[0].path, std::path::Path::new("src/auth.rs"));
@@ -272,8 +348,53 @@ done
     #[test]
     fn scan_hotspots_respects_limit() -> Result<()> {
         let fixture = setup_hotspot_repo()?;
-        let findings = scan_hotspots(fixture.path(), 1)?;
+        let findings = scan_hotspots(fixture.path(), 1, None)?;
         assert_eq!(findings.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn scan_hotspots_includes_ownership_metadata() -> Result<()> {
+        let fixture = setup_hotspot_repo()?;
+        let findings = scan_hotspots(fixture.path(), 5, None)?;
+
+        let auth = findings
+            .iter()
+            .find(|finding: &&HotspotFinding| finding.path == std::path::Path::new("src/auth.rs"))
+            .context("expected auth hotspot finding")?;
+        assert_eq!(auth.primary_owner.as_deref(), Some("Fixture Bot"));
+        assert_eq!(auth.bus_factor, 1);
+        assert_eq!(auth.owners.len(), 1);
+        assert_eq!(auth.owners[0].author, "Fixture Bot");
+        assert_eq!(auth.owners[0].commit_count, 2);
+        assert_eq!(auth.owners[0].ownership_percent, 100);
+        Ok(())
+    }
+
+    #[test]
+    fn scan_hotspots_filters_by_owner_case_insensitively() -> Result<()> {
+        let fixture = setup_multi_owner_hotspot_repo()?;
+        let findings = scan_hotspots(fixture.path(), 5, Some(" bob builder "))?;
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].path, std::path::Path::new("src/auth.rs"));
+        assert_eq!(findings[0].primary_owner.as_deref(), Some("Alice Analyst"));
+        assert_eq!(findings[0].bus_factor, 1);
+        assert_eq!(findings[0].owners.len(), 2);
+        assert_eq!(findings[0].owners[0].author, "Alice Analyst");
+        assert_eq!(findings[0].owners[0].commit_count, 1);
+        assert_eq!(findings[0].owners[0].ownership_percent, 50);
+        assert_eq!(findings[0].owners[1].author, "Bob Builder");
+        assert_eq!(findings[0].owners[1].commit_count, 1);
+        assert_eq!(findings[0].owners[1].ownership_percent, 50);
+        Ok(())
+    }
+
+    #[test]
+    fn scan_hotspots_returns_empty_when_owner_is_absent() -> Result<()> {
+        let fixture = setup_multi_owner_hotspot_repo()?;
+        let findings = scan_hotspots(fixture.path(), 5, Some("carol reviewer"))?;
+        assert!(findings.is_empty());
         Ok(())
     }
 

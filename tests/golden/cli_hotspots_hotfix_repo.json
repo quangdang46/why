@@ -7,6 +7,16 @@
     "top_commit_summaries": [
       "hotfix: fix duplicate charge vulnerability, closes #4521",
       "feat: add payment processing"
-    ]
+    ],
+    "owners": [
+      {
+        "author": "Fixture Bot",
+        "commit_count": 2,
+        "ownership_percent": 100,
+        "last_commit_date": "<date>"
+      }
+    ],
+    "bus_factor": 1,
+    "primary_owner": "Fixture Bot"
   }
 ]

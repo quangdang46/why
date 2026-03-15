@@ -251,8 +251,16 @@ mod tests {
             SupportedLanguage::Rust
         );
         assert_eq!(
+            detect_language(Path::new("src/file.go")).unwrap(),
+            SupportedLanguage::Go
+        );
+        assert_eq!(
             detect_language(Path::new("src/file.ts")).unwrap(),
             SupportedLanguage::TypeScript
+        );
+        assert_eq!(
+            detect_language(Path::new("src/Main.java")).unwrap(),
+            SupportedLanguage::Java
         );
         assert_eq!(
             detect_language(Path::new("src/file.py")).unwrap(),

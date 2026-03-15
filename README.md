@@ -138,7 +138,7 @@ why uninstall-hooks
 Current Rust CLI notes:
 - The Rust CLI uses positional target syntax (`why <target> [flags]`), not `fn|file|line` subcommands.
 - `--lines <start:end>` supports explicit range queries.
-- Symbol queries like `why src/auth.js:verifyToken` are implemented in the current Rust CLI for Rust, JavaScript, TypeScript, and Python.
+- Symbol queries like `why src/auth.js:verifyToken` are implemented in the current Rust CLI for Rust, Go, JavaScript, TypeScript, Java, and Python.
 - Qualified symbol queries like `why src/payment.rs:PaymentService::process_payment` are implemented for Rust impl methods.
 - The Rust CLI uses `--json` for machine-readable output; `--raw` is a Node POC flag, not a Rust CLI flag.
 
@@ -204,7 +204,7 @@ Add to your project's `CLAUDE.md`:
 - `why <file>:<line>` — explain why a specific line was written
 - `why <file> --lines <start:end>` — explain why a line range exists
 - `why <file>:<line> --json` — return machine-readable raw archaeology output
-- `why <file>:<symbol>` — explain why a supported symbol exists (Rust, JavaScript, TypeScript, Python)
+- `why <file>:<symbol>` — explain why a supported symbol exists (Rust, Go, JavaScript, TypeScript, Java, Python)
 - `why <file>:<symbol> --coupled` — inspect co-change dependencies before a deeper refactor
 - `why <file>:<symbol> --team` — identify likely owners before asking for review on risky code
 

@@ -29,7 +29,12 @@ pub struct CacheEntry {
 pub struct HealthSnapshot {
     pub timestamp: i64,
     pub debt_score: u32,
-    pub details: HashMap<String, u32>,
+    #[serde(alias = "details")]
+    pub signals: HashMap<String, u32>,
+    #[serde(default)]
+    pub head_hash: Option<String>,
+    #[serde(default)]
+    pub ref_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -218,8 +223,9 @@ fn safe_cache_file_metadata(path: &Path) -> Result<Option<fs::Metadata>> {
             Ok(Some(metadata))
         }
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error)
-            .with_context(|| format!("failed to inspect cache file {}", path.display())),
+        Err(error) => {
+            Err(error).with_context(|| format!("failed to inspect cache file {}", path.display()))
+        }
     }
 }
 
@@ -366,12 +372,14 @@ mod tests {
         let mut cache = Cache::open(dir.path(), 10)?;
 
         for week in 0..53 {
-            let mut details = HashMap::new();
-            details.insert("time_bombs".into(), week as u32);
+            let mut signals = HashMap::new();
+            signals.insert("time_bombs".into(), week as u32);
             cache.insert_health_snapshot(HealthSnapshot {
                 timestamp: week,
                 debt_score: week as u32,
-                details,
+                signals,
+                head_hash: None,
+                ref_name: None,
             })?;
         }
 
@@ -386,6 +394,17 @@ mod tests {
             Some(52)
         );
         Ok(())
+    }
+
+    #[test]
+    fn health_snapshot_backwards_compatibly_reads_legacy_details_field() {
+        let snapshot: HealthSnapshot = serde_json::from_str(
+            r#"{"timestamp":1,"debt_score":7,"details":{"time_bombs":2}}"#,
+        )
+        .expect("legacy health snapshot should parse");
+        assert_eq!(snapshot.signals.get("time_bombs"), Some(&2));
+        assert_eq!(snapshot.head_hash, None);
+        assert_eq!(snapshot.ref_name, None);
     }
 
     #[cfg(unix)]

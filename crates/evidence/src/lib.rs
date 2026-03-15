@@ -1186,20 +1186,25 @@ mod tests {
         let error = select_single_github_ref(&["garbage".to_string()])
             .expect_err("missing GitHub refs should fail");
 
-        assert!(error.to_string().contains("exactly one #123-style issue/PR reference"));
+        assert!(
+            error
+                .to_string()
+                .contains("exactly one #123-style issue/PR reference")
+        );
         assert!(error.to_string().contains("none were found"));
     }
 
     #[test]
     fn test_select_single_github_ref_rejects_multiple_refs() {
-        let error = select_single_github_ref(&[
-            "#42".to_string(),
-            "#7".to_string(),
-            "#42".to_string(),
-        ])
-        .expect_err("multiple GitHub refs should fail");
+        let error =
+            select_single_github_ref(&["#42".to_string(), "#7".to_string(), "#42".to_string()])
+                .expect_err("multiple GitHub refs should fail");
 
-        assert!(error.to_string().contains("exactly one #123-style issue/PR reference"));
+        assert!(
+            error
+                .to_string()
+                .contains("exactly one #123-style issue/PR reference")
+        );
         assert!(error.to_string().contains("#7, #42"));
     }
 }

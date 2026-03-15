@@ -529,6 +529,64 @@ mod tests {
     }
 
     #[test]
+    fn resolves_go_function_symbol() {
+        let temp = TempSourceDir::new();
+        temp.write_file(
+            "src/main.go",
+            "package main\n\nfunc Authenticate(token string) bool {\n    return token != \"\"\n}\n",
+        );
+
+        let target = QueryTarget {
+            path: PathBuf::from("src/main.go"),
+            start_line: None,
+            end_line: None,
+            symbol: Some("Authenticate".into()),
+            query_kind: QueryKind::Symbol,
+        };
+
+        let resolved = resolve_target(&target, &temp.path).expect("Go symbol should resolve");
+        assert_eq!(
+            resolved,
+            ResolvedTarget {
+                path: PathBuf::from("src/main.go"),
+                start_line: 3,
+                end_line: 5,
+                query_kind: QueryKind::Symbol,
+                symbol: Some("Authenticate".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn resolves_java_method_symbol() {
+        let temp = TempSourceDir::new();
+        temp.write_file(
+            "src/AuthService.java",
+            "class AuthService {\n    boolean login() {\n        return true;\n    }\n}\n",
+        );
+
+        let target = QueryTarget {
+            path: PathBuf::from("src/AuthService.java"),
+            start_line: None,
+            end_line: None,
+            symbol: Some("login".into()),
+            query_kind: QueryKind::Symbol,
+        };
+
+        let resolved = resolve_target(&target, &temp.path).expect("Java symbol should resolve");
+        assert_eq!(
+            resolved,
+            ResolvedTarget {
+                path: PathBuf::from("src/AuthService.java"),
+                start_line: 2,
+                end_line: 4,
+                query_kind: QueryKind::Symbol,
+                symbol: Some("login".into()),
+            }
+        );
+    }
+
+    #[test]
     fn collects_rust_symbol_matches_from_source() {
         let source = "pub struct AuthService;\n\nimpl AuthService {\n    pub fn login(&self) -> bool {\n        true\n    }\n}\n\npub fn authenticate() -> bool {\n    true\n}\n";
         let matches = collect_symbol_matches(SupportedLanguage::Rust, source)
@@ -676,6 +734,36 @@ mod tests {
                 ("AuthService".to_string(), 1, 3),
                 ("login".to_string(), 2, 3),
                 ("authenticate".to_string(), 5, 7),
+            ]
+        );
+    }
+
+    #[test]
+    fn lists_go_symbols_from_source() {
+        let source = "package main\n\ntype AuthService struct{}\n\nfunc Authenticate(token string) bool {\n    return token != \"\"\n}\n";
+        let symbols = list_all_symbols(SupportedLanguage::Go, source)
+            .expect("go symbols should list");
+
+        assert_eq!(
+            symbols,
+            vec![
+                ("AuthService".to_string(), 3, 3),
+                ("Authenticate".to_string(), 5, 7),
+            ]
+        );
+    }
+
+    #[test]
+    fn lists_java_symbols_from_source() {
+        let source = "class AuthService {\n    AuthService() {}\n\n    boolean login() {\n        return true;\n    }\n}\n";
+        let symbols = list_all_symbols(SupportedLanguage::Java, source)
+            .expect("java symbols should list");
+
+        assert_eq!(
+            symbols,
+            vec![
+                ("AuthService".to_string(), 1, 7),
+                ("login".to_string(), 4, 6),
             ]
         );
     }

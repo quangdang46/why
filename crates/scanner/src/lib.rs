@@ -33,13 +33,16 @@ const SKIPPED_DIR_NAMES: &[&str] = &[
 pub use coupling::{CouplingFinding, CouplingReport, scan_coupling};
 pub use coverage_gap::{CoverageGapFinding, CoverageGapReport, scan_coverage_gap};
 pub use ghost::{GhostFinding, scan_ghosts};
-pub use health::{HealthDelta, HealthReport, scan_health};
+pub use health::{
+    HealthBaselineReference, HealthComparison, HealthDelta, HealthGateSummary, HealthReport,
+    HealthSignalDelta, scan_health,
+};
 pub use hotspots::{HotspotFinding, scan_hotspots};
 pub use onboard::{OnboardFinding, scan_onboard};
 pub use outage::{OutageFinding, OutageReport, scan_outage, scan_outage_window};
 pub use pr_template::{
-    DiffReviewPlan, DiffReviewTarget, PrTemplateReport, StagedChange, StagedDiffFile,
-    StagedFile, StagedLineRange, scan_diff_review, scan_pr_template,
+    DiffReviewPlan, DiffReviewTarget, PrTemplateReport, StagedChange, StagedDiffFile, StagedFile,
+    StagedLineRange, scan_diff_review, scan_pr_template,
 };
 pub use time_bombs::{Severity, TimeBombFinding, TimeBombKind, scan_time_bombs};
 

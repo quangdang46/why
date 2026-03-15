@@ -121,6 +121,12 @@ pub struct TeamReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OwnershipSummary {
+    pub owners: Vec<TeamOwner>,
+    pub bus_factor: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BlameChainResult {
     pub target: OutputTarget,
     pub starting_commit: CommitEvidence,
@@ -501,34 +507,9 @@ pub fn analyze_blame_chain(
     })
 }
 
-pub fn analyze_team(
-    target: &QueryTarget,
-    cwd: &Path,
-    since_days: Option<u64>,
-) -> Result<TeamReport> {
-    let resolved = resolve_target(target, cwd)?;
-    let config = load_config(cwd)?;
-    let target_path = cwd.join(&resolved.path);
-    let repo = discover_repository(&target_path)?;
-    let relative_path = relative_repo_path(&repo, &target_path)?;
-    let commits = blame_commit_evidence(
-        &repo,
-        &relative_path,
-        resolved.start_line,
-        resolved.end_line,
-        &config,
-        since_days,
-    )?;
-    let local_context = extract_local_context(
-        &target_path,
-        resolved.start_line,
-        resolved.end_line,
-        &config,
-    )?;
-    let risk_level = infer_risk_level(&commits, &local_context, &config);
-
+pub fn summarize_ownership(commits: &[CommitEvidence]) -> OwnershipSummary {
     let mut by_author: BTreeMap<String, (usize, i64)> = BTreeMap::new();
-    for commit in &commits {
+    for commit in commits {
         let entry = by_author
             .entry(commit.author.clone())
             .or_insert((0, commit.time));
@@ -558,7 +539,38 @@ pub fn analyze_team(
         .find(|owner| owner.ownership_percent >= 50)
         .map(|_| 1)
         .unwrap_or(owners.len().min(2));
-    let risk_summary = if let Some(primary) = owners.first() {
+
+    OwnershipSummary { owners, bus_factor }
+}
+
+pub fn analyze_team(
+    target: &QueryTarget,
+    cwd: &Path,
+    since_days: Option<u64>,
+) -> Result<TeamReport> {
+    let resolved = resolve_target(target, cwd)?;
+    let config = load_config(cwd)?;
+    let target_path = cwd.join(&resolved.path);
+    let repo = discover_repository(&target_path)?;
+    let relative_path = relative_repo_path(&repo, &target_path)?;
+    let commits = blame_commit_evidence(
+        &repo,
+        &relative_path,
+        resolved.start_line,
+        resolved.end_line,
+        &config,
+        since_days,
+    )?;
+    let local_context = extract_local_context(
+        &target_path,
+        resolved.start_line,
+        resolved.end_line,
+        &config,
+    )?;
+    let risk_level = infer_risk_level(&commits, &local_context, &config);
+    let ownership = summarize_ownership(&commits);
+
+    let risk_summary = if let Some(primary) = ownership.owners.first() {
         format!(
             "{} is the primary owner of {}-risk code for this target.",
             primary.author,
@@ -578,8 +590,8 @@ pub fn analyze_team(
             end_line: resolved.end_line,
             query_kind: resolved.query_kind,
         },
-        owners,
-        bus_factor,
+        owners: ownership.owners,
+        bus_factor: ownership.bus_factor,
         risk_level,
         risk_summary,
     })
