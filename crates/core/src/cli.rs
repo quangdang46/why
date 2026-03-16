@@ -9,7 +9,7 @@ use why_locator::{QueryTarget, parse_target};
 #[command(name = "why")]
 #[command(
     about = "Ask your codebase why a line, range, symbol, or repo hotspot exists",
-    after_help = "Examples:\n  why src/auth.rs:42\n  why src/auth.rs --lines 40:45 --no-llm\n  why src/auth.rs:verify_token --json\n  why src/auth.rs:verify_token --annotate\n  why src/auth.rs:AuthService::login --team\n  why src/auth.rs:verify_token --blame-chain\n  why src/auth.rs:verify_token --evolution\n  why hotspots --limit 10\n  why health\n  why health --ci 80\n  why pr-template\n  why diff-review --no-llm\n  why explain-outage --from 2025-11-03T14:00 --to 2025-11-03T16:30\n  why coverage-gap --coverage lcov.info\n  why ghost --limit 10\n  why onboard --limit 10\n  why time-bombs --age-days 180\n  eval \"$(why context-inject)\""
+    after_help = "Examples:\n  why src/auth.rs:42\n  why src/auth.rs --lines 40:45 --no-llm\n  why src/auth.rs:verify_token --json\n  why src/auth.rs:verify_token --annotate\n  why src/auth.rs:verify_token --rename-safe\n  why src/auth.rs:AuthService::login --team\n  why src/auth.rs:verify_token --blame-chain\n  why src/auth.rs:verify_token --evolution\n  why hotspots --limit 10\n  why health\n  why health --ci 80\n  why pr-template\n  why diff-review --no-llm\n  why explain-outage --from 2025-11-03T14:00 --to 2025-11-03T16:30\n  why coverage-gap --coverage lcov.info\n  why ghost --limit 10\n  why onboard --limit 10\n  why time-bombs --age-days 180\n  eval \"$(why context-inject)\""
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -61,6 +61,10 @@ pub struct Cli {
     /// Write a short evidence-backed doc annotation above the target.
     #[arg(long)]
     pub annotate: bool,
+
+    /// Show target risk plus caller risk to assess whether a Rust symbol rename is safe.
+    #[arg(long)]
+    pub rename_safe: bool,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -245,6 +249,7 @@ pub struct QueryRequest {
     pub blame_chain: bool,
     pub evolution: bool,
     pub annotate: bool,
+    pub rename_safe: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -342,6 +347,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.rename_safe
                 {
                     bail!("the mcp subcommand does not accept query flags or a target");
                 }
@@ -360,6 +366,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.rename_safe
                 {
                     bail!("the shell subcommand does not accept query flags or a target");
                 }
@@ -378,6 +385,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.rename_safe
                 {
                     bail!("the lsp subcommand does not accept query flags or a target");
                 }
@@ -396,6 +404,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.rename_safe
                 {
                     bail!("the context-inject subcommand does not accept query flags or a target");
                 }
@@ -413,6 +422,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.rename_safe
                 {
                     bail!("the hotspots subcommand does not accept query flags or a target");
                 }
@@ -445,6 +455,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.rename_safe
                 {
                     bail!("the health subcommand does not accept query flags or a target");
                 }
@@ -481,6 +492,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.rename_safe
                 {
                     bail!("the pr-template subcommand does not accept query flags or a target");
                 }
@@ -503,6 +515,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.rename_safe
                 {
                     bail!("the explain-outage subcommand does not accept query flags or a target");
                 }
@@ -538,6 +551,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.rename_safe
                     || self.json
                 {
                     bail!("the diff-review subcommand does not accept query flags or a target");
@@ -582,6 +596,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.rename_safe
                 {
                     bail!("the coverage-gap subcommand does not accept query flags or a target");
                 }
@@ -613,6 +628,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.rename_safe
                 {
                     bail!("the ghost subcommand does not accept query flags or a target");
                 }
@@ -633,6 +649,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.rename_safe
                 {
                     bail!("the onboard subcommand does not accept query flags or a target");
                 }
@@ -654,6 +671,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.rename_safe
                 {
                     bail!("the install-hooks subcommand does not accept query flags or a target");
                 }
@@ -672,6 +690,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.rename_safe
                 {
                     bail!("the uninstall-hooks subcommand does not accept query flags or a target");
                 }
@@ -690,6 +709,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.rename_safe
                 {
                     bail!("the completions subcommand does not accept query flags or a target");
                 }
@@ -708,6 +728,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.rename_safe
                 {
                     bail!("the manpage subcommand does not accept query flags or a target");
                 }
@@ -725,6 +746,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.rename_safe
                 {
                     bail!("the time-bombs subcommand does not accept query flags or a target");
                 }
@@ -749,6 +771,7 @@ impl Cli {
                     blame_chain: self.blame_chain,
                     evolution: self.evolution,
                     annotate: self.annotate,
+                    rename_safe: self.rename_safe,
                 }))
             }
         }
@@ -787,6 +810,7 @@ mod tests {
                 blame_chain: false,
                 evolution: false,
                 annotate: false,
+                rename_safe: false,
             })
         );
     }
@@ -823,6 +847,7 @@ mod tests {
                 blame_chain: false,
                 evolution: false,
                 annotate: false,
+                rename_safe: false,
             })
         );
     }
@@ -949,6 +974,28 @@ mod tests {
         assert_eq!(request.target.symbol.as_deref(), Some("authenticate"));
         assert_eq!(request.target.query_kind, QueryKind::Symbol);
         assert!(request.annotate);
+        assert!(!request.rename_safe);
+        assert!(!request.split);
+        assert!(!request.coupled);
+        assert!(!request.team);
+        assert!(!request.blame_chain);
+        assert!(!request.evolution);
+    }
+
+    #[test]
+    fn parses_rename_safe_request() {
+        let cli = Cli::parse_from(["why", "src/lib.rs:authenticate", "--rename-safe"]);
+        let mode = cli.parse_mode().expect("rename-safe target should parse");
+        assert!(matches!(mode, Mode::Query(_)), "expected query mode");
+        let Mode::Query(request) = mode else {
+            return;
+        };
+
+        assert_eq!(request.target.path, PathBuf::from("src/lib.rs"));
+        assert_eq!(request.target.symbol.as_deref(), Some("authenticate"));
+        assert_eq!(request.target.query_kind, QueryKind::Symbol);
+        assert!(request.rename_safe);
+        assert!(!request.annotate);
         assert!(!request.split);
         assert!(!request.coupled);
         assert!(!request.team);

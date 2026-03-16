@@ -12,6 +12,7 @@ pub mod hotspots;
 pub mod onboard;
 pub mod outage;
 pub mod pr_template;
+pub mod rename_safe;
 pub mod time_bombs;
 
 const SOURCE_EXTENSIONS: &[&str] = &[
@@ -44,6 +45,7 @@ pub use pr_template::{
     DiffReviewPlan, DiffReviewTarget, PrTemplateReport, StagedChange, StagedDiffFile, StagedFile,
     StagedLineRange, scan_diff_review, scan_pr_template,
 };
+pub use rename_safe::{RenameSafeCallerFinding, RenameSafeReport, RenameSafeTarget, scan_rename_safe};
 pub use time_bombs::{Severity, TimeBombFinding, TimeBombKind, scan_time_bombs};
 
 pub(crate) fn is_source_file(path: &Path) -> bool {

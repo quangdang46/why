@@ -5,8 +5,8 @@ use anyhow::bail;
 use common::{
     assert_json_golden, assert_terminal_golden, setup_compat_shim_repo, setup_coupling_repo,
     setup_coupling_rich_repo, setup_ghost_repo, setup_hotfix_repo, setup_javascript_repo,
-    setup_outage_repo, setup_python_repo, setup_sparse_repo, setup_split_repo, setup_timebomb_repo,
-    setup_timebomb_rich_repo, setup_typescript_repo,
+    setup_outage_repo, setup_python_repo, setup_rename_safe_repo, setup_sparse_repo,
+    setup_split_repo, setup_timebomb_repo, setup_timebomb_rich_repo, setup_typescript_repo,
 };
 use serde_json::Value;
 use std::fs;
@@ -494,6 +494,68 @@ fn coupling_queries_render_terminal_output_for_rich_fixture_repo() -> Result<()>
     assert!(stdout.contains("src/data.rs"));
     assert!(stdout.contains("src/metrics.rs"));
     assert_terminal_golden("cli_coupling_coupling_rich_repo", &stdout)?;
+
+    Ok(())
+}
+
+#[test]
+fn rename_safe_queries_return_ranked_json_for_fixture_repo() -> Result<()> {
+    let repo = setup_rename_safe_repo()?;
+    let output = repo.run_why(&[
+        "src/payment.rs:PaymentService::process_payment",
+        "--rename-safe",
+        "--json",
+    ])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    let parsed: Value = serde_json::from_str(&stdout)?;
+    assert_eq!(parsed["mode"], "rename-safe");
+    assert_eq!(parsed["target"]["path"], "src/payment.rs");
+    assert_eq!(parsed["target"]["symbol"], "process_payment");
+    assert_eq!(
+        parsed["target"]["qualified_name"],
+        "PaymentService::process_payment"
+    );
+    assert_eq!(parsed["target"]["risk_level"], "HIGH");
+    let callers = parsed["callers"]
+        .as_array()
+        .expect("rename-safe callers should be an array");
+    assert_eq!(callers.len(), 3);
+    assert_eq!(
+        callers[0]["qualified_name"],
+        "CheckoutOrchestrator::complete_checkout"
+    );
+    assert_eq!(callers[0]["call_site_count"], 1);
+    assert_eq!(callers[1]["qualified_name"], "AuditLogger::audit_payment");
+    assert!(callers[2]["qualified_name"].is_null());
+    assert_eq!(callers[2]["symbol"], "replay_payment");
+    assert!(
+        parsed["notes"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
+
+    Ok(())
+}
+
+#[test]
+fn rename_safe_queries_render_terminal_output_for_fixture_repo() -> Result<()> {
+    let repo = setup_rename_safe_repo()?;
+    let output = repo.run_why(&[
+        "src/payment.rs:PaymentService::process_payment",
+        "--rename-safe",
+    ])?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    assert!(stdout.contains("Rename-safe review for src/payment.rs:6-13"));
+    assert!(stdout.contains("Target: process_payment (PaymentService::process_payment)"));
+    assert!(stdout.contains("Caller symbols (3)"));
+    assert!(stdout.contains("AuditLogger::audit_payment"));
+    assert!(stdout.contains("CheckoutOrchestrator::complete_checkout"));
+    assert!(stdout.contains("replay_payment"));
+    assert!(stdout.contains("Notes"));
 
     Ok(())
 }

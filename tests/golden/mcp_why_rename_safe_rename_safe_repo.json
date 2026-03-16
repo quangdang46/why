@@ -1,0 +1,73 @@
+{
+  "mode": "rename-safe",
+  "target": {
+    "path": "src/payment.rs",
+    "symbol": "process_payment",
+    "qualified_name": "PaymentService::process_payment",
+    "start_line": 6,
+    "end_line": 13,
+    "risk_level": "HIGH",
+    "risk_summary": "The history suggests security sensitivity, incident context, or non-routine compatibility risk.",
+    "change_guidance": "Stop and investigate before deleting or heavily refactoring this target.",
+    "commit_count": 2,
+    "summary": "hotfix: harden process_payment after duplicate charge incident #4521",
+    "top_commit_summaries": [
+      "hotfix: harden process_payment after duplicate charge incident #4521",
+      "feat: add payment workflow"
+    ]
+  },
+  "callers": [
+    {
+      "path": "src/payment.rs",
+      "symbol": "complete_checkout",
+      "qualified_name": "CheckoutOrchestrator::complete_checkout",
+      "start_line": 17,
+      "end_line": 20,
+      "call_site_count": 1,
+      "risk_level": "HIGH",
+      "risk_summary": "The history suggests security sensitivity, incident context, or non-routine compatibility risk.",
+      "change_guidance": "Stop and investigate before deleting or heavily refactoring this target.",
+      "commit_count": 1,
+      "summary": "feat: add payment workflow",
+      "top_commit_summaries": [
+        "feat: add payment workflow"
+      ]
+    },
+    {
+      "path": "src/payment.rs",
+      "symbol": "audit_payment",
+      "qualified_name": "AuditLogger::audit_payment",
+      "start_line": 24,
+      "end_line": 26,
+      "call_site_count": 1,
+      "risk_level": "HIGH",
+      "risk_summary": "The history suggests security sensitivity, incident context, or non-routine compatibility risk.",
+      "change_guidance": "Stop and investigate before deleting or heavily refactoring this target.",
+      "commit_count": 1,
+      "summary": "feat: add payment workflow",
+      "top_commit_summaries": [
+        "feat: add payment workflow"
+      ]
+    },
+    {
+      "path": "src/reporting.rs",
+      "symbol": "replay_payment",
+      "qualified_name": null,
+      "start_line": 3,
+      "end_line": 5,
+      "call_site_count": 1,
+      "risk_level": "LOW",
+      "risk_summary": "The available history does not show unusual operational or compatibility pressure.",
+      "change_guidance": "Treat this as ordinary code unless stronger evidence appears elsewhere.",
+      "commit_count": 1,
+      "summary": "feat: add payment replay reporting",
+      "top_commit_summaries": [
+        "feat: add payment replay reporting"
+      ]
+    }
+  ],
+  "notes": [
+    "Rename-safe caller discovery is heuristic: scanned Rust call-like occurrences of `process_payment` and attributed them to the smallest enclosing symbol.",
+    "Resolved target to `PaymentService::process_payment`. Prefer `src/payment.rs:PaymentService::process_payment` for future rename-safe runs."
+  ]
+}

@@ -3,7 +3,8 @@ mod common;
 use anyhow::Result;
 use common::{
     assert_json_golden, ensure_success, setup_coupling_repo, setup_coupling_rich_repo,
-    setup_hotfix_repo, setup_split_repo, setup_timebomb_repo, setup_timebomb_rich_repo,
+    setup_hotfix_repo, setup_rename_safe_repo, setup_split_repo, setup_timebomb_repo,
+    setup_timebomb_rich_repo,
 };
 use serde_json::Value;
 
@@ -100,6 +101,48 @@ fn coupling_golden_view(payload: &Value) -> Value {
     })
 }
 
+fn rename_safe_golden_view(payload: &Value) -> Value {
+    serde_json::json!({
+        "mode": payload["mode"],
+        "target": {
+            "path": payload["target"]["path"],
+            "symbol": payload["target"]["symbol"],
+            "qualified_name": payload["target"]["qualified_name"],
+            "start_line": payload["target"]["start_line"],
+            "end_line": payload["target"]["end_line"],
+            "risk_level": payload["target"]["risk_level"],
+            "risk_summary": payload["target"]["risk_summary"],
+            "change_guidance": payload["target"]["change_guidance"],
+            "commit_count": payload["target"]["commit_count"],
+            "summary": payload["target"]["summary"],
+            "top_commit_summaries": payload["target"]["top_commit_summaries"]
+        },
+        "callers": payload["callers"]
+            .as_array()
+            .map(|callers| {
+                callers
+                    .iter()
+                    .map(|caller| serde_json::json!({
+                        "path": caller["path"],
+                        "symbol": caller["symbol"],
+                        "qualified_name": caller["qualified_name"],
+                        "start_line": caller["start_line"],
+                        "end_line": caller["end_line"],
+                        "call_site_count": caller["call_site_count"],
+                        "risk_level": caller["risk_level"],
+                        "risk_summary": caller["risk_summary"],
+                        "change_guidance": caller["change_guidance"],
+                        "commit_count": caller["commit_count"],
+                        "summary": caller["summary"],
+                        "top_commit_summaries": caller["top_commit_summaries"]
+                    }))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+        "notes": payload["notes"]
+    })
+}
+
 #[test]
 fn mcp_initialize_and_tools_list_work_over_stdio() -> Result<()> {
     let repo = setup_hotfix_repo()?;
@@ -119,12 +162,13 @@ fn mcp_initialize_and_tools_list_work_over_stdio() -> Result<()> {
     let tools = responses[1]["result"]["tools"]
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("tools/list should return tool array"))?;
-    assert_eq!(tools.len(), 5);
+    assert_eq!(tools.len(), 6);
     assert_eq!(tools[0]["name"], "why_symbol");
     assert_eq!(tools[1]["name"], "why_split");
     assert_eq!(tools[2]["name"], "why_time_bombs");
     assert_eq!(tools[3]["name"], "why_hotspots");
     assert_eq!(tools[4]["name"], "why_coupling");
+    assert_eq!(tools[5]["name"], "why_rename_safe");
 
     Ok(())
 }
@@ -326,6 +370,47 @@ fn mcp_why_coupling_returns_ranked_findings_for_rich_fixture() -> Result<()> {
     assert_json_golden(
         "mcp_why_coupling_coupling_rich_repo",
         &coupling_golden_view(payload),
+    )?;
+
+    Ok(())
+}
+
+#[test]
+fn mcp_why_rename_safe_returns_ranked_callers() -> Result<()> {
+    let repo = setup_rename_safe_repo()?;
+    let output = repo.run_why_with_stdin(
+        &["mcp"],
+        concat!(
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{",
+            "\"name\":\"why_rename_safe\",",
+            "\"arguments\":{\"target\":\"src/payment.rs:PaymentService::process_payment\",\"since_days\":3650}",
+            "}}\n"
+        ),
+    )?;
+    ensure_success(&output)?;
+
+    let responses = response_lines(&output)?;
+    let payload = &responses[0]["result"]["content"][0]["json"];
+    assert_eq!(payload["mode"], "rename-safe");
+    assert_eq!(payload["target"]["path"], "src/payment.rs");
+    assert_eq!(
+        payload["target"]["qualified_name"],
+        "PaymentService::process_payment"
+    );
+    let callers = payload["callers"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("rename-safe should include callers array"))?;
+    assert_eq!(callers.len(), 3);
+    assert_eq!(
+        callers[0]["qualified_name"],
+        "CheckoutOrchestrator::complete_checkout"
+    );
+    assert_eq!(callers[1]["qualified_name"], "AuditLogger::audit_payment");
+    assert!(callers[2]["qualified_name"].is_null());
+    assert_eq!(callers[2]["symbol"], "replay_payment");
+    assert_json_golden(
+        "mcp_why_rename_safe_rename_safe_repo",
+        &rename_safe_golden_view(payload),
     )?;
 
     Ok(())

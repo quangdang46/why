@@ -30,8 +30,8 @@ use why_locator::QueryKind;
 use why_scanner::{
     CouplingReport, CoverageGapReport, DiffReviewPlan, DiffReviewTarget, GhostFinding,
     HealthBaselineReference, HealthComparison, HealthDelta, HealthGateSummary, HealthReport,
-    HealthSignalDelta, HotspotFinding, OnboardFinding, OutageReport, PrTemplateReport, Severity,
-    TimeBombFinding, TimeBombKind,
+    HealthSignalDelta, HotspotFinding, OnboardFinding, OutageReport, PrTemplateReport,
+    RenameSafeReport, Severity, TimeBombFinding, TimeBombKind,
 };
 use why_splitter::SplitSuggestion;
 use why_synthesizer::{
@@ -163,6 +163,10 @@ fn run() -> Result<ExitStatus> {
             run_time_bombs(age_days, json)?;
             Ok(ExitStatus::Success)
         }
+        Mode::Query(request) => {
+            run_query(request)?;
+            Ok(ExitStatus::Success)
+        }
         Mode::InstallHooks { warn_only } => {
             run_install_hooks(warn_only)?;
             Ok(ExitStatus::Success)
@@ -177,10 +181,6 @@ fn run() -> Result<ExitStatus> {
         }
         Mode::Manpage => {
             run_manpage()?;
-            Ok(ExitStatus::Success)
-        }
-        Mode::Query(request) => {
-            run_query(request)?;
             Ok(ExitStatus::Success)
         }
     }
@@ -493,6 +493,19 @@ fn run_time_bombs(age_days: i64, json: bool) -> Result<()> {
     Ok(())
 }
 
+fn run_rename_safe(request: &QueryRequest, links: &TerminalLinkContext) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let report = why_scanner::scan_rename_safe(&cwd, &request.target, request.since_days)?;
+
+    if request.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        render_rename_safe_terminal(&report, links);
+    }
+
+    Ok(())
+}
+
 fn run_completions(shell: CompletionShell) -> Result<()> {
     let mut command = Cli::command();
     let name = command.get_name().to_string();
@@ -548,6 +561,11 @@ fn run_query(request: QueryRequest) -> Result<()> {
         } else {
             render_team_terminal(&report, Some(&terminal_links));
         }
+        return Ok(());
+    }
+
+    if request.rename_safe {
+        run_rename_safe(&request, &terminal_links)?;
         return Ok(());
     }
 
@@ -1248,6 +1266,86 @@ fn render_coverage_gap_terminal(
                 println!(
                     "      top history: {}",
                     finding.top_commit_summaries.join(" | ")
+                );
+            }
+        }
+    }
+
+    if !report.notes.is_empty() {
+        println!();
+        println!("Notes");
+        for note in &report.notes {
+            println!("  - {note}");
+        }
+    }
+}
+
+fn render_rename_safe_terminal(report: &RenameSafeReport, links: &TerminalLinkContext) {
+    let target_label = match &report.target.qualified_name {
+        Some(qualified_name) => format!("{} ({qualified_name})", report.target.symbol),
+        None => report.target.symbol.clone(),
+    };
+
+    println!(
+        "Rename-safe review for {}",
+        linked_path_label(
+            Some(links),
+            &report.target.path,
+            Some(report.target.start_line),
+            format!(
+                "{}:{}-{}",
+                report.target.path.display(),
+                report.target.start_line,
+                report.target.end_line
+            )
+        )
+    );
+    println!("Target: {target_label}");
+    println!(
+        "Risk: {}  commits {}",
+        report.target.risk_level.as_str(),
+        report.target.commit_count
+    );
+    println!("Summary: {}", report.target.summary);
+    println!("Guidance: {}", report.target.change_guidance);
+    if !report.target.top_commit_summaries.is_empty() {
+        println!(
+            "Top history: {}",
+            report.target.top_commit_summaries.join(" | ")
+        );
+    }
+
+    println!();
+    println!("Caller symbols ({})", report.callers.len());
+    if report.callers.is_empty() {
+        println!("  none");
+    } else {
+        for (index, caller) in report.callers.iter().enumerate() {
+            let caller_label = caller
+                .qualified_name
+                .as_deref()
+                .unwrap_or(&caller.symbol)
+                .to_string();
+            println!(
+                "  {:>2}. {}  {}  call-sites {:>2}  commits {:>2}",
+                index + 1,
+                linked_path_label(
+                    Some(links),
+                    &caller.path,
+                    Some(caller.start_line),
+                    format!("{}:{}-{}", caller.path.display(), caller.start_line, caller.end_line)
+                ),
+                caller_label,
+                caller.call_site_count,
+                caller.commit_count
+            );
+            println!("      risk: {}", caller.risk_level.as_str());
+            println!("      summary: {}", caller.summary);
+            println!("      guidance: {}", caller.change_guidance);
+            if !caller.top_commit_summaries.is_empty() {
+                println!(
+                    "      top history: {}",
+                    caller.top_commit_summaries.join(" | ")
                 );
             }
         }
