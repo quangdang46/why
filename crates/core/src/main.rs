@@ -2,8 +2,10 @@ mod cli;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use clap::CommandFactory;
@@ -226,6 +228,12 @@ struct DiffReviewCollected {
     entries: Vec<DiffReviewCollectedTarget>,
     issue_refs: Vec<String>,
     notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileWatchState {
+    modified_at: Option<std::time::SystemTime>,
+    len: u64,
 }
 
 fn run_install_hooks(warn_only: bool) -> Result<()> {
@@ -593,6 +601,37 @@ fn run_query(request: QueryRequest) -> Result<()> {
         .workdir()
         .map(|path| path.to_path_buf())
         .unwrap_or_else(|| cwd.clone());
+
+    if request.watch {
+        return run_watch_query(&request, &cwd, &repo, &config, &terminal_links, &repo_root);
+    }
+
+    render_default_query(&request, &cwd, &repo, &config, &terminal_links, &repo_root)?;
+    Ok(())
+}
+
+fn render_default_query(
+    request: &QueryRequest,
+    cwd: &Path,
+    repo: &Repository,
+    config: &why_context::WhyConfig,
+    terminal_links: &TerminalLinkContext,
+    repo_root: &Path,
+) -> Result<()> {
+    let rendered =
+        render_default_query_output(request, cwd, repo, config, terminal_links, repo_root)?;
+    println!("{rendered}");
+    Ok(())
+}
+
+fn render_default_query_output(
+    request: &QueryRequest,
+    cwd: &Path,
+    repo: &Repository,
+    config: &why_context::WhyConfig,
+    terminal_links: &TerminalLinkContext,
+    repo_root: &Path,
+) -> Result<String> {
     let head_hash = repo.head()?.peel_to_commit()?.id().to_string();
     let target_label = match request.target.query_kind {
         QueryKind::Line => request
@@ -616,22 +655,14 @@ fn run_query(request: QueryRequest) -> Result<()> {
         &target_label,
         &head_hash,
     );
-    let mut cache = Cache::open(&repo_root, config.cache.max_entries)?;
+    let mut cache = Cache::open(repo_root, config.cache.max_entries)?;
 
     if !request.no_cache {
         if let Some(cached) = cache.get::<WhyReport>(&cache_key) {
-            if request.json {
-                println!("{}", serde_json::to_string_pretty(&cached)?);
-            } else {
-                println!(
-                    "{}",
-                    format_why_report(&request.target, &cached, true, Some(&terminal_links))
-                );
-            }
+            let rendered = format_why_report(&request.target, &cached, true, Some(terminal_links));
 
             if request.annotate {
-                let result =
-                    analyze_target_with_options(&request.target, &cwd, request.since_days)?;
+                let result = analyze_target_with_options(&request.target, cwd, request.since_days)?;
                 let source_path = repo_root.join(&result.target.path);
                 annotate_file(
                     &source_path,
@@ -640,24 +671,18 @@ fn run_query(request: QueryRequest) -> Result<()> {
                     &head_hash,
                     &format_target_label(&request.target),
                 )?;
-                println!("Annotation written to {}", source_path.display());
             }
 
-            return Ok(());
+            return Ok(rendered);
         }
     }
 
-    let result = analyze_target_with_options(&request.target, &cwd, request.since_days)?;
-    let report = synthesize_report(&request, &result, &repo, &config)?;
-    cache.set(cache_key, &report, &head_hash)?;
+    let result = analyze_target_with_options(&request.target, cwd, request.since_days)?;
+    let report = synthesize_report(request, &result, repo, config)?;
+    let rendered = format_why_report(&request.target, &report, false, Some(terminal_links));
 
-    if request.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        println!(
-            "{}",
-            format_why_report(&request.target, &report, false, Some(&terminal_links))
-        );
+    if !request.watch {
+        cache.set(cache_key, &report, &head_hash)?;
     }
 
     if request.annotate {
@@ -669,10 +694,89 @@ fn run_query(request: QueryRequest) -> Result<()> {
             &head_hash,
             &format_target_label(&request.target),
         )?;
-        println!("Annotation written to {}", source_path.display());
     }
 
-    Ok(())
+    Ok(rendered)
+}
+
+fn run_watch_query(
+    request: &QueryRequest,
+    cwd: &Path,
+    repo: &Repository,
+    config: &why_context::WhyConfig,
+    terminal_links: &TerminalLinkContext,
+    repo_root: &Path,
+) -> Result<()> {
+    if !std::io::stdout().is_terminal() {
+        anyhow::bail!("--watch requires an interactive terminal");
+    }
+
+    let absolute_target_path = cwd.join(&request.target.path);
+    let mut watch_request = request.clone();
+    watch_request.no_cache = true;
+
+    let mut last_state = current_watch_state(&absolute_target_path)?;
+    let initial_output =
+        render_default_query_output(&watch_request, cwd, repo, config, terminal_links, repo_root)?;
+    render_watch_frame(&watch_request, &initial_output, None);
+
+    loop {
+        thread::sleep(Duration::from_millis(250));
+
+        let state = current_watch_state(&absolute_target_path)?;
+        if state == last_state {
+            continue;
+        }
+        last_state = state;
+
+        let refreshed = render_default_query_output(
+            &watch_request,
+            cwd,
+            repo,
+            config,
+            terminal_links,
+            repo_root,
+        );
+        match refreshed {
+            Ok(output) => render_watch_frame(&watch_request, &output, None),
+            Err(error) => {
+                let fallback = format!(
+                    "why: {}\n\nWaiting for a valid target after file change.\n\nNotes\n  - {error}",
+                    format_target_label(&watch_request.target)
+                );
+                render_watch_frame(&watch_request, &fallback, Some(&error.to_string()));
+            }
+        }
+    }
+}
+
+fn format_watch_frame(request: &QueryRequest, body: &str, status: Option<&str>) -> String {
+    let mut output = format!(
+        "\x1b[2J\x1b[HWatching {}\nRefreshes when {} changes. Press Ctrl-C to stop.\n\n{body}\n\n",
+        format_target_label(&request.target),
+        request.target.path.display()
+    );
+    match status {
+        Some(status) => output.push_str(&format!("watch status: {status}\n")),
+        None => output.push_str("watch status: waiting for changes\n"),
+    }
+    output
+}
+
+fn render_watch_frame(request: &QueryRequest, body: &str, status: Option<&str>) {
+    print!("{}", format_watch_frame(request, body, status));
+    let _ = std::io::stdout().flush();
+}
+
+fn current_watch_state(path: &Path) -> Result<Option<FileWatchState>> {
+    match fs::metadata(path) {
+        Ok(metadata) => Ok(Some(FileWatchState {
+            modified_at: metadata.modified().ok(),
+            len: metadata.len(),
+        })),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn render_team_terminal(report: &TeamReport, links: Option<&TerminalLinkContext>) {
@@ -1333,7 +1437,12 @@ fn render_rename_safe_terminal(report: &RenameSafeReport, links: &TerminalLinkCo
                     Some(links),
                     &caller.path,
                     Some(caller.start_line),
-                    format!("{}:{}-{}", caller.path.display(), caller.start_line, caller.end_line)
+                    format!(
+                        "{}:{}-{}",
+                        caller.path.display(),
+                        caller.start_line,
+                        caller.end_line
+                    )
                 ),
                 caller_label,
                 caller.call_site_count,
@@ -2498,11 +2607,13 @@ mod tests {
     use super::{
         ExitStatus, HealthBaselineReference, HealthComparison, HealthGateSummary, HealthReport,
         HealthSignalDelta, build_github_enrichment, compute_health_comparison,
-        compute_health_delta, determine_health_exit_status, diff_review_mode_label,
-        evaluate_health_gate, format_outage_timestamp, format_why_report, parse_outage_timestamp,
-        parse_synth_risk, render_diff_review_markdown, render_health_terminal,
-        render_outage_terminal, render_pr_template_markdown, sorted_signal_entries,
+        compute_health_delta, current_watch_state, determine_health_exit_status,
+        diff_review_mode_label, evaluate_health_gate, format_outage_timestamp, format_watch_frame,
+        format_why_report, parse_outage_timestamp, parse_synth_risk, render_diff_review_markdown,
+        render_health_terminal, render_outage_terminal, render_pr_template_markdown,
+        sorted_signal_entries,
     };
+    use crate::QueryRequest;
     use git2::Repository;
     use std::collections::{BTreeMap, HashMap};
     use std::fs;
@@ -2964,6 +3075,93 @@ mod tests {
         ));
         fs::create_dir_all(&path).expect("test dir should be created");
         path
+    }
+
+    #[test]
+    fn watch_frame_formats_expected_sections() {
+        let request = QueryRequest {
+            target: why_locator::parse_target("src/auth.rs:verify_token", None)
+                .expect("target should parse"),
+            json: false,
+            no_llm: false,
+            no_cache: true,
+            split: false,
+            coupled: false,
+            since_days: None,
+            team: false,
+            blame_chain: false,
+            evolution: false,
+            annotate: false,
+            watch: true,
+            rename_safe: false,
+        };
+
+        let frame = format_watch_frame(&request, "body text", Some("boom"));
+        assert!(frame.starts_with("\u{1b}[2J\u{1b}[HWatching src/auth.rs:verify_token\n"));
+        assert!(frame.contains("Refreshes when src/auth.rs changes. Press Ctrl-C to stop."));
+        assert!(frame.contains("\n\nbody text\n\n"));
+        assert!(frame.contains("watch status: boom\n"));
+    }
+
+    #[test]
+    fn watch_frame_defaults_to_waiting_status() {
+        let request = QueryRequest {
+            target: why_locator::parse_target("src/auth.rs:42", None).expect("target should parse"),
+            json: false,
+            no_llm: false,
+            no_cache: true,
+            split: false,
+            coupled: false,
+            since_days: None,
+            team: false,
+            blame_chain: false,
+            evolution: false,
+            annotate: false,
+            watch: true,
+            rename_safe: false,
+        };
+
+        let frame = format_watch_frame(&request, "body text", None);
+        assert!(frame.contains("watch status: waiting for changes\n"));
+    }
+
+    #[test]
+    fn current_watch_state_tracks_file_size_and_missing_files() {
+        let dir = unique_test_dir("watch-state-existing");
+        let path = dir.join("watched.rs");
+        fs::write(&path, "fn watched() {}\n").expect("file should write");
+
+        let state = current_watch_state(&path).expect("watch state should load");
+        let state = state.expect("file should exist");
+        assert_eq!(state.len, 16);
+        assert!(state.modified_at.is_some());
+
+        let missing =
+            current_watch_state(&dir.join("missing.rs")).expect("missing files should not error");
+        assert_eq!(missing, None);
+
+        fs::remove_dir_all(&dir).expect("test dir should clean up");
+    }
+
+    #[test]
+    fn current_watch_state_changes_after_file_update() {
+        let dir = unique_test_dir("watch-state-updated");
+        let path = dir.join("watched.rs");
+        fs::write(&path, "fn watched() {}\n").expect("file should write");
+
+        let initial = current_watch_state(&path)
+            .expect("watch state should load")
+            .expect("file should exist");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        fs::write(&path, "fn watched() { println!(\"changed\"); }\n").expect("file should rewrite");
+
+        let updated = current_watch_state(&path)
+            .expect("watch state should reload")
+            .expect("file should still exist");
+        assert_ne!(updated, initial);
+        assert!(updated.len > initial.len);
+
+        fs::remove_dir_all(&dir).expect("test dir should clean up");
     }
 
     #[test]

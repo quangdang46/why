@@ -9,7 +9,7 @@ use why_locator::{QueryTarget, parse_target};
 #[command(name = "why")]
 #[command(
     about = "Ask your codebase why a line, range, symbol, or repo hotspot exists",
-    after_help = "Examples:\n  why src/auth.rs:42\n  why src/auth.rs --lines 40:45 --no-llm\n  why src/auth.rs:verify_token --json\n  why src/auth.rs:verify_token --annotate\n  why src/auth.rs:verify_token --rename-safe\n  why src/auth.rs:AuthService::login --team\n  why src/auth.rs:verify_token --blame-chain\n  why src/auth.rs:verify_token --evolution\n  why hotspots --limit 10\n  why health\n  why health --ci 80\n  why pr-template\n  why diff-review --no-llm\n  why explain-outage --from 2025-11-03T14:00 --to 2025-11-03T16:30\n  why coverage-gap --coverage lcov.info\n  why ghost --limit 10\n  why onboard --limit 10\n  why time-bombs --age-days 180\n  eval \"$(why context-inject)\""
+    after_help = "Examples:\n  why src/auth.rs:42\n  why src/auth.rs --lines 40:45 --no-llm\n  why src/auth.rs:verify_token --json\n  why src/auth.rs:verify_token --annotate\n  why src/auth.rs:verify_token --rename-safe\n  why src/auth.rs:verify_token --watch --no-llm\n  why src/auth.rs:AuthService::login --team\n  why src/auth.rs:verify_token --blame-chain\n  why src/auth.rs:verify_token --evolution\n  why hotspots --limit 10\n  why health\n  why health --ci 80\n  why pr-template\n  why diff-review --no-llm\n  why explain-outage --from 2025-11-03T14:00 --to 2025-11-03T16:30\n  why coverage-gap --coverage lcov.info\n  why ghost --limit 10\n  why onboard --limit 10\n  why time-bombs --age-days 180\n  eval \"$(why context-inject)\""
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -61,6 +61,10 @@ pub struct Cli {
     /// Write a short evidence-backed doc annotation above the target.
     #[arg(long)]
     pub annotate: bool,
+
+    /// Refresh the default why report whenever the target file changes.
+    #[arg(long)]
+    pub watch: bool,
 
     /// Show target risk plus caller risk to assess whether a Rust symbol rename is safe.
     #[arg(long)]
@@ -249,6 +253,7 @@ pub struct QueryRequest {
     pub blame_chain: bool,
     pub evolution: bool,
     pub annotate: bool,
+    pub watch: bool,
     pub rename_safe: bool,
 }
 
@@ -347,6 +352,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.watch
                     || self.rename_safe
                 {
                     bail!("the mcp subcommand does not accept query flags or a target");
@@ -366,6 +372,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.watch
                     || self.rename_safe
                 {
                     bail!("the shell subcommand does not accept query flags or a target");
@@ -385,6 +392,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.watch
                     || self.rename_safe
                 {
                     bail!("the lsp subcommand does not accept query flags or a target");
@@ -404,6 +412,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.watch
                     || self.rename_safe
                 {
                     bail!("the context-inject subcommand does not accept query flags or a target");
@@ -422,6 +431,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.watch
                     || self.rename_safe
                 {
                     bail!("the hotspots subcommand does not accept query flags or a target");
@@ -455,6 +465,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.watch
                     || self.rename_safe
                 {
                     bail!("the health subcommand does not accept query flags or a target");
@@ -492,6 +503,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.watch
                     || self.rename_safe
                 {
                     bail!("the pr-template subcommand does not accept query flags or a target");
@@ -515,6 +527,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.watch
                     || self.rename_safe
                 {
                     bail!("the explain-outage subcommand does not accept query flags or a target");
@@ -551,6 +564,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.watch
                     || self.rename_safe
                     || self.json
                 {
@@ -596,6 +610,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.watch
                     || self.rename_safe
                 {
                     bail!("the coverage-gap subcommand does not accept query flags or a target");
@@ -628,6 +643,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.watch
                     || self.rename_safe
                 {
                     bail!("the ghost subcommand does not accept query flags or a target");
@@ -649,6 +665,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.watch
                     || self.rename_safe
                 {
                     bail!("the onboard subcommand does not accept query flags or a target");
@@ -671,6 +688,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.watch
                     || self.rename_safe
                 {
                     bail!("the install-hooks subcommand does not accept query flags or a target");
@@ -690,6 +708,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.watch
                     || self.rename_safe
                 {
                     bail!("the uninstall-hooks subcommand does not accept query flags or a target");
@@ -709,6 +728,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.watch
                     || self.rename_safe
                 {
                     bail!("the completions subcommand does not accept query flags or a target");
@@ -728,6 +748,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.watch
                     || self.rename_safe
                 {
                     bail!("the manpage subcommand does not accept query flags or a target");
@@ -746,6 +767,7 @@ impl Cli {
                     || self.blame_chain
                     || self.evolution
                     || self.annotate
+                    || self.watch
                     || self.rename_safe
                 {
                     bail!("the time-bombs subcommand does not accept query flags or a target");
@@ -759,6 +781,26 @@ impl Cli {
                     )
                 })?;
 
+                if self.watch {
+                    if self.json {
+                        bail!("--watch does not support --json");
+                    }
+                    if self.annotate {
+                        bail!("--watch does not support --annotate");
+                    }
+                    if self.split
+                        || self.coupled
+                        || self.team
+                        || self.blame_chain
+                        || self.evolution
+                        || self.rename_safe
+                    {
+                        bail!(
+                            "--watch supports only the default why report (no specialty query flags)"
+                        );
+                    }
+                }
+
                 Ok(Mode::Query(QueryRequest {
                     target: parse_target(&target, self.lines.as_deref())?,
                     json: self.json,
@@ -771,6 +813,7 @@ impl Cli {
                     blame_chain: self.blame_chain,
                     evolution: self.evolution,
                     annotate: self.annotate,
+                    watch: self.watch,
                     rename_safe: self.rename_safe,
                 }))
             }
@@ -810,6 +853,7 @@ mod tests {
                 blame_chain: false,
                 evolution: false,
                 annotate: false,
+                watch: false,
                 rename_safe: false,
             })
         );
@@ -847,6 +891,7 @@ mod tests {
                 blame_chain: false,
                 evolution: false,
                 annotate: false,
+                watch: false,
                 rename_safe: false,
             })
         );
@@ -974,6 +1019,7 @@ mod tests {
         assert_eq!(request.target.symbol.as_deref(), Some("authenticate"));
         assert_eq!(request.target.query_kind, QueryKind::Symbol);
         assert!(request.annotate);
+        assert!(!request.watch);
         assert!(!request.rename_safe);
         assert!(!request.split);
         assert!(!request.coupled);
@@ -996,11 +1042,71 @@ mod tests {
         assert_eq!(request.target.query_kind, QueryKind::Symbol);
         assert!(request.rename_safe);
         assert!(!request.annotate);
+        assert!(!request.watch);
         assert!(!request.split);
         assert!(!request.coupled);
         assert!(!request.team);
         assert!(!request.blame_chain);
         assert!(!request.evolution);
+    }
+
+    #[test]
+    fn parses_watch_request() {
+        let cli = Cli::parse_from(["why", "src/lib.rs:authenticate", "--watch"]);
+        let mode = cli.parse_mode().expect("watch target should parse");
+        assert!(matches!(mode, Mode::Query(_)), "expected query mode");
+        let Mode::Query(request) = mode else {
+            return;
+        };
+
+        assert_eq!(request.target.path, PathBuf::from("src/lib.rs"));
+        assert_eq!(request.target.symbol.as_deref(), Some("authenticate"));
+        assert_eq!(request.target.query_kind, QueryKind::Symbol);
+        assert!(request.watch);
+        assert!(!request.annotate);
+        assert!(!request.rename_safe);
+        assert!(!request.split);
+        assert!(!request.coupled);
+        assert!(!request.team);
+        assert!(!request.blame_chain);
+        assert!(!request.evolution);
+    }
+
+    #[test]
+    fn rejects_watch_with_json() {
+        let cli = Cli::parse_from(["why", "src/lib.rs:authenticate", "--watch", "--json"]);
+        let error = cli.parse_mode().expect_err("watch should reject json mode");
+        assert!(
+            error
+                .to_string()
+                .contains("--watch does not support --json")
+        );
+    }
+
+    #[test]
+    fn rejects_watch_with_annotate() {
+        let cli = Cli::parse_from(["why", "src/lib.rs:authenticate", "--watch", "--annotate"]);
+        let error = cli
+            .parse_mode()
+            .expect_err("watch should reject annotate mode");
+        assert!(
+            error
+                .to_string()
+                .contains("--watch does not support --annotate")
+        );
+    }
+
+    #[test]
+    fn rejects_watch_with_specialty_query_flags() {
+        let cli = Cli::parse_from(["why", "src/lib.rs:authenticate", "--watch", "--rename-safe"]);
+        let error = cli
+            .parse_mode()
+            .expect_err("watch should reject specialty query modes");
+        assert!(
+            error
+                .to_string()
+                .contains("--watch supports only the default why report")
+        );
     }
 
     #[test]

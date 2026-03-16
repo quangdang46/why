@@ -6,10 +6,12 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::Mutex;
+use std::thread;
+use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 static WHY_BINARY: Mutex<Option<PathBuf>> = Mutex::new(None);
@@ -83,6 +85,16 @@ impl FixtureRepo {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
+            .map(|mut child| {
+                if let Some(stdout) = child.stdout.as_mut() {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::FileTypeExt;
+                        let _ = stdout;
+                    }
+                }
+                child
+            })
             .context("failed to spawn why command")
     }
 
@@ -246,6 +258,41 @@ pub fn ensure_success(output: &Output) -> Result<()> {
         output.status.code(),
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
+    )
+}
+
+#[allow(dead_code)]
+pub fn wait_for_child_stdout(child: &mut Child, needle: &str, timeout: Duration) -> Result<String> {
+    let start = Instant::now();
+    let stdout = child
+        .stdout
+        .as_mut()
+        .ok_or_else(|| anyhow!("spawned child should expose stdout"))?;
+    let mut buffer = String::new();
+    let mut chunk = [0u8; 1024];
+
+    while start.elapsed() < timeout {
+        match stdout.read(&mut chunk) {
+            Ok(0) => {
+                thread::sleep(Duration::from_millis(25));
+            }
+            Ok(read) => {
+                buffer.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                if buffer.contains(needle) {
+                    return Ok(buffer);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(error) => return Err(error).context("failed to read child stdout"),
+        }
+    }
+
+    bail!(
+        "timed out waiting for child stdout to contain {:?}. output so far:\n{}",
+        needle,
+        buffer
     )
 }
 
