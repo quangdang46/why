@@ -112,11 +112,19 @@ pub struct GitHubRef {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GitHubPullRequestMetadata {
+    #[serde(default)]
+    pub merged_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GitHubItem {
     pub number: u64,
     pub title: String,
     pub body: String,
     pub html_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pull_request: Option<GitHubPullRequestMetadata>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -560,6 +568,7 @@ fn build_internal(
                     title: truncate(&item.title, MAX_GITHUB_TITLE_CHARS),
                     body: truncate(&item.body, MAX_GITHUB_BODY_CHARS),
                     html_url: item.html_url.clone(),
+                    pull_request: item.pull_request.clone(),
                 })
                 .collect(),
             github_notes: github
@@ -791,6 +800,7 @@ mod tests {
                     title: format!("Title {index} {}", "x".repeat(200)),
                     body: "body ".repeat(200),
                     html_url: format!("https://github.com/acme/repo/issues/{index}"),
+                    pull_request: None,
                 })
                 .collect(),
             notes: (0..20).map(|index| format!("note-{index}")).collect(),
@@ -818,6 +828,36 @@ mod tests {
                 .top_commits
                 .iter()
                 .all(|commit| commit.issue_refs.len() <= MAX_COMMIT_ISSUE_REFS)
+        );
+    }
+
+    #[test]
+    fn test_build_preserves_pull_request_metadata_in_github_signals() {
+        let github = GitHubEnrichment {
+            items: vec![GitHubItem {
+                number: 77,
+                title: "Improve auth review flow".into(),
+                body: "PR context".into(),
+                html_url: "https://github.com/acme/repo/pull/77".into(),
+                pull_request: Some(GitHubPullRequestMetadata {
+                    merged_at: Some("2026-03-16T05:00:00Z".into()),
+                }),
+            }],
+            notes: vec![],
+        };
+        let pack = build(
+            &sample_target(),
+            &[sample_commit(1, 100, vec!["#77"])],
+            &sample_context(),
+            &github,
+        );
+
+        assert_eq!(
+            pack.signals.github_items[0]
+                .pull_request
+                .as_ref()
+                .and_then(|pull_request| pull_request.merged_at.as_deref()),
+            Some("2026-03-16T05:00:00Z")
         );
     }
 
@@ -1058,6 +1098,30 @@ mod tests {
                 title: "Fix auth".into(),
                 body: "Context".into(),
                 html_url: "https://github.com/anthropics/why/issues/42".into(),
+                pull_request: None,
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_github_issue_response_preserves_pull_request_metadata() {
+        let outcome = parse_github_issue_response(
+            77,
+            StatusCode::OK,
+            r#"{"number":77,"title":"Improve auth review flow","body":"PR context","html_url":"https://github.com/anthropics/why/pull/77","pull_request":{"merged_at":"2026-03-16T05:00:00Z"}}"#,
+        )
+        .expect("pull request response should parse");
+
+        assert_eq!(
+            outcome,
+            GitHubFetchOutcome::Item(GitHubItem {
+                number: 77,
+                title: "Improve auth review flow".into(),
+                body: "PR context".into(),
+                html_url: "https://github.com/anthropics/why/pull/77".into(),
+                pull_request: Some(GitHubPullRequestMetadata {
+                    merged_at: Some("2026-03-16T05:00:00Z".into()),
+                }),
             })
         );
     }
