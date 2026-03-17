@@ -1,0 +1,45 @@
+name: Benchmarks
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'benches/**'
+      - 'crates/**'
+      - 'tests/fixtures/**'
+      - '.github/workflows/bench.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  bench:
+    name: Criterion benches
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run cache benchmark
+        run: cargo bench --package why-workspace --bench cache_bench
+
+      - name: Run archaeology benchmark
+        run: cargo bench --package why-workspace --bench archaeology_bench
+
+      - name: Run scanner benchmark
+        run: cargo bench --package why-workspace --bench scanner_bench
+
+      - name: Upload Criterion artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-results
+          path: |
+            target/criterion/**
+          if-no-files-found: error

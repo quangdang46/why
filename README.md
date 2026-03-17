@@ -40,8 +40,8 @@ Claude Code does the same — because it can't read the past.
    └── check for PR refs (#123), issue refs (fixes #456)
    └── extract comments and TODOs near the target code
 
-3. Synthesize  (LLM call — Claude Haiku)
-   └── feed structured git data to Claude
+3. Synthesize  (LLM call — configured provider)
+   └── feed structured git data to the configured model
    └── ask: "why does this exist? what risk if removed?"
    └── returns human-readable explanation + risk level
 ```
@@ -54,7 +54,7 @@ Only **one LLM call per query**, with structured git data as input.
 |---|---|
 | `git2` | Native git operations — no git binary required |
 | `tree-sitter` | Locate function boundaries precisely |
-| `anthropic` (HTTP) | Synthesize git data into explanation |
+| provider-aware HTTP clients | Synthesize git data into explanation via Anthropic or OpenAI-compatible providers |
 | `clap` | CLI |
 | `serde_json` | Structured output |
 
@@ -83,17 +83,18 @@ cargo run -q -p why-core -- completions zsh > _why
 cargo run -q -p why-core -- completions fish > why.fish
 cargo run -q -p why-core -- manpage > why.1
 
-# Set your API key once when you want synthesis
-export ANTHROPIC_API_KEY=your_anthropic_api_key_here
+# Initialize global config and credentials without hand-editing TOML
+why config init --provider anthropic
+why auth login --provider anthropic --api-key-env ANTHROPIC_API_KEY
 ```
 
 ### Release and publishing readiness checklist
 
 Checked in today:
-- CI workflow for fmt, clippy, build, test, audit, optional benches, and packaging-alignment checks in `.github/workflows/ci.yml`
+- CI workflow for fmt, clippy, and test in `.github/workflows/ci.yml`
+- Dedicated benchmark workflow for Criterion benches in `.github/workflows/bench.yml`
 - Tagged GitHub release workflow with cross-platform archives in `.github/workflows/release.yml`
 - Installer script with checksum verification and source-build fallback in `install.sh`
-- Packaging alignment audit that verifies `why-core` / `why` metadata stays consistent across `crates/core/Cargo.toml`, `.github/workflows/release.yml`, and `install.sh`
 
 Still required before `cargo install ...` is a supported path:
 - Keep any future package-name/docs changes aligned with the current shipped package `why-core` and binary `why`
@@ -105,6 +106,36 @@ Current artifact-generation support:
 - `why completions bash|zsh|fish` emits shell completion scripts to stdout
 - `why manpage` emits a roff man page to stdout
 - These commands make it possible to check completion/manual artifacts into packaging or release automation later without inventing a separate generator binary
+
+### Validation and benchmark workflow
+
+Local validation commands:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
+```
+
+Opt-in real-repo CLI coverage:
+
+```bash
+WHY_REAL_REPO_PATH=/absolute/path/to/git/checkout \
+  cargo test -p why-workspace --test integration_real_repo_cli -- --nocapture
+```
+
+- The real-repo tests are opt-in so the default test suite stays deterministic.
+- They clone the supplied checkout into a temporary test repo before running `why`.
+
+Benchmark commands:
+
+```bash
+cargo bench --package why-workspace --bench cache_bench
+cargo bench --package why-workspace --bench archaeology_bench
+cargo bench --package why-workspace --bench scanner_bench
+```
+
+GitHub Actions also exposes the same Criterion run via `.github/workflows/bench.yml` and uploads `target/criterion/**` as artifacts.
 
 ## Usage
 
@@ -126,6 +157,18 @@ why src/auth.js:verifyToken --no-llm
 
 # Machine-readable archaeology output
 why src/auth.js:verifyToken --json
+
+# Inspect the effective merged config
+why config get
+why config get --json
+
+# Initialize provider settings globally or per-repo
+why config init --provider openai --model gpt-4o-mini
+why config init --local --provider custom --model local-model --base-url https://api.example.com/v1/chat/completions
+
+# Store provider credentials in the selected config layer
+why auth login --provider anthropic --api-key-env ANTHROPIC_API_KEY
+why auth login --local --provider custom --base-url https://api.example.com/v1/chat/completions --api-key-env CUSTOM_API_KEY
 
 # Repo-wide danger hotspots ranked by churn × heuristic risk
 why hotspots --limit 10
@@ -227,17 +270,47 @@ Recommended code review routine:
 
 For MCP-specific setup examples, see `docs/mcp-setup.md`.
 
-## API Key
+## Configuration and credentials
 
-`why` only calls Claude Haiku (cheapest model) for synthesis.  
-Typical cost: **~$0.001 per query** (one Haiku call with ~2k token input).
+`why` supports layered configuration:
 
-Set via environment variable:
+1. built-in defaults
+2. global config at `$XDG_CONFIG_HOME/why/config.toml` or `~/.config/why/config.toml`
+3. repo-local `.why.toml`
+
+Use the CLI to manage these layers:
+
 ```bash
-export ANTHROPIC_API_KEY=your_anthropic_api_key_here
+# Global config is the default target
+why config init --provider anthropic
+why auth login --provider anthropic --api-key-env ANTHROPIC_API_KEY
+
+# Use --local for repo-specific overrides
+why config init --local --provider zai --model zai-pro-1
+why auth login --local --provider custom --base-url https://api.example.com/v1/chat/completions --api-key-env CUSTOM_API_KEY
+
+# Inspect the effective merged config without printing secrets
+why config get
+why config get --json
 ```
 
-Or in `.why.toml` at project root:
+Supported providers:
+- `anthropic`
+- `openai`
+- `zai`
+- `custom` (OpenAI-compatible; requires `base_url` and `model`)
+
+Environment variables take precedence over config values. Blank values are ignored.
+
+Provider credential env vars:
+```bash
+export ANTHROPIC_API_KEY=your_anthropic_api_key_here
+export OPENAI_API_KEY=your_openai_api_key_here
+export ZAI_API_KEY=your_zai_api_key_here
+export CUSTOM_API_KEY=your_custom_api_key_here
+```
+
+Example global or local config:
 ```toml
 [risk]
 default_level = "LOW"
@@ -253,6 +326,13 @@ mechanical_threshold_files = 50
 coupling_scan_commits = 500
 coupling_ratio_threshold = 0.30
 
+[llm]
+provider = "openai"
+model = "gpt-4o-mini"
+
+[llm.openai]
+api_key_env = "OPENAI_API_KEY"
+
 [github]
 remote = "origin"
 # token = "ghp_..."   # optional fallback; prefer GITHUB_TOKEN env var
@@ -260,7 +340,12 @@ remote = "origin"
 
 `[risk.keywords]` extends the built-in heuristic vocabulary with team- or domain-specific terms. Matches are case-insensitive and can affect both ranked evidence relevance and the heuristic risk level.
 
-For GitHub enrichment work, set `GITHUB_TOKEN` in the environment when available; `.why.toml` can also carry an optional `[github]` fallback token and remote name. Environment variables take precedence over `.why.toml`, and blank values are ignored. Prefer the environment-variable path because a token stored in `.why.toml` is easier to commit accidentally or leave readable on disk.
+For GitHub enrichment work, set `GITHUB_TOKEN` in the environment when available; config can also carry an optional `[github]` fallback token and remote name. Environment variables take precedence over config, and blank values are ignored.
+
+Secret-handling guidance:
+- prefer environment variables when possible
+- global config is acceptable for local development if you choose it
+- repo-local `.why.toml` should generally avoid secrets because it is easier to commit accidentally
 
 See `.why.toml.example` for a fully documented example of the currently implemented config surface.
 
@@ -288,9 +373,9 @@ Fast enough for interactive use (~1–3 seconds per query).
 
 ---
 
-### Health regression gate in CI
+### Health regression gate
 
-GitHub Actions runs `why health` with a checked-in baseline and fails on any debt-score or signal regression:
+Use `why health` with a checked-in baseline to fail on any debt-score or signal regression:
 
 ```bash
 cargo run -p why-core --bin why -- health \

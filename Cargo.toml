@@ -56,6 +56,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
+autobenches = false
 publish = false
 
 [dev-dependencies]
