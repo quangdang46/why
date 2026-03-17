@@ -4,6 +4,24 @@
 
 ---
 
+## Quick start
+
+1. Install `why`.
+2. Run the setup command:
+
+```bash
+why config init
+```
+
+3. Ask a question about code history:
+
+```bash
+why src/auth.rs:verify_token
+```
+
+If you only remember one setup command, remember `why config init`.
+It is the main setup flow and lets you choose `anthropic`, `openai`, `zai`, or `custom`.
+
 ## The Problem
 
 Claude Code has no access to git history. It sees the code as it is today — with no context of:
@@ -87,13 +105,15 @@ cargo run -q -p why-core -- completions fish > why.fish
 cargo run -q -p why-core -- manpage > why.1
 ```
 
-### Initialize config
+### Configure the CLI
+
+If you skipped the quick start above, run:
 
 ```bash
 why config init
 ```
 
-`why config init` is the main setup flow and lets the user choose `anthropic`, `openai`, `zai`, or `custom` interactively.
+This is the main setup flow and lets you choose `anthropic`, `openai`, `zai`, or `custom` interactively.
 
 ### Validation and benchmarks
 

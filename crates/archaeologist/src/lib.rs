@@ -194,8 +194,17 @@ pub fn relative_repo_path(repo: &Repository, path: &Path) -> Result<PathBuf> {
         workdir.join(path)
     };
 
-    candidate
-        .strip_prefix(workdir)
+    if let Ok(relative) = candidate.strip_prefix(workdir) {
+        return Ok(relative.to_path_buf());
+    }
+
+    let canonical_workdir = fs::canonicalize(workdir)
+        .with_context(|| format!("failed to canonicalize repository root {}", workdir.display()))?;
+    let canonical_candidate = fs::canonicalize(&candidate)
+        .with_context(|| format!("failed to canonicalize target path {}", candidate.display()))?;
+
+    canonical_candidate
+        .strip_prefix(&canonical_workdir)
         .map(PathBuf::from)
         .with_context(|| {
             format!(
@@ -1520,6 +1529,25 @@ mod tests {
         let relative =
             relative_repo_path(&repo, Path::new("README.md")).expect("path should be relative");
         assert_eq!(relative, Path::new("README.md"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn computes_relative_repo_path_from_symlink_alias() -> Result<()> {
+        let dir = TempDir::new()?;
+        let repo_root = dir.path().join("repo");
+        fs::create_dir_all(&repo_root)?;
+        let repo = Repository::init(&repo_root)?;
+        let file_path = repo_root.join("sample.rs");
+        fs::write(&file_path, "fn helper() {}\n")?;
+
+        let alias_root = dir.path().join("repo-alias");
+        std::os::unix::fs::symlink(&repo_root, &alias_root)?;
+        let alias_file_path = alias_root.join("sample.rs");
+
+        let relative = relative_repo_path(&repo, &alias_file_path)?;
+        assert_eq!(relative, Path::new("sample.rs"));
+        Ok(())
     }
 
     #[test]

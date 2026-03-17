@@ -1,3 +1,32 @@
+## why — Git History Archaeology
+
+`why` is the main repo tool for understanding why code exists before you change it.
+
+### Quick commands
+
+```bash
+why path/to/file.rs:123
+why path/to/file.rs:symbol_name
+why path/to/file.rs --lines 120:140
+why path/to/file.rs:symbol_name --blame-chain
+why path/to/file.rs:symbol_name --evolution
+why path/to/file.rs:symbol_name --coupled
+why path/to/file.rs:symbol_name --team
+why diff-review --no-llm
+why config init
+```
+
+### Rules
+
+- Prefer `why` before deleting or heavily refactoring unfamiliar code.
+- Treat `HIGH` risk output as a stop-and-investigate signal.
+- Use `--blame-chain` to walk past mechanical edits.
+- Use `--evolution` for rename-aware history.
+- Use `--coupled` and `--team` before broader refactors.
+- Use `why config init` as the main setup flow.
+
+---
+
 ## linehash — Stable Line-Anchored Editing
 
 `linehash` is installed in this environment and must always be used for file-targeted reads and edits when a shell-based edit workflow is appropriate.
