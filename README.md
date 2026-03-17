@@ -12,7 +12,7 @@ Claude Code has no access to git history. It sees the code as it is today — wi
 - Is this "temporary" code from 2019 that became permanent?
 - What breaks if I delete this?
 
-Developers delete "dead-looking" code that was actually a critical security fix.  
+Developers delete "dead-looking" code that was actually a critical security fix.
 Claude Code does the same — because it can't read the past.
 
 ## Why `why` Is Different
@@ -60,56 +60,41 @@ Only **one LLM call per query**, with structured git data as input.
 
 ## Installation
 
-Current repo state:
-- GitHub release packaging is checked in via `.github/workflows/release.yml`
-- A curl-friendly installer is checked in at `./install.sh`
-- The published binary name is `why`
-- Crates.io installation is **not** ready yet because the chosen shipping package is `why-core`, but it still has `publish = false` in `crates/core/Cargo.toml`
-
-Current install paths:
+### Install the released binary
 
 ```bash
-# Install from a GitHub release
 curl -fsSL "https://raw.githubusercontent.com/quangdang46/why/main/install.sh?$(date +%s)" | bash
+```
 
-# Or build locally from this checkout
+### Build locally from this checkout
+
+```bash
 cargo run -q -p why-core -- --help
 cargo build -p why-core --release
 ./target/release/why --help
+```
 
-# Generate local CLI artifacts from the current build
+The shipping Cargo package is `why-core`, and the installed binary name is `why`.
+
+`cargo install why-core` is **not** supported yet because `crates/core/Cargo.toml` still sets `publish = false`.
+
+### Generate shell completions and a man page
+
+```bash
 cargo run -q -p why-core -- completions bash > why.bash
 cargo run -q -p why-core -- completions zsh > _why
 cargo run -q -p why-core -- completions fish > why.fish
 cargo run -q -p why-core -- manpage > why.1
+```
 
-# Initialize global config and credentials without hand-editing TOML
+### Initialize config and credentials
+
+```bash
 why config init --provider anthropic
 why auth login --provider anthropic --api-key-env ANTHROPIC_API_KEY
 ```
 
-### Release and publishing readiness checklist
-
-Checked in today:
-- CI workflow for fmt, clippy, and test in `.github/workflows/ci.yml`
-- Dedicated benchmark workflow for Criterion benches in `.github/workflows/bench.yml`
-- Tagged GitHub release workflow with cross-platform archives in `.github/workflows/release.yml`
-- Installer script with checksum verification and source-build fallback in `install.sh`
-
-Still required before `cargo install ...` is a supported path:
-- Keep any future package-name/docs changes aligned with the current shipped package `why-core` and binary `why`
-- Remove `publish = false` from the shipping package once crates.io publication is intended
-- Verify `cargo install why-core` produces the `why` binary cleanly
-- Keep the README installation instructions, release workflow package name, and installer/source-build path aligned with the shipped package
-
-Current artifact-generation support:
-- `why completions bash|zsh|fish` emits shell completion scripts to stdout
-- `why manpage` emits a roff man page to stdout
-- These commands make it possible to check completion/manual artifacts into packaging or release automation later without inventing a separate generator binary
-
-### Validation and benchmark workflow
-
-Local validation commands:
+### Validation and benchmarks
 
 ```bash
 cargo fmt --all -- --check
@@ -139,67 +124,200 @@ GitHub Actions also exposes the same Criterion run via `.github/workflows/bench.
 
 ## Usage
 
-Current repo state:
-- The checked-in prototype implementation is a Node.js POC under `poc/`
-- The checked-in Rust CLI uses positional target syntax: `why <target> [flags]`
-- The current Rust implementation supports line, explicit range, symbol, and qualified-symbol queries
+### Query targets
 
-Current Rust CLI examples:
+`why` uses positional target syntax, not `fn|file|line` subcommands.
+
+Supported query forms:
+
+- `why <file>:<line>`
+- `why <file>:<symbol>`
+- `why <file>:<Type::method>`
+- `why <file> --lines <start:end>`
+
+Supported symbol-resolution languages:
+
+- Rust (`.rs`)
+- Go (`.go`)
+- JavaScript (`.js`)
+- TypeScript (`.ts`, `.tsx`)
+- Java (`.java`)
+- Python (`.py`)
+
+Important rules:
+
+- Line numbers are 1-based.
+- `--lines` must use `START:END`.
+- Do not combine `--lines` with `<file>:<line>` or `<file>:<symbol>`.
+- Bare file paths are not valid queries unless paired with `--lines`.
+
+### Common query examples
+
 ```bash
 # Why was this specific line written?
-why src/auth.js:42
+why src/auth.rs:42
 
 # Why does this line range exist?
-why src/auth.js --lines 40:45 --no-llm
+why src/auth.rs --lines 40:45 --no-llm
 
 # Why does this symbol exist?
-why src/auth.js:verifyToken --no-llm
+why src/auth.rs:verify_token
+
+# Qualified symbol queries for Rust impl methods
+why src/auth.rs:AuthService::login --team
 
 # Machine-readable archaeology output
-why src/auth.js:verifyToken --json
+why src/auth.rs:verify_token --json
 
-# Inspect the effective merged config
-why config get
-why config get --json
+# Limit archaeology to recent commits
+why src/auth.rs:verify_token --since 30
 
-# Initialize provider settings globally or per-repo
-why config init --provider openai --model gpt-4o-mini
-why config init --local --provider custom --model local-model --base-url https://api.example.com/v1/chat/completions
+# Inspect files that historically co-change with this target
+why src/auth.rs:verify_token --coupled
 
-# Store provider credentials in the selected config layer
-why auth login --provider anthropic --api-key-env ANTHROPIC_API_KEY
-why auth login --local --provider custom --base-url https://api.example.com/v1/chat/completions --api-key-env CUSTOM_API_KEY
+# Show likely owners and bus-factor signals
+why src/auth.rs:verify_token --team
 
-# Repo-wide danger hotspots ranked by churn × heuristic risk
-why hotspots --limit 10
+# Walk past mechanical edits to the likely true origin commit
+why src/auth.rs:verify_token --blame-chain
 
-# Install or remove managed git hooks for high-risk change warnings
-why install-hooks --warn-only
-why uninstall-hooks
+# Show rename-aware target evolution history
+why src/auth.rs:verify_token --evolution
+
+# Ask whether a symbol should be split
+why src/auth.rs:verify_token --split
+
+# Write an evidence-backed annotation above the target
+why src/auth.rs:verify_token --annotate
+
+# Refresh the report when the file changes
+why src/auth.rs:verify_token --watch --no-llm
+
+# Review whether renaming a Rust symbol is safe
+why src/auth.rs:verify_token --rename-safe
 ```
 
-Current Rust CLI notes:
-- The Rust CLI uses positional target syntax (`why <target> [flags]`), not `fn|file|line` subcommands.
-- `--lines <start:end>` supports explicit range queries.
-- Symbol queries like `why src/auth.js:verifyToken` are implemented in the current Rust CLI for Rust, Go, JavaScript, TypeScript, Java, and Python.
-- Qualified symbol queries like `why src/payment.rs:PaymentService::process_payment` are implemented for Rust impl methods.
-- The Rust CLI uses `--json` for machine-readable output; `--raw` is a Node POC flag, not a Rust CLI flag.
+### Query flags
 
-Current Node POC examples:
+| Flag | Purpose | Notes |
+|---|---|---|
+| `--json` | Emit machine-readable output | Works for the main query flow and many subcommands |
+| `--no-llm` | Skip LLM synthesis | Useful in CI, local validation, or no-key environments |
+| `--no-cache` | Bypass cached results | Forces a fresh query instead of reusing `.why/cache.json` |
+| `--since <days>` | Restrict history to recent commits | Applies to query-style archaeology/report modes |
+| `--coupled` | Show file-level co-change coupling | Good before a larger refactor |
+| `--team` | Show ownership and bus-factor signals | Good before picking reviewers |
+| `--blame-chain` | Skip likely mechanical commits | Helps find the real origin of a line or symbol |
+| `--evolution` | Show rename-aware target history | Timeline-style output |
+| `--split` | Suggest whether a symbol should be split | Symbol-oriented query mode |
+| `--annotate` | Insert a short evidence-backed doc annotation above the target | This modifies the file |
+| `--watch` | Re-run the default report when the file changes | Requires an interactive terminal |
+| `--rename-safe` | Show target risk plus caller risk for rename analysis | Currently supports Rust symbol targets only |
+
+### Repo-wide and review commands
+
+Most report-style subcommands also support `--json`.
+
+```bash
+# Rank repository hotspots by churn × heuristic risk
+why hotspots --limit 10
+
+# Repository health summary
+why health
+why health --ci 80
+
+# Generate a reviewer-friendly PR template from the staged diff
+why pr-template
+
+# Review the staged diff with archaeology-backed findings
+why diff-review --no-llm
+why diff-review --post-github-comment --github-ref '#42'
+
+# Rank suspicious commits inside an incident window
+why explain-outage --from 2025-11-03T14:00 --to 2025-11-03T16:30
+
+# Cross-reference high-risk functions against coverage data
+why coverage-gap --coverage lcov.info
+
+# Find high-risk functions that appear uncalled under static analysis
+why ghost --limit 10
+
+# Rank the symbols a new engineer should understand first
+why onboard --limit 10
+
+# Find stale TODOs, HACK/TEMP markers, and expired remove-after dates
+why time-bombs --age-days 180
+```
+
+Key behavior notes:
+
+- `why pr-template` reads the **staged diff**, not unstaged changes.
+- `why diff-review` also reads the **staged diff**.
+- `why diff-review --post-github-comment` expects a valid GitHub ref like `#42` and a configured GitHub remote/token path.
+- `why ghost` uses heuristic static analysis and warns about that in terminal output.
+- `why health --ci <threshold>` exits with code `3` when the debt score exceeds the threshold.
+- `why health` regression gating exits with code `4` when a configured regression budget fails.
+
+### Integration and developer commands
+
+```bash
+# Run the MCP stdio server
+why mcp
+
+# Run the hover-focused LSP server over stdio
+why lsp
+
+# Start the interactive archaeology shell
+why shell
+
+# Emit shell wrappers for supported AI tools
+why context-inject
+
+# Install or remove managed git hooks
+why install-hooks --warn-only
+why uninstall-hooks
+
+# Generate shell completions or a man page
+why completions bash > why.bash
+why completions zsh > _why
+why completions fish > why.fish
+why manpage > why.1
+```
+
+More detail:
+
+- `why shell` starts an interactive shell with indexed completion support.
+  - Shell queries default to `--no-llm` unless you pass `--no-llm` explicitly yourself.
+  - Built-in shell commands include `help`, `reload`, `hotspots`, `health`, `ghost`, `exit`, and `quit`.
+- `why lsp` is a hover-oriented LSP server that returns Markdown hover content and a CLI hint for the full report.
+- `why context-inject` emits shell code intended to be used as:
+
+  ```bash
+  eval "$(why context-inject)"
+  ```
+
+  The generated wrappers currently target supported prompt tools such as `claude`, `sgpt`, and `llm`.
+
+### Historical Node prototype
+
+There is still a Node.js prototype under `poc/`, but it is **not** the shipping interface.
+
+Examples like these are prototype-only:
+
 ```bash
 node poc/index.js fn verifyToken src/auth.js
 node poc/index.js file src/legacy/payment_v1.js
 node poc/index.js fn verifyToken src/auth.js --raw
 ```
 
-The Node commands above are prototype-only and do not define the Rust shipping interface.
+The Rust CLI documented above is the supported interface for the current tool.
 
 ## Output Example
 
 ```bash
-$ why src/auth.js:42
+$ why src/auth.rs:42
 
-why: src/auth.js (line 42)
+why: src/auth.rs (line 42)
 
 Commits touching this line:
   a3f9b2c  alice  2024-01-12  fix: tokens not expiring on logout
@@ -207,8 +325,6 @@ Commits touching this line:
 
 No LLM synthesis (--no-llm or no API key). Heuristic risk: MEDIUM.
 ```
-
-A richer narrative explanation for symbol-level queries is planned for later phases after tree-sitter targeting and synthesis land.
 
 ## Risk semantics and explanation style
 
@@ -246,10 +362,13 @@ Add to your project's `CLAUDE.md`:
 
 - `why <file>:<line>` — explain why a specific line was written
 - `why <file> --lines <start:end>` — explain why a line range exists
-- `why <file>:<line> --json` — return machine-readable raw archaeology output
-- `why <file>:<symbol>` — explain why a supported symbol exists (Rust, Go, JavaScript, TypeScript, Java, Python)
+- `why <file>:<symbol>` — explain why a supported symbol exists
 - `why <file>:<symbol> --coupled` — inspect co-change dependencies before a deeper refactor
 - `why <file>:<symbol> --team` — identify likely owners before asking for review on risky code
+- `why <file>:<symbol> --blame-chain` — skip mechanical edits to find the real origin commit
+- `why <file>:<symbol> --evolution` — inspect rename-aware target history before large moves
+- `why diff-review --no-llm` — review the staged diff before opening a PR
+- `why health --json` — export a machine-readable repo health snapshot
 
 **Always run `why` before deleting or significantly refactoring any function
 that exists in git history for more than 6 months.**
@@ -259,14 +378,19 @@ Recommended Claude Code workflow:
 
 1. Before deleting or rewriting unfamiliar code, run `why` on the exact symbol or line range first.
 2. If the reported risk is **HIGH**, treat that as a stop-and-investigate signal rather than a suggestion to proceed quickly.
-3. For larger refactors, also run `--coupled` and `--team` so you can spot co-change surfaces and likely reviewers.
-4. When working inside an MCP-capable editor, use `why mcp` for tool integration; use the normal CLI when you want the full query/output flow documented in this README. Make sure the MCP server is launched from the repository/workspace you want analyzed, because it operates on its current working directory.
+3. For larger refactors, also run `--coupled`, `--team`, `--blame-chain`, or `--evolution` depending on what you need to learn.
+4. Before opening a PR, run `why diff-review` on the staged diff.
+5. For editor/tool integration, pick the interface that matches your workflow:
+   - `why mcp` for MCP-capable editors
+   - `why lsp` for hover-oriented editor integration
+   - `eval "$(why context-inject)"` for shell-wrapped prompt tools
 
 Recommended code review routine:
 
 - include a `why ... --json` or terminal summary when proposing removal of old-looking code
 - use `why ... --team` when the change touches operationally sensitive paths and you need to find the best reviewer
 - use `why ... --coupled` before splitting or relocating a historically noisy function
+- use `why diff-review` to summarize staged-change risk before sharing the branch
 
 For MCP-specific setup examples, see `docs/mcp-setup.md`.
 
@@ -287,6 +411,7 @@ why auth login --provider anthropic --api-key-env ANTHROPIC_API_KEY
 
 # Use --local for repo-specific overrides
 why config init --local --provider zai --model zai-pro-1
+why config init --local --provider custom --model local-model --base-url https://api.example.com/v1/chat/completions
 why auth login --local --provider custom --base-url https://api.example.com/v1/chat/completions --api-key-env CUSTOM_API_KEY
 
 # Inspect the effective merged config without printing secrets
@@ -294,15 +419,27 @@ why config get
 why config get --json
 ```
 
+If you run `why config init` or `why auth login` in an interactive terminal without passing values via flags, the CLI will prompt for the missing inputs.
+
 Supported providers:
+
 - `anthropic`
 - `openai`
 - `zai`
-- `custom` (OpenAI-compatible; requires `base_url` and `model`)
+- `custom` (OpenAI-compatible)
+
+Provider-specific rules:
+
+- `--base-url` is only valid with `--provider custom`.
+- `why config init --provider custom` requires a model and a base URL.
+- `why auth login --provider custom` requires a base URL.
+- `why auth login` requires either `--api-key`, `--api-key-env`, or interactive entry.
+- `why config get` hides secrets and reports whether auth is configured via `llm.auth_configured`.
 
 Environment variables take precedence over config values. Blank values are ignored.
 
 Provider credential env vars:
+
 ```bash
 export ANTHROPIC_API_KEY=your_anthropic_api_key_here
 export OPENAI_API_KEY=your_openai_api_key_here
@@ -310,14 +447,15 @@ export ZAI_API_KEY=your_zai_api_key_here
 export CUSTOM_API_KEY=your_custom_api_key_here
 ```
 
-Example global or local config:
+Example config:
+
 ```toml
 [risk]
 default_level = "LOW"
 
 [risk.keywords]
 high = ["pci", "reconciliation"]
-medium = ["terraform"]
+medium = ["terraform", "webhook", "idempotency"]
 
 [git]
 max_commits = 8
@@ -326,12 +464,21 @@ mechanical_threshold_files = 50
 coupling_scan_commits = 500
 coupling_ratio_threshold = 0.30
 
+[cache]
+max_entries = 500
+
 [llm]
 provider = "openai"
 model = "gpt-4o-mini"
+timeout_secs = 30
+max_tokens = 500
 
 [llm.openai]
 api_key_env = "OPENAI_API_KEY"
+
+[llm.custom]
+base_url = "https://api.example.com/v1/chat/completions"
+api_key_env = "CUSTOM_API_KEY"
 
 [github]
 remote = "origin"
@@ -343,6 +490,7 @@ remote = "origin"
 For GitHub enrichment work, set `GITHUB_TOKEN` in the environment when available; config can also carry an optional `[github]` fallback token and remote name. Environment variables take precedence over config, and blank values are ignored.
 
 Secret-handling guidance:
+
 - prefer environment variables when possible
 - global config is acceptable for local development if you choose it
 - repo-local `.why.toml` should generally avoid secrets because it is easier to commit accidentally
@@ -351,16 +499,19 @@ See `.why.toml.example` for a fully documented example of the currently implemen
 
 ## Cache and `.why/` directory semantics
 
-Current repo state:
+Current behavior:
+
 - query results are cached in `.why/cache.json` at the repository root
 - cache keys include the target identity plus the current `HEAD` hash prefix, so changing history invalidates prior entries naturally
 - terminal output shows `[cached]` when a stored `WhyReport` is reused
 - `--no-cache` bypasses cache reads and forces a fresh query
+- `[cache].max_entries` controls retained query reports in `.why/cache.json`
 - the cache file also stores rolling health snapshots for future trend-oriented reporting
 - up to 52 health snapshots are retained
-- CI enforces health regression budgets with `.github/health-baseline.json` and compares pull requests against the base branch's baseline when available
+- CI can enforce health regression budgets with `.github/health-baseline.json`
 
 Operator expectations:
+
 - treat `.why/` as local runtime state, not source-controlled project state
 - `.why/` should be ignored by git for normal development workflows
 - on Unix, the cache directory and file are written with owner-only permissions (`0700` for `.why/`, `0600` for `cache.json`)
@@ -393,6 +544,12 @@ Update `.github/health-baseline.json` intentionally after a known-good mainline 
 ```bash
 cargo run -p why-core --bin why -- health --json --write-baseline .github/health-baseline.json
 ```
+
+Exit-code summary:
+
+- `0` — checks passed
+- `3` — CI threshold failed (`--ci`)
+- `4` — regression gate failed (`--max-regression` / `--max-signal-regression`)
 
 ## Roadmap
 
