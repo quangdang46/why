@@ -198,8 +198,12 @@ pub fn relative_repo_path(repo: &Repository, path: &Path) -> Result<PathBuf> {
         return Ok(relative.to_path_buf());
     }
 
-    let canonical_workdir = fs::canonicalize(workdir)
-        .with_context(|| format!("failed to canonicalize repository root {}", workdir.display()))?;
+    let canonical_workdir = fs::canonicalize(workdir).with_context(|| {
+        format!(
+            "failed to canonicalize repository root {}",
+            workdir.display()
+        )
+    })?;
     let canonical_candidate = fs::canonicalize(&candidate)
         .with_context(|| format!("failed to canonicalize target path {}", candidate.display()))?;
 
