@@ -1,5 +1,5 @@
 use crate::{QueryKind, QueryTarget, SupportedLanguage};
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -314,8 +314,8 @@ fn first_named_identifier(node: tree_sitter::Node<'_>, source: &str) -> Result<O
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_symbol_matches, list_all_symbols, list_symbol_definitions, resolve_target,
-        ResolvedTarget,
+        ResolvedTarget, collect_symbol_matches, list_all_symbols, list_symbol_definitions,
+        resolve_target,
     };
     use crate::{QueryKind, QueryTarget, SupportedLanguage};
     use std::fs;

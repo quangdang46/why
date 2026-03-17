@@ -2,7 +2,7 @@ mod cli;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{IsTerminal, Write};
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
@@ -22,7 +22,10 @@ use why_archaeologist::{
     analyze_evolution_history, analyze_target_with_options, analyze_team,
 };
 use why_cache::{Cache, HealthSnapshot};
-use why_context::load_config;
+use why_context::{
+    LlmConfigLayer, LlmProvider, WhyConfig, WhyConfigLayer, global_config_path, load_config,
+    load_config_layer_from_path, local_config_target_path, write_config_layer_to_path,
+};
 use why_evidence::{
     EvidenceCommit, EvidenceContext, EvidencePack, EvidenceTarget, GitHubClient, GitHubComment,
     GitHubEnrichment, enrich_github_refs, parse_github_ref, parse_github_remote,
@@ -37,10 +40,11 @@ use why_scanner::{
 };
 use why_splitter::SplitSuggestion;
 use why_synthesizer::{
-    AnthropicClient, AnthropicRequest, ConfidenceLevel, DiffReviewFinding, DiffReviewReport,
-    ReportMode, WhyReport, build_diff_review_prompt, build_system_prompt,
-    heuristic_diff_review_report, heuristic_report, parse_diff_review_response, parse_response,
-    prompt_contract,
+    ConfidenceLevel, DiffReviewFinding, DiffReviewReport, ReportMode, WhyReport,
+    build_diff_review_prompt, build_query_prompt, build_system_prompt, client_from_config,
+    heuristic_diff_review_report, heuristic_report, prompt_contract,
+    synthesize_diff_review as llm_synthesize_diff_review,
+    synthesize_report as llm_synthesize_report,
 };
 
 fn main() {
@@ -68,6 +72,32 @@ fn run() -> Result<ExitStatus> {
     match mode {
         Mode::Mcp => {
             why_mcp::run_stdio()?;
+            Ok(ExitStatus::Success)
+        }
+        Mode::ConfigInit {
+            local,
+            provider,
+            model,
+            base_url,
+            auth_token,
+            retries,
+            max_tokens,
+            timeout,
+        } => {
+            run_config_init(ConfigInitArgs {
+                local,
+                provider,
+                model,
+                base_url,
+                auth_token,
+                retries,
+                max_tokens,
+                timeout,
+            })?;
+            Ok(ExitStatus::Success)
+        }
+        Mode::ConfigGet { json } => {
+            run_config_get(json)?;
             Ok(ExitStatus::Success)
         }
         Mode::Shell => {
@@ -234,6 +264,469 @@ struct DiffReviewCollected {
 struct FileWatchState {
     modified_at: Option<std::time::SystemTime>,
     len: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ConfigReport {
+    paths: ConfigPathReport,
+    risk: ConfigRiskReport,
+    git: ConfigGitReport,
+    cache: ConfigCacheReport,
+    github: ConfigGitHubReport,
+    llm: ConfigLlmReport,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ConfigPathReport {
+    global: Option<ConfigPathEntry>,
+    local: Option<ConfigPathEntry>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ConfigPathEntry {
+    path: String,
+    exists: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ConfigRiskReport {
+    default_level: String,
+    high_keywords: Vec<String>,
+    medium_keywords: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ConfigGitReport {
+    max_commits: usize,
+    recency_window_days: i64,
+    mechanical_threshold_files: usize,
+    coupling_scan_commits: usize,
+    coupling_ratio_threshold: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ConfigCacheReport {
+    max_entries: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ConfigGitHubReport {
+    remote: String,
+    token_configured: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ConfigLlmReport {
+    provider: LlmProvider,
+    model: Option<String>,
+    base_url: Option<String>,
+    retries: u32,
+    max_tokens: u32,
+    timeout: u64,
+    auth_configured: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ConfigInitArgs {
+    local: bool,
+    provider: Option<LlmProvider>,
+    model: Option<String>,
+    base_url: Option<String>,
+    auth_token: Option<String>,
+    retries: Option<u32>,
+    max_tokens: Option<u32>,
+    timeout: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct ConfigInitValues {
+    local: bool,
+    provider: LlmProvider,
+    model: Option<String>,
+    base_url: Option<String>,
+    auth_token: Option<String>,
+    retries: Option<u32>,
+    max_tokens: Option<u32>,
+    timeout: Option<u64>,
+}
+
+fn run_config_init(args: ConfigInitArgs) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let current = load_config(&cwd)?;
+    let current_provider = current.llm.provider;
+    let values = resolve_config_init_values(&current, args)?;
+
+    let target_path = config_target_path(&cwd, values.local)?;
+    let mut layer = load_existing_config_layer(&target_path)?;
+    apply_config_init_to_layer(&mut layer, &values, values.provider != current_provider);
+    write_config_layer_to_path(&target_path, &layer)?;
+
+    println!(
+        "Wrote {} config to {}",
+        if values.local { "local" } else { "global" },
+        target_path.display()
+    );
+    println!("Provider: {}", values.provider);
+
+    Ok(())
+}
+
+fn resolve_config_init_values(
+    current: &WhyConfig,
+    args: ConfigInitArgs,
+) -> Result<ConfigInitValues> {
+    let current_provider = current.llm.provider;
+    if args.provider.is_none()
+        && args.model.is_none()
+        && args.base_url.is_none()
+        && args.auth_token.is_none()
+        && args.retries.is_none()
+        && args.max_tokens.is_none()
+        && args.timeout.is_none()
+    {
+        ensure_interactive_terminal("why config init")?;
+        let provider = prompt_provider(current_provider)?;
+        let resolved_current = current.resolved_llm_config();
+        let keep_provider_defaults = provider != current_provider;
+        let model = prompt_optional_text(
+            "Model (blank to keep current/default)",
+            if keep_provider_defaults {
+                provider.default_model()
+            } else {
+                resolved_current
+                    .model
+                    .as_deref()
+                    .or_else(|| provider.default_model())
+            },
+        )?;
+        let base_url = prompt_optional_text(
+            "Base URL (blank to keep current/default)",
+            if keep_provider_defaults {
+                provider.default_base_url()
+            } else {
+                resolved_current
+                    .base_url
+                    .as_deref()
+                    .or_else(|| provider.default_base_url())
+            },
+        )?;
+        let auth_token = prompt_optional_text("Auth token (blank to keep current/skip)", None)?;
+        let retries = prompt_optional_u32(
+            "Retries (blank to keep current/default)",
+            Some(resolved_current.retries),
+        )?;
+        let max_tokens = prompt_optional_u32(
+            "Max tokens (blank to keep current/default)",
+            Some(resolved_current.max_tokens),
+        )?;
+        let timeout = prompt_optional_u64(
+            "Timeout seconds (blank to keep current/default)",
+            Some(resolved_current.timeout),
+        )?;
+
+        return Ok(ConfigInitValues {
+            provider,
+            model,
+            base_url,
+            auth_token,
+            retries,
+            max_tokens,
+            timeout,
+            local: args.local,
+        });
+    }
+
+    Ok(ConfigInitValues {
+        provider: args.provider.unwrap_or(current_provider),
+        model: args.model,
+        base_url: args.base_url,
+        auth_token: args.auth_token,
+        retries: args.retries,
+        max_tokens: args.max_tokens,
+        timeout: args.timeout,
+        local: args.local,
+    })
+}
+
+fn run_config_get(json: bool) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let report = build_config_report(&cwd)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        render_config_report(&report);
+    }
+
+    Ok(())
+}
+
+fn build_config_report(cwd: &Path) -> Result<ConfigReport> {
+    let config = load_config(cwd)?;
+    let resolved_llm = config.resolved_llm_config();
+
+    Ok(ConfigReport {
+        paths: ConfigPathReport {
+            global: config_path_entry(global_config_path()),
+            local: config_path_entry(local_config_target_path(cwd)),
+        },
+        risk: ConfigRiskReport {
+            default_level: config.risk.default_level.clone(),
+            high_keywords: config.risk.keywords.high.clone(),
+            medium_keywords: config.risk.keywords.medium.clone(),
+        },
+        git: ConfigGitReport {
+            max_commits: config.git.max_commits,
+            recency_window_days: config.git.recency_window_days,
+            mechanical_threshold_files: config.git.mechanical_threshold_files,
+            coupling_scan_commits: config.git.coupling_scan_commits,
+            coupling_ratio_threshold: config.git.coupling_ratio_threshold,
+        },
+        cache: ConfigCacheReport {
+            max_entries: config.cache.max_entries,
+        },
+        github: ConfigGitHubReport {
+            remote: config.github.remote.clone(),
+            token_configured: config.github_token().is_some(),
+        },
+        llm: ConfigLlmReport {
+            provider: resolved_llm.provider,
+            model: resolved_llm.model,
+            base_url: resolved_llm.base_url,
+            retries: resolved_llm.retries,
+            max_tokens: resolved_llm.max_tokens,
+            timeout: resolved_llm.timeout,
+            auth_configured: resolved_llm.auth_token.is_some(),
+        },
+    })
+}
+
+fn render_config_report(report: &ConfigReport) {
+    println!("why config");
+    println!();
+    println!("Paths");
+    render_config_path_line("global", report.paths.global.as_ref());
+    render_config_path_line("local", report.paths.local.as_ref());
+    println!();
+    println!("LLM");
+    println!("  provider: {}", report.llm.provider);
+    println!(
+        "  model: {}",
+        report.llm.model.as_deref().unwrap_or("<provider default>")
+    );
+    println!(
+        "  base_url: {}",
+        report.llm.base_url.as_deref().unwrap_or("<none>")
+    );
+    println!("  retries: {}", report.llm.retries);
+    println!("  max_tokens: {}", report.llm.max_tokens);
+    println!("  timeout: {}", report.llm.timeout);
+    println!(
+        "  auth_configured: {}",
+        if report.llm.auth_configured {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!();
+    println!("GitHub");
+    println!("  remote: {}", report.github.remote);
+    println!(
+        "  token_configured: {}",
+        if report.github.token_configured {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!();
+    println!("Risk");
+    println!("  default_level: {}", report.risk.default_level);
+    println!(
+        "  high_keywords: {}",
+        comma_or_none(&report.risk.high_keywords)
+    );
+    println!(
+        "  medium_keywords: {}",
+        comma_or_none(&report.risk.medium_keywords)
+    );
+    println!();
+    println!("Git");
+    println!("  max_commits: {}", report.git.max_commits);
+    println!("  recency_window_days: {}", report.git.recency_window_days);
+    println!(
+        "  mechanical_threshold_files: {}",
+        report.git.mechanical_threshold_files
+    );
+    println!(
+        "  coupling_scan_commits: {}",
+        report.git.coupling_scan_commits
+    );
+    println!(
+        "  coupling_ratio_threshold: {}",
+        report.git.coupling_ratio_threshold
+    );
+    println!();
+    println!("Cache");
+    println!("  max_entries: {}", report.cache.max_entries);
+}
+
+fn render_config_path_line(label: &str, entry: Option<&ConfigPathEntry>) {
+    match entry {
+        Some(entry) => println!(
+            "  {label}: {} ({})",
+            entry.path,
+            if entry.exists { "present" } else { "missing" }
+        ),
+        None => println!("  {label}: <unavailable>"),
+    }
+}
+
+fn comma_or_none(values: &[String]) -> String {
+    if values.is_empty() {
+        "<none>".to_string()
+    } else {
+        values.join(", ")
+    }
+}
+
+fn config_path_entry(path: Option<PathBuf>) -> Option<ConfigPathEntry> {
+    path.map(|path| ConfigPathEntry {
+        exists: path.is_file(),
+        path: path.display().to_string(),
+    })
+}
+
+fn config_target_path(cwd: &Path, local: bool) -> Result<PathBuf> {
+    if local {
+        local_config_target_path(cwd).ok_or_else(|| {
+            anyhow!(
+                "could not determine a repo-local config path from {}",
+                cwd.display()
+            )
+        })
+    } else {
+        global_config_path().ok_or_else(|| {
+            anyhow!("could not determine a global config path; set XDG_CONFIG_HOME or HOME")
+        })
+    }
+}
+
+fn load_existing_config_layer(path: &Path) -> Result<WhyConfigLayer> {
+    if path.is_file() {
+        load_config_layer_from_path(path)
+    } else {
+        Ok(WhyConfigLayer::default())
+    }
+}
+
+fn apply_config_init_to_layer(
+    layer: &mut WhyConfigLayer,
+    values: &ConfigInitValues,
+    reset_provider_overrides: bool,
+) {
+    let llm = layer.llm.get_or_insert_with(LlmConfigLayer::default);
+    llm.provider = Some(values.provider);
+    if reset_provider_overrides {
+        llm.model = None;
+        llm.base_url = None;
+        llm.auth_token = None;
+    }
+    if let Some(model) = values.model.clone() {
+        llm.model = Some(model);
+    }
+    if let Some(base_url) = values.base_url.clone() {
+        llm.base_url = Some(base_url);
+    }
+    if let Some(auth_token) = values.auth_token.clone() {
+        llm.auth_token = Some(auth_token);
+    }
+    if let Some(retries) = values.retries {
+        llm.retries = Some(retries);
+    }
+    if let Some(max_tokens) = values.max_tokens {
+        llm.max_tokens = Some(max_tokens);
+    }
+    if let Some(timeout) = values.timeout {
+        llm.timeout = Some(timeout);
+    }
+}
+
+fn ensure_interactive_terminal(command: &str) -> Result<()> {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        anyhow::bail!(
+            "{command} requires an interactive terminal when values are not passed via flags"
+        );
+    }
+    Ok(())
+}
+
+fn prompt_provider(default: LlmProvider) -> Result<LlmProvider> {
+    loop {
+        let raw = prompt_input(
+            "Provider (openai, anthropic, zai, custom)",
+            Some(default.as_str()),
+        )?;
+        let candidate = if raw.is_empty() {
+            default.as_str().to_string()
+        } else {
+            raw.to_ascii_lowercase()
+        };
+        match candidate.as_str() {
+            "openai" => return Ok(LlmProvider::Openai),
+            "anthropic" => return Ok(LlmProvider::Anthropic),
+            "zai" => return Ok(LlmProvider::Zai),
+            "custom" => return Ok(LlmProvider::Custom),
+            _ => println!("Please choose one of: openai, anthropic, zai, custom."),
+        }
+    }
+}
+
+fn prompt_optional_text(prompt: &str, default: Option<&str>) -> Result<Option<String>> {
+    let value = prompt_input(prompt, default)?;
+    Ok((!value.is_empty()).then_some(value))
+}
+
+fn prompt_optional_u64(prompt: &str, default: Option<u64>) -> Result<Option<u64>> {
+    loop {
+        let default_value = default.map(|value| value.to_string());
+        let raw = prompt_input(prompt, default_value.as_deref())?;
+        if raw.is_empty() {
+            return Ok(None);
+        }
+        match raw.parse::<u64>() {
+            Ok(value) if value > 0 => return Ok(Some(value)),
+            _ => println!("Please enter a positive integer."),
+        }
+    }
+}
+
+fn prompt_optional_u32(prompt: &str, default: Option<u32>) -> Result<Option<u32>> {
+    loop {
+        let default_value = default.map(|value| value.to_string());
+        let raw = prompt_input(prompt, default_value.as_deref())?;
+        if raw.is_empty() {
+            return Ok(None);
+        }
+        match raw.parse::<u32>() {
+            Ok(value) if value > 0 => return Ok(Some(value)),
+            _ => println!("Please enter a positive integer."),
+        }
+    }
+}
+
+fn prompt_input(prompt: &str, default: Option<&str>) -> Result<String> {
+    let mut stdout = io::stdout();
+    match default {
+        Some(default) => write!(stdout, "{prompt} [{default}]: ")?,
+        None => write!(stdout, "{prompt}: ")?,
+    }
+    stdout.flush()?;
+
+    let mut input = String::new();
+    io::stdin().lock().read_line(&mut input)?;
+    Ok(input.trim().to_string())
 }
 
 fn run_install_hooks(warn_only: bool) -> Result<()> {
@@ -409,7 +902,7 @@ fn run_diff_review(
     let config = load_config(&cwd)?;
     let plan = why_scanner::scan_diff_review(&cwd)?;
     let collected = collect_diff_review(&plan, &cwd, &repo, &config)?;
-    let mut report = synthesize_diff_review(&plan, &collected, no_llm)?;
+    let mut report = synthesize_diff_review_request(&config, &plan, &collected, no_llm)?;
 
     let markdown = render_diff_review_markdown(&report);
     if post_github_comment {
@@ -659,7 +1152,11 @@ fn render_default_query_output(
 
     if !request.no_cache {
         if let Some(cached) = cache.get::<WhyReport>(&cache_key) {
-            let rendered = format_why_report(&request.target, &cached, true, Some(terminal_links));
+            let mut rendered = if request.json {
+                serde_json::to_string_pretty(&cached)?
+            } else {
+                format_why_report(&request.target, &cached, true, Some(terminal_links))
+            };
 
             if request.annotate {
                 let result = analyze_target_with_options(&request.target, cwd, request.since_days)?;
@@ -671,6 +1168,12 @@ fn render_default_query_output(
                     &head_hash,
                     &format_target_label(&request.target),
                 )?;
+                if !request.json {
+                    rendered.push_str(&format!(
+                        "\n\nAnnotation written to {}",
+                        source_path.display()
+                    ));
+                }
             }
 
             return Ok(rendered);
@@ -678,8 +1181,12 @@ fn render_default_query_output(
     }
 
     let result = analyze_target_with_options(&request.target, cwd, request.since_days)?;
-    let report = synthesize_report(request, &result, repo, config)?;
-    let rendered = format_why_report(&request.target, &report, false, Some(terminal_links));
+    let report = synthesize_report_query(request, &result, repo, config)?;
+    let mut rendered = if request.json {
+        serde_json::to_string_pretty(&report)?
+    } else {
+        format_why_report(&request.target, &report, false, Some(terminal_links))
+    };
 
     if !request.watch {
         cache.set(cache_key, &report, &head_hash)?;
@@ -694,6 +1201,12 @@ fn render_default_query_output(
             &head_hash,
             &format_target_label(&request.target),
         )?;
+        if !request.json {
+            rendered.push_str(&format!(
+                "\n\nAnnotation written to {}",
+                source_path.display()
+            ));
+        }
     }
 
     Ok(rendered)
@@ -1949,7 +2462,7 @@ fn current_unix_timestamp() -> i64 {
         .as_secs() as i64
 }
 
-fn synthesize_report(
+fn synthesize_report_query(
     request: &QueryRequest,
     result: &ArchaeologyResult,
     repo: &Repository,
@@ -2011,34 +2524,17 @@ fn synthesize_report(
         return Ok(fallback());
     }
 
-    let client = match AnthropicClient::from_env() {
+    let client = match client_from_config(&config.resolved_llm_config()) {
         Ok(client) => client,
         Err(_) => return Ok(fallback()),
     };
 
     let contract = prompt_contract();
-    let evidence_json = serde_json::to_string_pretty(&evidence_pack)?;
-    let response = match client.send(&AnthropicRequest {
-        system_prompt: format!(
-            "You are a careful code archaeology assistant. {} Required fields: {}. Grounding rules: {}",
-            contract.response_format,
-            contract.required_fields.join(", "),
-            contract.grounding_rules.join(" ")
-        ),
-        user_prompt: format!(
-            "Use this evidence pack to explain why the target exists and the risk of changing it.\n\nEvidence pack:\n{}",
-            evidence_json
-        ),
-    }) {
-        Ok(response) => response,
-        Err(_) => return Ok(fallback()),
-    };
+    let system_prompt = build_system_prompt(&contract);
+    let user_prompt = build_query_prompt(&evidence_pack);
 
-    match parse_response(&response.text) {
-        Ok(mut report) => {
-            report.cost_usd = Some(response.cost_usd);
-            Ok(report)
-        }
+    match llm_synthesize_report(&*client, &system_prompt, &user_prompt) {
+        Ok(report) => Ok(report),
         Err(_) => Ok(fallback()),
     }
 }
@@ -2058,7 +2554,8 @@ fn diff_review_mode_label(mode: ReportMode) -> &'static str {
     }
 }
 
-fn synthesize_diff_review(
+fn synthesize_diff_review_request(
+    config: &why_context::WhyConfig,
     plan: &DiffReviewPlan,
     collected: &DiffReviewCollected,
     no_llm: bool,
@@ -2083,30 +2580,24 @@ fn synthesize_diff_review(
         return Ok(fallback());
     }
 
-    let client = match AnthropicClient::from_env() {
+    let client = match client_from_config(&config.resolved_llm_config()) {
         Ok(client) => client,
         Err(_) => return Ok(fallback()),
     };
 
     let target_label = diff_review_target_label(plan);
-    let response = match client.send(&AnthropicRequest {
-        system_prompt: build_system_prompt(&prompt_contract()),
-        user_prompt: build_diff_review_prompt(
-            &target_label,
-            &collected
-                .entries
-                .iter()
-                .map(|entry| entry.evidence_pack.clone())
-                .collect::<Vec<_>>(),
-        ),
-    }) {
-        Ok(response) => response,
-        Err(_) => return Ok(fallback()),
-    };
+    let user_prompt = build_diff_review_prompt(
+        &target_label,
+        &collected
+            .entries
+            .iter()
+            .map(|entry| entry.evidence_pack.clone())
+            .collect::<Vec<_>>(),
+    );
+    let system_prompt = build_system_prompt(&prompt_contract());
 
-    match parse_diff_review_response(&response.text) {
+    match llm_synthesize_diff_review(&*client, &system_prompt, &user_prompt) {
         Ok(mut report) => {
-            report.cost_usd = Some(response.cost_usd);
             if report.notes.is_empty() {
                 report.notes = collected.notes.clone();
             } else {

@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
+use why_context::LlmProvider;
 use why_evidence::parse_github_ref;
 use why_locator::{QueryTarget, parse_target};
 
@@ -9,7 +10,7 @@ use why_locator::{QueryTarget, parse_target};
 #[command(name = "why")]
 #[command(
     about = "Ask your codebase why a line, range, symbol, or repo hotspot exists",
-    after_help = "Examples:\n  why src/auth.rs:42\n  why src/auth.rs --lines 40:45 --no-llm\n  why src/auth.rs:verify_token --json\n  why src/auth.rs:verify_token --annotate\n  why src/auth.rs:verify_token --rename-safe\n  why src/auth.rs:verify_token --watch --no-llm\n  why src/auth.rs:AuthService::login --team\n  why src/auth.rs:verify_token --blame-chain\n  why src/auth.rs:verify_token --evolution\n  why hotspots --limit 10\n  why health\n  why health --ci 80\n  why pr-template\n  why diff-review --no-llm\n  why explain-outage --from 2025-11-03T14:00 --to 2025-11-03T16:30\n  why coverage-gap --coverage lcov.info\n  why ghost --limit 10\n  why onboard --limit 10\n  why time-bombs --age-days 180\n  eval \"$(why context-inject)\""
+    after_help = "Examples:\n  why src/auth.rs:42\n  why src/auth.rs --lines 40:45 --no-llm\n  why src/auth.rs:verify_token --json\n  why src/auth.rs:verify_token --annotate\n  why src/auth.rs:verify_token --rename-safe\n  why src/auth.rs:verify_token --watch --no-llm\n  why src/auth.rs:AuthService::login --team\n  why src/auth.rs:verify_token --blame-chain\n  why src/auth.rs:verify_token --evolution\n  why hotspots --limit 10\n  why health\n  why health --ci 80\n  why pr-template\n  why diff-review --no-llm\n  why explain-outage --from 2025-11-03T14:00 --to 2025-11-03T16:30\n  why coverage-gap --coverage lcov.info\n  why ghost --limit 10\n  why onboard --limit 10\n  why time-bombs --age-days 180\n  why config init --provider anthropic --model claude-haiku-4-5-20251001 --auth-token sk-ant-...\n  why config init --local --provider custom --model local-model --base-url https://api.example.com/v1/chat/completions\n  why config get --json\n  eval \"$(why context-inject)\""
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -78,10 +79,78 @@ pub enum CompletionShell {
     Fish,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ProviderChoice {
+    Openai,
+    Anthropic,
+    Zai,
+    Custom,
+}
+
+impl From<ProviderChoice> for LlmProvider {
+    fn from(value: ProviderChoice) -> Self {
+        match value {
+            ProviderChoice::Openai => Self::Openai,
+            ProviderChoice::Anthropic => Self::Anthropic,
+            ProviderChoice::Zai => Self::Zai,
+            ProviderChoice::Custom => Self::Custom,
+        }
+    }
+}
+
+#[derive(Debug, Subcommand, Clone, PartialEq)]
+pub enum ConfigCommand {
+    /// Create or update why configuration for the selected target.
+    Init {
+        /// Write repo-local configuration instead of the global config.
+        #[arg(long)]
+        local: bool,
+
+        /// LLM provider to configure.
+        #[arg(long, value_enum)]
+        provider: Option<ProviderChoice>,
+
+        /// Model name for the selected provider.
+        #[arg(long, value_name = "MODEL")]
+        model: Option<String>,
+
+        /// Base URL for the selected provider.
+        #[arg(long, value_name = "URL")]
+        base_url: Option<String>,
+
+        /// Auth token to store in config.
+        #[arg(long, value_name = "TOKEN")]
+        auth_token: Option<String>,
+
+        /// Number of retry attempts for LLM requests.
+        #[arg(long, value_name = "COUNT", value_parser = clap::value_parser!(u32).range(1..))]
+        retries: Option<u32>,
+
+        /// Maximum output tokens per synthesis call.
+        #[arg(long, value_name = "TOKENS", value_parser = clap::value_parser!(u32).range(1..))]
+        max_tokens: Option<u32>,
+
+        /// Request timeout in seconds.
+        #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(u64).range(1..))]
+        timeout: Option<u64>,
+    },
+    /// Show the effective merged configuration without secrets.
+    Get {
+        /// Emit machine-readable output.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 #[derive(Debug, Subcommand, Clone, PartialEq)]
 pub enum Command {
     /// Run the MCP stdio server.
     Mcp,
+    /// Create or inspect why configuration.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
     /// Start an interactive archaeology shell with completion support.
     Shell,
     /// Run the LSP hover server over stdio.
@@ -261,6 +330,19 @@ pub struct QueryRequest {
 pub enum Mode {
     Query(QueryRequest),
     Mcp,
+    ConfigInit {
+        local: bool,
+        provider: Option<LlmProvider>,
+        model: Option<String>,
+        base_url: Option<String>,
+        auth_token: Option<String>,
+        retries: Option<u32>,
+        max_tokens: Option<u32>,
+        timeout: Option<u64>,
+    },
+    ConfigGet {
+        json: bool,
+    },
     Shell,
     Lsp,
     ContextInject,
@@ -336,6 +418,19 @@ fn parse_signal_budget(raw: &str) -> Result<(String, u32)> {
     Ok((signal.to_string(), count))
 }
 
+fn normalize_optional_flag(value: Option<String>, flag: &str) -> Result<Option<String>> {
+    match value {
+        Some(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                bail!("{flag} must not be empty");
+            }
+            Ok(Some(trimmed.to_string()))
+        }
+        None => Ok(None),
+    }
+}
+
 impl Cli {
     pub fn parse_mode(self) -> Result<Mode> {
         match self.command {
@@ -358,6 +453,47 @@ impl Cli {
                     bail!("the mcp subcommand does not accept query flags or a target");
                 }
                 Ok(Mode::Mcp)
+            }
+            Some(Command::Config { command }) => {
+                if self.target.is_some()
+                    || self.lines.is_some()
+                    || self.json
+                    || self.no_llm
+                    || self.no_cache
+                    || self.split
+                    || self.coupled
+                    || self.since.is_some()
+                    || self.team
+                    || self.blame_chain
+                    || self.evolution
+                    || self.annotate
+                    || self.watch
+                    || self.rename_safe
+                {
+                    bail!("the config subcommand does not accept query flags or a target");
+                }
+                match command {
+                    ConfigCommand::Init {
+                        local,
+                        provider,
+                        model,
+                        base_url,
+                        auth_token,
+                        retries,
+                        max_tokens,
+                        timeout,
+                    } => Ok(Mode::ConfigInit {
+                        local,
+                        provider: provider.map(Into::into),
+                        model: normalize_optional_flag(model, "--model")?,
+                        base_url: normalize_optional_flag(base_url, "--base-url")?,
+                        auth_token: normalize_optional_flag(auth_token, "--auth-token")?,
+                        retries,
+                        max_tokens,
+                        timeout,
+                    }),
+                    ConfigCommand::Get { json } => Ok(Mode::ConfigGet { json }),
+                }
             }
             Some(Command::Shell) => {
                 if self.target.is_some()
@@ -826,6 +962,7 @@ mod tests {
     use super::{Cli, Command, CompletionShell, Mode, QueryRequest};
     use clap::Parser;
     use std::path::PathBuf;
+    use why_context::LlmProvider;
     use why_locator::{QueryKind, QueryTarget};
 
     #[test]
@@ -1128,6 +1265,52 @@ mod tests {
         let cli = Cli::parse_from(["why", "lsp"]);
         assert_eq!(cli.command, Some(Command::Lsp));
         assert_eq!(cli.parse_mode().expect("lsp should parse"), Mode::Lsp);
+    }
+
+    #[test]
+    fn parses_config_init_subcommand() {
+        let cli = Cli::parse_from([
+            "why",
+            "config",
+            "init",
+            "--local",
+            "--provider",
+            "openai",
+            "--model",
+            "gpt-5.4",
+            "--base-url",
+            "https://api.openai.com/v1/chat/completions",
+            "--auth-token",
+            "test-token",
+            "--retries",
+            "5",
+            "--max-tokens",
+            "900",
+            "--timeout",
+            "45",
+        ]);
+        assert_eq!(
+            cli.parse_mode().expect("config init should parse"),
+            Mode::ConfigInit {
+                local: true,
+                provider: Some(LlmProvider::Openai),
+                model: Some("gpt-5.4".into()),
+                base_url: Some("https://api.openai.com/v1/chat/completions".into()),
+                auth_token: Some("test-token".into()),
+                retries: Some(5),
+                max_tokens: Some(900),
+                timeout: Some(45),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_config_get_subcommand() {
+        let cli = Cli::parse_from(["why", "config", "get", "--json"]);
+        assert_eq!(
+            cli.parse_mode().expect("config get should parse"),
+            Mode::ConfigGet { json: true }
+        );
     }
 
     #[test]
@@ -1600,6 +1783,65 @@ mod tests {
             error
                 .to_string()
                 .contains("unexpected argument '--json' found")
+        );
+    }
+
+    #[test]
+    fn rejects_query_flags_for_config() {
+        let error = Cli::try_parse_from(["why", "config", "get", "--no-cache"])
+            .expect_err("clap should reject query flags for config");
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument '--no-cache' found")
+        );
+    }
+
+    #[test]
+    fn rejects_positional_target_for_config() {
+        let error = Cli::try_parse_from(["why", "config", "get", "src/lib.rs:42"])
+            .expect_err("clap should reject positional targets for config");
+        assert!(
+            error
+                .to_string()
+                .contains("unexpected argument 'src/lib.rs:42' found")
+        );
+    }
+
+    #[test]
+    fn rejects_empty_values_for_config_flags() {
+        let config_error = Cli::parse_from([
+            "why",
+            "config",
+            "init",
+            "--provider",
+            "openai",
+            "--model",
+            "   ",
+        ])
+        .parse_mode()
+        .expect_err("config init should reject blank model values when provided");
+        assert!(
+            config_error
+                .to_string()
+                .contains("--model must not be empty")
+        );
+
+        let token_error = Cli::parse_from([
+            "why",
+            "config",
+            "init",
+            "--provider",
+            "custom",
+            "--auth-token",
+            "   ",
+        ])
+        .parse_mode()
+        .expect_err("config init should reject blank auth tokens when provided");
+        assert!(
+            token_error
+                .to_string()
+                .contains("--auth-token must not be empty")
         );
     }
 

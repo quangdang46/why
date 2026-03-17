@@ -5,12 +5,14 @@ use anyhow::bail;
 use common::{
     assert_json_golden, assert_terminal_golden, setup_compat_shim_repo, setup_coupling_repo,
     setup_coupling_rich_repo, setup_ghost_repo, setup_hotfix_repo, setup_javascript_repo,
-    setup_outage_repo, setup_python_repo, setup_rename_safe_repo, setup_sparse_repo,
-    setup_split_repo, setup_timebomb_repo, setup_timebomb_rich_repo, setup_typescript_repo,
+    setup_outage_repo, setup_python_repo, setup_real_repo_from_env, setup_rename_safe_repo,
+    setup_sparse_repo, setup_split_repo, setup_timebomb_repo, setup_timebomb_rich_repo,
+    setup_typescript_repo,
 };
 use serde_json::Value;
 use std::fs;
 use std::io::{Read, Write};
+use std::path::Path;
 
 fn ensure_success(output: &std::process::Output) -> Result<()> {
     if output.status.success() {
@@ -27,6 +29,24 @@ fn ensure_success(output: &std::process::Output) -> Result<()> {
 
 fn lsp_packet(body: &str) -> String {
     format!("Content-Length: {}\r\n\r\n{body}", body.len())
+}
+
+fn setup_config_env(repo: &common::FixtureRepo) -> Result<Vec<(&'static str, String)>> {
+    let home = repo.temp_home();
+    let xdg = repo.temp_xdg_config_home();
+    std::fs::create_dir_all(&home)?;
+    std::fs::create_dir_all(&xdg)?;
+    Ok(vec![
+        ("HOME", home.display().to_string()),
+        ("XDG_CONFIG_HOME", xdg.display().to_string()),
+    ])
+}
+
+fn env_pairs(entries: &[(impl AsRef<str>, String)]) -> Vec<(&str, &str)> {
+    entries
+        .iter()
+        .map(|(key, value)| (key.as_ref(), value.as_str()))
+        .collect()
 }
 
 fn read_lsp_message(reader: &mut impl Read) -> Result<Value> {
@@ -52,6 +72,22 @@ fn read_lsp_message(reader: &mut impl Read) -> Result<Value> {
     let mut body = vec![0u8; content_length];
     reader.read_exact(&mut body)?;
     Ok(serde_json::from_slice(&body)?)
+}
+
+const REAL_REPO_ENV: &str = "WHY_REAL_REPO_PATH";
+
+fn setup_real_repo_or_skip() -> Result<Option<common::FixtureRepo>> {
+    setup_real_repo_from_env(REAL_REPO_ENV)
+}
+
+fn repo_relative_path<'a>(repo_root: &Path, target: &'a Path) -> Result<&'a Path> {
+    target.strip_prefix(repo_root).map_err(|_| {
+        anyhow::anyhow!(
+            "target path {} is not inside repo {}",
+            target.display(),
+            repo_root.display()
+        )
+    })
 }
 
 #[test]
@@ -1515,6 +1551,137 @@ fn context_inject_subcommand_emits_shell_wrappers() -> Result<()> {
 }
 
 #[test]
+fn config_init_writes_global_config_with_selected_provider() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let env = setup_config_env(&repo)?;
+    let env_refs = env_pairs(&env);
+
+    let output = repo.run_why_with_env(
+        &[
+            "config",
+            "init",
+            "--provider",
+            "openai",
+            "--model",
+            "gpt-5.4",
+            "--base-url",
+            "https://api.openai.com/v1/chat/completions",
+            "--auth-token",
+            "openai-token",
+            "--retries",
+            "5",
+            "--timeout",
+            "45",
+            "--max-tokens",
+            "900",
+        ],
+        &env_refs,
+    )?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    assert!(stdout.contains("Wrote global config"));
+    assert!(stdout.contains("Provider: openai"));
+
+    let config = fs::read_to_string(repo.global_config_path())?;
+    assert!(config.contains("provider = \"openai\""));
+    assert!(config.contains("model = \"gpt-5.4\""));
+    assert!(config.contains("base_url = \"https://api.openai.com/v1/chat/completions\""));
+    assert!(config.contains("auth_token = \"openai-token\""));
+    assert!(config.contains("retries = 5"));
+    assert!(config.contains("timeout = 45"));
+    assert!(config.contains("max_tokens = 900"));
+
+    Ok(())
+}
+
+#[test]
+fn config_init_writes_local_config_when_requested() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let env = setup_config_env(&repo)?;
+    let env_refs = env_pairs(&env);
+
+    let output = repo.run_why_with_env(
+        &[
+            "config",
+            "init",
+            "--local",
+            "--provider",
+            "anthropic",
+            "--model",
+            "claude-sonnet-4-6",
+        ],
+        &env_refs,
+    )?;
+    ensure_success(&output)?;
+
+    let stdout = repo.stdout(&output);
+    assert!(stdout.contains("Wrote local config"));
+    let config = fs::read_to_string(repo.local_config_path())?;
+    assert!(config.contains("provider = \"anthropic\""));
+    assert!(config.contains("model = \"claude-sonnet-4-6\""));
+
+    Ok(())
+}
+
+#[test]
+fn config_get_reports_effective_provider_and_paths_as_json() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let env = setup_config_env(&repo)?;
+    let env_refs = env_pairs(&env);
+
+    fs::create_dir_all(
+        repo.global_config_path()
+            .parent()
+            .expect("global config parent"),
+    )?;
+    fs::write(
+        repo.global_config_path(),
+        "[llm]\nprovider = \"openai\"\nmodel = \"gpt-5.4\"\nauth_token = \"OPENAI_CONFIG_TOKEN\"\n",
+    )?;
+    fs::write(
+        repo.local_config_path(),
+        "[llm]\nprovider = \"custom\"\nmodel = \"repo-model\"\nbase_url = \"https://api.example.com/v1/chat/completions\"\n",
+    )?;
+
+    let output = repo.run_why_with_env(&["config", "get", "--json"], &env_refs)?;
+    ensure_success(&output)?;
+
+    let parsed: Value = serde_json::from_str(&repo.stdout(&output))?;
+    assert_eq!(parsed["llm"]["provider"], "custom");
+    assert_eq!(parsed["llm"]["model"], "repo-model");
+    assert_eq!(
+        parsed["llm"]["base_url"],
+        "https://api.example.com/v1/chat/completions"
+    );
+    assert_eq!(parsed["llm"]["auth_configured"], false);
+    assert_eq!(parsed["paths"]["global"]["exists"], true);
+    assert_eq!(parsed["paths"]["local"]["exists"], true);
+
+    Ok(())
+}
+
+#[test]
+fn missing_credentials_still_falls_back_to_heuristic_without_no_llm() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let env = setup_config_env(&repo)?;
+    let env_refs = env_pairs(&env);
+
+    let output = repo.run_why_with_env(&["src/payment.rs:6", "--json"], &env_refs)?;
+    ensure_success(&output)?;
+
+    let parsed: Value = serde_json::from_str(&repo.stdout(&output))?;
+    assert_eq!(parsed["mode"], "heuristic");
+    assert!(
+        parsed["notes"]
+            .as_array()
+            .is_some_and(|notes| !notes.is_empty())
+    );
+
+    Ok(())
+}
+
+#[test]
 fn shell_subcommand_supports_help_reload_and_quit() -> Result<()> {
     let repo = setup_hotfix_repo()?;
     let output = repo.run_why_with_stdin(&["shell"], "help\nreload\nquit\n")?;
@@ -1636,6 +1803,92 @@ fn lsp_subcommand_returns_hover_markdown_for_hotfix_repo() -> Result<()> {
 
     let output = child.wait_with_output()?;
     ensure_success(&output)?;
+
+    Ok(())
+}
+
+#[test]
+fn real_repo_query_json_shape_is_stable_when_enabled() -> Result<()> {
+    let Some(repo) = setup_real_repo_or_skip()? else {
+        eprintln!("skipping real repo test; set {REAL_REPO_ENV} to a git checkout path");
+        return Ok(());
+    };
+
+    let candidate_paths = [
+        repo.path.join("crates/core/src/cli.rs"),
+        repo.path.join("crates/core/src/main.rs"),
+        repo.path.join("README.md"),
+    ];
+    let target_path = candidate_paths
+        .into_iter()
+        .find(|path| path.exists())
+        .expect("real repo test requires a known target file");
+    let relative_path = repo_relative_path(&repo.path, &target_path)?;
+    let relative_path_display = relative_path.display().to_string();
+    let target = format!("{}:Cli::parse_mode", relative_path_display);
+
+    let output = repo.run_why(&[&target, "--json", "--no-llm", "--no-cache"])?;
+    ensure_success(&output)?;
+
+    let parsed: Value = serde_json::from_str(&repo.stdout(&output))?;
+    assert_eq!(parsed["mode"], "heuristic");
+    assert!(parsed["summary"].as_str().is_some_and(|summary| {
+        summary.contains(&relative_path_display) && summary.contains("Cli::parse_mode")
+    }));
+    assert!(
+        parsed["evidence"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
+    assert!(parsed["notes"].as_array().is_some_and(|items| {
+        items.iter().any(|note| {
+            note.as_str()
+                .is_some_and(|text| text.contains("No LLM synthesis"))
+        })
+    }));
+
+    Ok(())
+}
+
+#[test]
+fn real_repo_health_and_hotspots_work_when_enabled() -> Result<()> {
+    let Some(repo) = setup_real_repo_or_skip()? else {
+        eprintln!("skipping real repo test; set {REAL_REPO_ENV} to a git checkout path");
+        return Ok(());
+    };
+
+    let health_output = repo.run_why(&["health", "--json"])?;
+    ensure_success(&health_output)?;
+    let health: Value = serde_json::from_str(&repo.stdout(&health_output))?;
+    assert!(health["debt_score"].is_number());
+    assert!(health["signals"].is_object());
+    assert!(
+        health["notes"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
+
+    let cache_path = repo.path.join(".why").join("cache.json");
+    assert!(cache_path.exists());
+
+    let hotspots_output = repo.run_why(&["hotspots", "--limit", "5", "--json"])?;
+    ensure_success(&hotspots_output)?;
+    let hotspots: Value = serde_json::from_str(&repo.stdout(&hotspots_output))?;
+    let findings = hotspots
+        .as_array()
+        .expect("hotspots output should be an array for a real repo");
+    assert!(!findings.is_empty());
+    assert!(
+        findings[0]["path"]
+            .as_str()
+            .is_some_and(|path| !path.is_empty())
+    );
+    assert!(
+        findings[0]["risk_level"]
+            .as_str()
+            .is_some_and(|risk| !risk.is_empty())
+    );
+    assert!(findings[0]["owners"].is_array());
 
     Ok(())
 }

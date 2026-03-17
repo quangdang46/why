@@ -1,7 +1,10 @@
 # Example why configuration.
-# Copy this file to .why.toml at your repository root and adjust for your domain.
+# Global config lives at $XDG_CONFIG_HOME/why/why.toml (or ~/.config/why/why.toml).
+# Repo-local overrides live at why.local.toml in your repository root.
 #
-# All values below are optional. Missing sections fall back to built-in defaults.
+# All values below are optional. Missing values fall back to built-in defaults.
+# Repo-local config only needs to include overrides; it does not need to duplicate
+# global settings or credentials.
 # Keywords are matched case-insensitively against commit messages, diff context,
 # and nearby source comments/markers when heuristic risk is computed.
 
@@ -49,13 +52,39 @@ coupling_ratio_threshold = 0.30
 # oldest entries are evicted. Set to 0 to disable query-result retention.
 max_entries = 500
 
+[llm]
+# LLM provider: "anthropic", "openai", "zai", or "custom".
+# Defaults to "anthropic" if not specified.
+# provider = "anthropic"
+
+# Model name to use. Falls back to the provider default for built-in providers.
+# model = "claude-haiku-4-5-20251001"
+
+# Base URL for the provider API. Built-in providers use a default when omitted.
+# Custom providers should set this explicitly.
+# base_url = "https://api.anthropic.com/v1/messages"
+
+# Auth token stored in config. Prefer provider env vars when possible:
+# ANTHROPIC_API_KEY, OPENAI_API_KEY, ZAI_API_KEY, CUSTOM_API_KEY.
+# Environment variables win when both are present; blank values are ignored.
+# auth_token = "your_provider_token_here"
+
+# Number of retry attempts for LLM requests. Defaults to 3.
+# retries = 3
+
+# Maximum output tokens. Defaults to 500.
+# max_tokens = 500
+
+# Request timeout in seconds. Defaults to 30.
+# timeout = 30
+
 [github]
 # Git remote name used to infer the repository when GitHub enrichment is enabled.
 remote = "origin"
 
 # Prefer GITHUB_TOKEN in the environment; this fallback is optional.
 # Environment variables win when both are present, and blank values are ignored.
-# Security note: storing tokens in .why.toml is less safe than using environment
+# Security note: storing tokens in why.local.toml or why.toml is less safe than using environment
 # variables because the file can be committed, copied, or left readable on disk.
 # Only use the fallback for local development in a trusted repository.
 # token = "your_github_token_here"

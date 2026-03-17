@@ -17,12 +17,28 @@ use tempfile::TempDir;
 static WHY_BINARY: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 pub struct FixtureRepo {
-    _dir: TempDir,
+    _repo_dir: Option<TempDir>,
     pub path: PathBuf,
 }
 
 #[allow(dead_code)]
 impl FixtureRepo {
+    pub fn temp_home(&self) -> PathBuf {
+        self.path.join(".home")
+    }
+
+    pub fn temp_xdg_config_home(&self) -> PathBuf {
+        self.path.join(".config-home")
+    }
+
+    pub fn global_config_path(&self) -> PathBuf {
+        self.temp_xdg_config_home().join("why").join("why.toml")
+    }
+
+    pub fn local_config_path(&self) -> PathBuf {
+        self.path.join("why.local.toml")
+    }
+
     pub fn run_command(&self, program: &str, args: &[&str]) -> Result<Output> {
         let output = Command::new(program)
             .args(args)
@@ -34,14 +50,16 @@ impl FixtureRepo {
     }
 
     pub fn run_why(&self, args: &[&str]) -> Result<Output> {
+        self.run_why_with_env(args, &[])
+    }
+
+    pub fn run_why_with_env(&self, args: &[&str], envs: &[(&str, &str)]) -> Result<Output> {
         let mut command = Command::new(why_binary_path()?);
         command.args(args);
         command.current_dir(&self.path);
+        apply_why_test_env(&mut command, envs);
 
-        let output = command
-            .env("ANTHROPIC_API_KEY", "")
-            .output()
-            .context("failed to run why command")?;
+        let output = command.output().context("failed to run why command")?;
 
         Ok(output)
     }
@@ -61,7 +79,16 @@ impl FixtureRepo {
     }
 
     pub fn run_why_with_stdin(&self, args: &[&str], stdin: &str) -> Result<Output> {
-        let mut child = self.spawn_why(args)?;
+        self.run_why_with_stdin_and_env(args, stdin, &[])
+    }
+
+    pub fn run_why_with_stdin_and_env(
+        &self,
+        args: &[&str],
+        stdin: &str,
+        envs: &[(&str, &str)],
+    ) -> Result<Output> {
+        let mut child = self.spawn_why_with_env(args, envs)?;
 
         if let Some(mut child_stdin) = child.stdin.take() {
             child_stdin
@@ -75,23 +102,23 @@ impl FixtureRepo {
     }
 
     pub fn spawn_why(&self, args: &[&str]) -> Result<Child> {
+        self.spawn_why_with_env(args, &[])
+    }
+
+    pub fn spawn_why_with_env(&self, args: &[&str], envs: &[(&str, &str)]) -> Result<Child> {
         let mut command = Command::new(why_binary_path()?);
         command.args(args);
         command.current_dir(&self.path);
+        apply_why_test_env(&mut command, envs);
 
         command
-            .env("ANTHROPIC_API_KEY", "")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map(|mut child| {
                 if let Some(stdout) = child.stdout.as_mut() {
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::FileTypeExt;
-                        let _ = stdout;
-                    }
+                    let _ = stdout;
                 }
                 child
             })
@@ -104,6 +131,20 @@ impl FixtureRepo {
 
     pub fn stderr(&self, output: &Output) -> String {
         String::from_utf8_lossy(&output.stderr).into_owned()
+    }
+}
+
+fn apply_why_test_env(command: &mut Command, envs: &[(&str, &str)]) {
+    command
+        .env("ANTHROPIC_API_KEY", "")
+        .env("OPENAI_API_KEY", "")
+        .env("ZAI_API_KEY", "")
+        .env("CUSTOM_API_KEY", "")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("HOME");
+
+    for (key, value) in envs {
+        command.env(key, value);
     }
 }
 
@@ -175,10 +216,57 @@ pub fn setup_fixture(name: &str) -> Result<FixtureRepo> {
 
     Ok(FixtureRepo {
         path: dir.path().to_path_buf(),
-        _dir: dir,
+        _repo_dir: Some(dir),
     })
 }
 
+#[allow(dead_code)]
+pub fn setup_real_repo(path: impl AsRef<Path>) -> Result<FixtureRepo> {
+    let path = path.as_ref();
+    if !path.exists() {
+        bail!("real repo path does not exist: {}", path.display());
+    }
+    if !path.is_dir() {
+        bail!("real repo path is not a directory: {}", path.display());
+    }
+    if !path.join(".git").exists() {
+        bail!("real repo path is not a git repository: {}", path.display());
+    }
+
+    let dir = TempDir::new().context("failed to create tempdir for real repo clone")?;
+    let output = Command::new("git")
+        .args(["clone", "--quiet"])
+        .arg(path)
+        .arg(dir.path())
+        .output()
+        .with_context(|| format!("failed to clone real repo {}", path.display()))?;
+
+    if !output.status.success() {
+        bail!(
+            "failed to clone real repo {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    Ok(FixtureRepo {
+        path: dir.path().to_path_buf(),
+        _repo_dir: Some(dir),
+    })
+}
+
+#[allow(dead_code)]
+pub fn setup_real_repo_from_env(var_name: &str) -> Result<Option<FixtureRepo>> {
+    match std::env::var(var_name) {
+        Ok(path) if !path.trim().is_empty() => setup_real_repo(path).map(Some),
+        Ok(_) | Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            bail!("environment variable {var_name} is not valid UTF-8")
+        }
+    }
+}
+
+#[allow(dead_code)]
 pub fn setup_hotfix_repo() -> Result<FixtureRepo> {
     setup_fixture("hotfix_repo")
 }

@@ -87,12 +87,13 @@ cargo run -q -p why-core -- completions fish > why.fish
 cargo run -q -p why-core -- manpage > why.1
 ```
 
-### Initialize config and credentials
+### Initialize config
 
 ```bash
-why config init --provider anthropic
-why auth login --provider anthropic --api-key-env ANTHROPIC_API_KEY
+why config init
 ```
+
+`why config init` is the main setup flow and lets the user choose `anthropic`, `openai`, `zai`, or `custom` interactively.
 
 ### Validation and benchmarks
 
@@ -399,27 +400,25 @@ For MCP-specific setup examples, see `docs/mcp-setup.md`.
 `why` supports layered configuration:
 
 1. built-in defaults
-2. global config at `$XDG_CONFIG_HOME/why/config.toml` or `~/.config/why/config.toml`
-3. repo-local `.why.toml`
+2. global config at `$XDG_CONFIG_HOME/why/why.toml` or `~/.config/why/why.toml`
+3. repo-local `why.local.toml`
 
 Use the CLI to manage these layers:
 
 ```bash
 # Global config is the default target
-why config init --provider anthropic
-why auth login --provider anthropic --api-key-env ANTHROPIC_API_KEY
+why config init --provider anthropic --model claude-haiku-4-5-20251001
 
 # Use --local for repo-specific overrides
-why config init --local --provider zai --model zai-pro-1
+why config init --local --provider zai --model glm-5
 why config init --local --provider custom --model local-model --base-url https://api.example.com/v1/chat/completions
-why auth login --local --provider custom --base-url https://api.example.com/v1/chat/completions --api-key-env CUSTOM_API_KEY
 
 # Inspect the effective merged config without printing secrets
 why config get
 why config get --json
 ```
 
-If you run `why config init` or `why auth login` in an interactive terminal without passing values via flags, the CLI will prompt for the missing inputs.
+If you run `why config init` in an interactive terminal without passing values via flags, the CLI prompts for provider, model, base URL, auth token, retries, max tokens, and timeout. You can leave values blank to keep the current value or provider default, then edit `why.toml` or `why.local.toml` later.
 
 Supported providers:
 
@@ -428,13 +427,14 @@ Supported providers:
 - `zai`
 - `custom` (OpenAI-compatible)
 
-Provider-specific rules:
+Current built-in defaults:
 
-- `--base-url` is only valid with `--provider custom`.
-- `why config init --provider custom` requires a model and a base URL.
-- `why auth login --provider custom` requires a base URL.
-- `why auth login` requires either `--api-key`, `--api-key-env`, or interactive entry.
-- `why config get` hides secrets and reports whether auth is configured via `llm.auth_configured`.
+- `anthropic` → model `claude-haiku-4-5-20251001`, base URL `https://api.anthropic.com/v1/messages`
+- `openai` → model `gpt-5.4`, base URL `https://api.openai.com/v1/chat/completions`
+- `zai` → model `glm-5`, base URL `https://api.z.ai/api/paas/v4/chat/completions`
+- `custom` → no built-in model or base URL
+
+`why config get` hides secrets and reports whether auth is configured via `llm.auth_configured`.
 
 Environment variables take precedence over config values. Blank values are ignored.
 
@@ -469,16 +469,12 @@ max_entries = 500
 
 [llm]
 provider = "openai"
-model = "gpt-4o-mini"
-timeout_secs = 30
+model = "gpt-5.4"
+base_url = "https://api.openai.com/v1/chat/completions"
+auth_token = "your_provider_token_here"
+retries = 3
 max_tokens = 500
-
-[llm.openai]
-api_key_env = "OPENAI_API_KEY"
-
-[llm.custom]
-base_url = "https://api.example.com/v1/chat/completions"
-api_key_env = "CUSTOM_API_KEY"
+timeout = 30
 
 [github]
 remote = "origin"
@@ -493,9 +489,9 @@ Secret-handling guidance:
 
 - prefer environment variables when possible
 - global config is acceptable for local development if you choose it
-- repo-local `.why.toml` should generally avoid secrets because it is easier to commit accidentally
+- repo-local `why.local.toml` should generally avoid secrets because it is easier to commit accidentally
 
-See `.why.toml.example` for a fully documented example of the currently implemented config surface.
+See `.why.toml.example` for a fully documented example of the current config surface.
 
 ## Cache and `.why/` directory semantics
 

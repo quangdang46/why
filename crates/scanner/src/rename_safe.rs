@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
-use why_archaeologist::{ArchaeologyResult, RiskLevel, analyze_target_with_options, discover_repository};
+use why_archaeologist::{
+    ArchaeologyResult, RiskLevel, analyze_target_with_options, discover_repository,
+};
 use why_locator::{
     QueryKind, QueryTarget, SupportedLanguage, SymbolDefinition, list_symbol_definitions,
     resolve_target,
@@ -86,10 +88,11 @@ pub fn scan_rename_safe(
     target: &QueryTarget,
     since_days: Option<u64>,
 ) -> Result<RenameSafeReport> {
-    if !matches!(target.query_kind, QueryKind::Symbol | QueryKind::QualifiedSymbol) {
-        bail!(
-            "rename-safe requires a symbol target like <file>:<symbol> or <file>:<Type::method>"
-        );
+    if !matches!(
+        target.query_kind,
+        QueryKind::Symbol | QueryKind::QualifiedSymbol
+    ) {
+        bail!("rename-safe requires a symbol target like <file>:<symbol> or <file>:<Type::method>");
     }
 
     let resolved = resolve_target(target, repo_root)?;
@@ -99,8 +102,12 @@ pub fn scan_rename_safe(
         bail!("rename-safe currently supports Rust symbol targets only");
     }
 
-    let target_source = fs::read_to_string(&absolute_target_path)
-        .with_context(|| format!("failed to read source file {}", absolute_target_path.display()))?;
+    let target_source = fs::read_to_string(&absolute_target_path).with_context(|| {
+        format!(
+            "failed to read source file {}",
+            absolute_target_path.display()
+        )
+    })?;
     let target_definitions = list_symbol_definitions(language, &target_source)?;
     let target_definition = target_definitions
         .into_iter()
@@ -127,13 +134,8 @@ pub fn scan_rename_safe(
         .context("repository does not have a working directory")?;
 
     let mut caller_map = BTreeMap::new();
-    let scan_summary = collect_callers_in_dir(
-        &repo,
-        workdir,
-        workdir,
-        &caller_target,
-        &mut caller_map,
-    )?;
+    let scan_summary =
+        collect_callers_in_dir(&repo, workdir, workdir, &caller_target, &mut caller_map)?;
 
     let target_result = analyze_target_with_options(target, repo_root, since_days)?;
     let mut callers = caller_map
@@ -155,9 +157,10 @@ pub fn scan_rename_safe(
     )];
     if let Some(qualified_name) = &caller_target.qualified_name {
         notes.push(format!(
-            "Resolved target to `{}`. Prefer `{}` for future rename-safe runs.",
+            "Resolved target to `{}`. Prefer `{}:{}` for future rename-safe runs.",
             qualified_name,
-            format!("{}:{}", caller_target.path.display(), qualified_name)
+            caller_target.path.display(),
+            qualified_name
         ));
     }
     if scan_summary.same_name_alternatives > 0 {
@@ -295,7 +298,8 @@ fn collect_callers_from_source(
         same_name_alternatives: definitions
             .iter()
             .filter(|definition| {
-                definition.name == target.symbol && !is_target_definition(relative_path, definition, target)
+                definition.name == target.symbol
+                    && !is_target_definition(relative_path, definition, target)
             })
             .count(),
     };
@@ -332,10 +336,10 @@ fn collect_callers_from_source(
     Ok(summary)
 }
 
-fn smallest_enclosing_symbol<'a>(
-    definitions: &'a [SymbolDefinition],
+fn smallest_enclosing_symbol(
+    definitions: &[SymbolDefinition],
     line: u32,
-) -> Option<&'a SymbolDefinition> {
+) -> Option<&SymbolDefinition> {
     definitions
         .iter()
         .filter(|definition| definition.start_line <= line && line <= definition.end_line)
@@ -355,7 +359,11 @@ fn is_definition_signature_occurrence(
     definition.start_line == line && definition.name == target_symbol
 }
 
-fn is_target_definition(relative_path: &Path, definition: &SymbolDefinition, target: &CallerTarget) -> bool {
+fn is_target_definition(
+    relative_path: &Path,
+    definition: &SymbolDefinition,
+    target: &CallerTarget,
+) -> bool {
     relative_path == target.path
         && definition.name == target.symbol
         && definition.qualified_name == target.qualified_name
@@ -450,8 +458,8 @@ fn top_commit_summaries(result: &ArchaeologyResult) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CallerTarget, CallerAccumulator, QueryKind, QueryTarget, collect_callers_from_source,
-        extract_call_like_occurrence_lines, scan_rename_safe,
+        CallerAccumulator, CallerTarget, QueryKind, QueryTarget, SupportedLanguage,
+        collect_callers_from_source, extract_call_like_occurrence_lines, scan_rename_safe,
     };
     use anyhow::Result;
     use std::collections::BTreeMap;
@@ -461,8 +469,12 @@ mod tests {
 
     #[test]
     fn extracts_call_like_occurrences_with_line_numbers() {
-        let source = "fn alpha() {\n    process_payment();\n}\n\nfn beta() {\n    process_payment ( );\n}\n";
-        assert_eq!(extract_call_like_occurrence_lines(source, "process_payment"), vec![2, 6]);
+        let source =
+            "fn alpha() {\n    process_payment();\n}\n\nfn beta() {\n    process_payment ( );\n}\n";
+        assert_eq!(
+            extract_call_like_occurrence_lines(source, "process_payment"),
+            vec![2, 6]
+        );
     }
 
     #[test]
@@ -491,16 +503,27 @@ impl CheckoutOrchestrator {
     }
 }
 "#;
+        let target_definition = super::list_symbol_definitions(SupportedLanguage::Rust, source)?
+            .into_iter()
+            .find(|definition| {
+                definition.qualified_name.as_deref() == Some("PaymentService::process_payment")
+            })
+            .expect("target definition should exist");
         let target = CallerTarget {
             path: PathBuf::from("src/payment.rs"),
             symbol: "process_payment".into(),
             qualified_name: Some("PaymentService::process_payment".into()),
-            start_line: 6,
-            end_line: 8,
+            start_line: target_definition.start_line,
+            end_line: target_definition.end_line,
         };
         let mut callers = BTreeMap::new();
 
-        let summary = collect_callers_from_source(Path::new("src/payment.rs"), source, &target, &mut callers)?;
+        let summary = collect_callers_from_source(
+            Path::new("src/payment.rs"),
+            source,
+            &target,
+            &mut callers,
+        )?;
 
         assert_eq!(summary.same_name_alternatives, 1);
         assert_eq!(summary.skipped_top_level_occurrences, 0);
@@ -527,7 +550,11 @@ impl CheckoutOrchestrator {
         };
         let error = scan_rename_safe(dir.path(), &target, None)
             .expect_err("rename-safe should reject non-symbol targets");
-        assert!(error.to_string().contains("rename-safe requires a symbol target"));
+        assert!(
+            error
+                .to_string()
+                .contains("rename-safe requires a symbol target")
+        );
     }
 
     #[test]
@@ -535,7 +562,10 @@ impl CheckoutOrchestrator {
         let dir = tempdir()?;
         let file = dir.path().join("src").join("auth.ts");
         fs::create_dir_all(file.parent().expect("parent"))?;
-        fs::write(&file, "export function authenticate(token: string): boolean { return token.length > 0; }\n")?;
+        fs::write(
+            &file,
+            "export function authenticate(token: string): boolean { return token.length > 0; }\n",
+        )?;
         let target = QueryTarget {
             path: PathBuf::from("src/auth.ts"),
             start_line: None,
@@ -545,14 +575,19 @@ impl CheckoutOrchestrator {
         };
         let error = scan_rename_safe(dir.path(), &target, None)
             .expect_err("rename-safe should reject non-Rust targets");
-        assert!(error
-            .to_string()
-            .contains("rename-safe currently supports Rust symbol targets only"));
+        assert!(
+            error
+                .to_string()
+                .contains("rename-safe currently supports Rust symbol targets only")
+        );
         Ok(())
     }
 
     #[allow(dead_code)]
-    fn _assert_caller_count(callers: &BTreeMap<super::CallerKey, CallerAccumulator>, expected: usize) {
+    fn _assert_caller_count(
+        callers: &BTreeMap<super::CallerKey, CallerAccumulator>,
+        expected: usize,
+    ) {
         assert_eq!(callers.len(), expected);
     }
 }
