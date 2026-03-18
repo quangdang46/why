@@ -483,11 +483,13 @@ fn config_search_root(start_dir: &Path) -> Option<PathBuf> {
         let canonical_repo_root = fs::canonicalize(&repo_root).ok();
         if let Some(matching_ancestor) = anchor.ancestors().find(|candidate| {
             candidate == &repo_root
-                || canonical_repo_root.as_ref().is_some_and(|canonical_repo_root| {
-                    fs::canonicalize(candidate)
-                        .map(|canonical_candidate| canonical_candidate == *canonical_repo_root)
-                        .unwrap_or(false)
-                })
+                || canonical_repo_root
+                    .as_ref()
+                    .is_some_and(|canonical_repo_root| {
+                        fs::canonicalize(candidate)
+                            .map(|canonical_candidate| canonical_candidate == *canonical_repo_root)
+                            .unwrap_or(false)
+                    })
         }) {
             return Some(matching_ancestor.to_path_buf());
         }
