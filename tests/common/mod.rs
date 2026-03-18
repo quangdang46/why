@@ -184,6 +184,38 @@ fn why_binary_path() -> Result<PathBuf> {
     Ok(path)
 }
 
+fn run_fixture_setup_script(fixture_root: &Path, repo_root: &Path) -> Result<Output> {
+    let mut command = Command::new("bash");
+
+    #[cfg(windows)]
+    {
+        command
+            .arg("-lc")
+            .arg(
+                "script=\"$(cygpath -u \"$1\")\"; repo_root=\"$(cygpath -u \"$2\")\"; exec \"$script\" \"$repo_root\"",
+            )
+            .arg("--")
+            .arg(fixture_root)
+            .arg(repo_root);
+    }
+
+    #[cfg(not(windows))]
+    {
+        command.arg(fixture_root).arg(repo_root);
+    }
+
+    command
+        .env_remove("WHY_BENCH_HISTORY_COMMITS")
+        .env_remove("WHY_BENCH_EXTRA_FILES")
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to run fixture setup script {}",
+                fixture_root.display()
+            )
+        })
+}
+
 pub fn setup_fixture(name: &str) -> Result<FixtureRepo> {
     let dir = TempDir::new().context("failed to create tempdir for fixture repo")?;
     let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -196,22 +228,13 @@ pub fn setup_fixture(name: &str) -> Result<FixtureRepo> {
         bail!("fixture script not found: {}", fixture_root.display());
     }
 
-    let output = Command::new("bash")
-        .arg(&fixture_root)
-        .arg(dir.path())
-        .env_remove("WHY_BENCH_HISTORY_COMMITS")
-        .env_remove("WHY_BENCH_EXTRA_FILES")
-        .output()
-        .with_context(|| {
-            format!(
-                "failed to run fixture setup script {}",
-                fixture_root.display()
-            )
-        })?;
+    let output = run_fixture_setup_script(&fixture_root, dir.path())?;
 
     if !output.status.success() {
         bail!(
-            "fixture setup failed for {name}: {}",
+            "fixture setup failed for {name} with status {:?}\nstdout:\n{}\nstderr:\n{}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
     }
