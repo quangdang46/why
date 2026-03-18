@@ -5,6 +5,7 @@
 use anyhow::{Context, Result, anyhow, bail};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use std::env;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -184,7 +185,30 @@ fn why_binary_path() -> Result<PathBuf> {
     Ok(path)
 }
 
+#[cfg(windows)]
+fn windows_bash_path() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Some(program_files) = env::var_os("ProgramFiles") {
+        let base = PathBuf::from(program_files).join("Git");
+        candidates.push(base.join("bin").join("bash.exe"));
+        candidates.push(base.join("usr").join("bin").join("bash.exe"));
+    }
+
+    if let Some(program_files_x86) = env::var_os("ProgramFiles(x86)") {
+        let base = PathBuf::from(program_files_x86).join("Git");
+        candidates.push(base.join("bin").join("bash.exe"));
+        candidates.push(base.join("usr").join("bin").join("bash.exe"));
+    }
+
+    candidates.into_iter().find(|path| path.is_file())
+}
+
 fn run_fixture_setup_script(fixture_root: &Path, repo_root: &Path) -> Result<Output> {
+    #[cfg(windows)]
+    let mut command = Command::new(windows_bash_path().unwrap_or_else(|| PathBuf::from("bash")));
+
+    #[cfg(not(windows))]
     let mut command = Command::new("bash");
 
     #[cfg(windows)]

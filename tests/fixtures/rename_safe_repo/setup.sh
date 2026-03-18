@@ -83,8 +83,9 @@ EOF
 git add src/reporting.rs
 git commit -m "feat: add payment replay reporting" >/dev/null
 
-for i in $(seq 1 "$BENCH_HISTORY_COMMITS"); do
-  cat > src/payment.rs <<EOF
+if [ "$BENCH_HISTORY_COMMITS" -gt 0 ]; then
+  for i in $(seq 1 "$BENCH_HISTORY_COMMITS"); do
+    cat > src/payment.rs <<EOF
 pub struct PaymentService;
 pub struct CheckoutOrchestrator;
 pub struct AuditLogger;
@@ -114,6 +115,7 @@ impl AuditLogger {
     }
 }
 EOF
-  git add src/payment.rs
-  git commit -m "maintenance: revisit payment safeguards ${i}" >/dev/null
-done
+    git add src/payment.rs
+    git commit -m "maintenance: revisit payment safeguards ${i}" >/dev/null
+  done
+fi

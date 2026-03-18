@@ -64,18 +64,21 @@ EOF
 git add src/payment.rs
 git commit -m "fmt: align payment indentation" >/dev/null
 
-for i in $(seq 1 "$BENCH_EXTRA_FILES"); do
-  cat > "src/batch_${i}.rs" <<EOF
+if [ "$BENCH_EXTRA_FILES" -gt 0 ]; then
+  for i in $(seq 1 "$BENCH_EXTRA_FILES"); do
+    cat > "src/batch_${i}.rs" <<EOF
 pub fn batch_worker_${i}(amount: f64) -> f64 {
     amount + ${i}.0
 }
 EOF
-  git add "src/batch_${i}.rs"
-  git commit -m "feat: add batch payment helper ${i}" >/dev/null
-done
+    git add "src/batch_${i}.rs"
+    git commit -m "feat: add batch payment helper ${i}" >/dev/null
+  done
+fi
 
-for i in $(seq 1 "$BENCH_HISTORY_COMMITS"); do
-  cat > src/payment.rs <<EOF
+if [ "$BENCH_HISTORY_COMMITS" -gt 0 ]; then
+  for i in $(seq 1 "$BENCH_HISTORY_COMMITS"); do
+    cat > src/payment.rs <<EOF
 pub struct PaymentService;
 
 impl PaymentService {
@@ -91,6 +94,7 @@ impl PaymentService {
         }
 }
 EOF
-  git add src/payment.rs
-  git commit -m "maintenance: revisit payment safeguards ${i}" >/dev/null
-done
+    git add src/payment.rs
+    git commit -m "maintenance: revisit payment safeguards ${i}" >/dev/null
+  done
+fi
