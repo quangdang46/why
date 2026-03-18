@@ -475,13 +475,27 @@ fn find_config_path(start_dir: &Path, search_root: Option<&Path>) -> Option<Path
 
 fn config_search_root(start_dir: &Path) -> Option<PathBuf> {
     let anchor = config_anchor(start_dir)?;
+    let repo_root = Repository::discover(anchor)
+        .ok()
+        .and_then(|repo| repo.workdir().map(Path::to_path_buf));
 
-    Some(
-        Repository::discover(anchor)
-            .ok()
-            .and_then(|repo| repo.workdir().map(Path::to_path_buf))
-            .unwrap_or_else(|| anchor.to_path_buf()),
-    )
+    if let Some(repo_root) = repo_root {
+        let canonical_repo_root = fs::canonicalize(&repo_root).ok();
+        if let Some(matching_ancestor) = anchor.ancestors().find(|candidate| {
+            candidate == &repo_root
+                || canonical_repo_root.as_ref().is_some_and(|canonical_repo_root| {
+                    fs::canonicalize(candidate)
+                        .map(|canonical_candidate| canonical_candidate == *canonical_repo_root)
+                        .unwrap_or(false)
+                })
+        }) {
+            return Some(matching_ancestor.to_path_buf());
+        }
+
+        return Some(repo_root);
+    }
+
+    Some(anchor.to_path_buf())
 }
 
 fn config_anchor(start_dir: &Path) -> Option<&Path> {

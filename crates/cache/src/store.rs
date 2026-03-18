@@ -1,8 +1,11 @@
 use std::collections::HashMap;
 use std::fs;
-use std::io::{ErrorKind, Write};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+#[cfg(unix)]
+use std::io::Write;
 
 use anyhow::{Context, Result, bail};
 use serde::de::DeserializeOwned;
