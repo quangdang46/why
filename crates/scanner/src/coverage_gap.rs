@@ -224,7 +224,7 @@ pub fn scan_coverage_gap(
     let coverage_path = if coverage_path.is_absolute() {
         coverage_path.to_path_buf()
     } else {
-        workdir.join(coverage_path)
+        repo_root.join(coverage_path)
     };
     let coverage = CoverageData::from_file(&coverage_path)?;
 

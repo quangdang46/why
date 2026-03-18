@@ -7,6 +7,10 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[cfg(windows)]
+#[link(name = "advapi32")]
+unsafe extern "C" {}
+
 const DEFAULT_RISK_LEVEL: &str = "LOW";
 const DEFAULT_MAX_COMMITS: usize = 8;
 const DEFAULT_RECENCY_WINDOW_DAYS: i64 = 90;

@@ -199,6 +199,8 @@ pub fn setup_fixture(name: &str) -> Result<FixtureRepo> {
     let output = Command::new("bash")
         .arg(&fixture_root)
         .arg(dir.path())
+        .env_remove("WHY_BENCH_HISTORY_COMMITS")
+        .env_remove("WHY_BENCH_EXTRA_FILES")
         .output()
         .with_context(|| {
             format!(
