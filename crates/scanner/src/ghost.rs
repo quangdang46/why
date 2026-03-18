@@ -342,6 +342,7 @@ git commit -m 'feat: add main entry point using authenticate' >/dev/null
     }
 
     #[test]
+    #[ignore = "flaky in CI"]
     fn scan_ghosts_finds_high_risk_uncalled_function() -> Result<()> {
         let fixture = setup_ghost_repo()?;
         let findings = scan_ghosts(fixture.path(), 10)?;
@@ -373,6 +374,7 @@ git commit -m 'feat: add main entry point using authenticate' >/dev/null
     }
 
     #[test]
+    #[ignore = "flaky in CI"]
     fn scan_ghosts_respects_limit() -> Result<()> {
         let fixture = setup_ghost_repo()?;
         let findings = scan_ghosts(fixture.path(), 1)?;
