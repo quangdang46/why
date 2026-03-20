@@ -22,6 +22,7 @@ pub struct PrTemplateReport {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct StagedFile {
+    #[serde(serialize_with = "crate::serialize_path")]
     pub path: PathBuf,
     pub change: StagedChange,
 }
@@ -34,6 +35,7 @@ pub struct StagedLineRange {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct StagedDiffFile {
+    #[serde(serialize_with = "crate::serialize_path")]
     pub path: PathBuf,
     pub change: StagedChange,
     pub changed_ranges: Vec<StagedLineRange>,

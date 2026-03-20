@@ -12,6 +12,7 @@ use crate::is_source_file;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct CouplingFinding {
+    #[serde(serialize_with = "crate::serialize_path")]
     pub path: PathBuf,
     pub shared_commits: usize,
     pub target_commit_count: usize,
@@ -21,6 +22,7 @@ pub struct CouplingFinding {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct CouplingReport {
+    #[serde(serialize_with = "crate::serialize_path")]
     pub target_path: PathBuf,
     pub scan_commits: usize,
     pub target_commit_count: usize,

@@ -13,6 +13,7 @@ use why_context::load_config;
 use crate::{is_tracked_source_file, should_skip_dir};
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct HotspotFinding {
+    #[serde(serialize_with = "crate::serialize_path")]
     pub path: PathBuf,
     pub churn_commits: usize,
     pub risk_level: RiskLevel,

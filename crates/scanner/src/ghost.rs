@@ -13,6 +13,7 @@ const STATIC_ANALYSIS_WARNING: &str = "WARNING: ghost detection uses static anal
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct GhostFinding {
+    #[serde(serialize_with = "crate::serialize_path")]
     pub path: PathBuf,
     pub symbol: String,
     pub start_line: u32,

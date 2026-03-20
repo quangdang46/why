@@ -12,6 +12,7 @@ use crate::{is_tracked_source_file, should_skip_dir};
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct CoverageGapFinding {
+    #[serde(serialize_with = "crate::serialize_path")]
     pub path: PathBuf,
     pub symbol: String,
     pub start_line: u32,
@@ -30,6 +31,7 @@ pub struct CoverageGapFinding {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct CoverageGapReport {
+    #[serde(serialize_with = "crate::serialize_path")]
     pub coverage_path: PathBuf,
     pub max_coverage: f32,
     pub findings: Vec<CoverageGapFinding>,

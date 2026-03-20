@@ -16,6 +16,7 @@ use crate::{is_tracked_source_file, should_skip_dir};
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct RenameSafeTarget {
+    #[serde(serialize_with = "crate::serialize_path")]
     pub path: PathBuf,
     pub symbol: String,
     pub qualified_name: Option<String>,
@@ -31,6 +32,7 @@ pub struct RenameSafeTarget {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct RenameSafeCallerFinding {
+    #[serde(serialize_with = "crate::serialize_path")]
     pub path: PathBuf,
     pub symbol: String,
     pub qualified_name: Option<String>,

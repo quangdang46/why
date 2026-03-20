@@ -86,7 +86,7 @@ fn hover_at(params: HoverParams) -> Result<Option<Hover>> {
         query_kind: QueryKind::Line,
     };
     let report = analyze_target(&target, &repo_root)?;
-    let cli_target = format!("{}:{}", relative_path.display(), line_number);
+    let cli_target = format!("{}:{}", normalized_path(&relative_path), line_number);
     let display_target = symbol_name
         .as_deref()
         .map(|symbol| format!("{symbol}()"))
@@ -99,6 +99,10 @@ fn hover_at(params: HoverParams) -> Result<Option<Hover>> {
         }),
         range: None,
     }))
+}
+
+fn normalized_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 fn symbol_name_for_hover(file_path: &Path, line_number: u32) -> Result<Option<String>> {

@@ -1,8 +1,9 @@
 //! Repo-wide scanners.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use git2::{Repository, Status};
+use serde::{Serialize, Serializer};
 
 pub mod coupling;
 pub mod coverage_gap;
@@ -49,6 +50,28 @@ pub use rename_safe::{
     RenameSafeCallerFinding, RenameSafeReport, RenameSafeTarget, scan_rename_safe,
 };
 pub use time_bombs::{Severity, TimeBombFinding, TimeBombKind, scan_time_bombs};
+
+pub(crate) fn normalized_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+pub(crate) fn serialize_path<S>(path: &PathBuf, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_str(&normalized_path(path))
+}
+
+pub(crate) fn serialize_paths<S>(paths: &Vec<PathBuf>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    paths
+        .iter()
+        .map(|path| normalized_path(path))
+        .collect::<Vec<_>>()
+        .serialize(serializer)
+}
 
 pub(crate) fn is_source_file(path: &Path) -> bool {
     path.extension()

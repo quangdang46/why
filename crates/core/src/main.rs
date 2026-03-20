@@ -594,7 +594,7 @@ fn comma_or_none(values: &[String]) -> String {
 fn config_path_entry(path: Option<PathBuf>) -> Option<ConfigPathEntry> {
     path.map(|path| ConfigPathEntry {
         exists: path.is_file(),
-        path: path.display().to_string(),
+        path: normalize_path(&path),
     })
 }
 
@@ -1400,7 +1400,7 @@ fn render_coupling_terminal(report: &CouplingReport, links: Option<&TerminalLink
             links,
             &report.target_path,
             None,
-            report.target_path.display().to_string()
+            normalize_path(&report.target_path)
         )
     );
     println!();
@@ -1424,7 +1424,7 @@ fn render_coupling_terminal(report: &CouplingReport, links: Option<&TerminalLink
                 links,
                 &finding.path,
                 None,
-                finding.path.display().to_string()
+                normalize_path(&finding.path)
             )
         );
     }
@@ -1482,7 +1482,7 @@ fn render_evolution_terminal(report: &EvolutionHistoryResult, links: Option<&Ter
         for path in &report.paths_seen {
             println!(
                 "  - {}",
-                linked_path_label(links, path, None, path.display().to_string())
+                linked_path_label(links, path, None, normalize_path(path))
             );
         }
     }
@@ -1501,7 +1501,7 @@ fn render_evolution_terminal(report: &EvolutionHistoryResult, links: Option<&Ter
                     links,
                     &point.path_at_commit,
                     None,
-                    point.path_at_commit.display().to_string()
+                    normalize_path(&point.path_at_commit)
                 ),
                 point.summary
             );
@@ -1523,7 +1523,7 @@ fn render_evolution_terminal(report: &EvolutionHistoryResult, links: Option<&Ter
                     links,
                     &entry.path_at_commit,
                     None,
-                    entry.path_at_commit.display().to_string()
+                    normalize_path(&entry.path_at_commit)
                 ),
                 entry.commit.summary
             );
@@ -1568,7 +1568,7 @@ fn render_hotspots_terminal(
                 links,
                 &finding.path,
                 None,
-                finding.path.display().to_string()
+                normalize_path(&finding.path)
             ),
             finding.churn_commits,
             finding.risk_level.as_str(),
@@ -1696,7 +1696,7 @@ fn render_pr_template_markdown(report: &PrTemplateReport) -> String {
     for file in &report.staged_files {
         lines.push(format!(
             "- {} ({})",
-            file.path.display(),
+            normalize_path(&file.path),
             file.change.as_str()
         ));
     }
@@ -1743,7 +1743,7 @@ fn render_outage_terminal(
                     .changed_paths
                     .iter()
                     .take(3)
-                    .map(|path| linked_path_label(links, path, None, path.display().to_string()))
+                    .map(|path| linked_path_label(links, path, None, normalize_path(path)))
                     .collect::<Vec<_>>()
                     .join(", ");
                 println!("      paths: {preview}");
@@ -1842,7 +1842,7 @@ fn render_coverage_gap_terminal(
             links,
             &report.coverage_path,
             None,
-            report.coverage_path.display().to_string()
+            normalize_path(&report.coverage_path)
         )
     );
     println!();
@@ -1859,7 +1859,7 @@ fn render_coverage_gap_terminal(
                     Some(finding.start_line),
                     format!(
                         "{}:{}-{}",
-                        finding.path.display(),
+                        normalize_path(&finding.path),
                         finding.start_line,
                         finding.end_line
                     )
@@ -1911,7 +1911,7 @@ fn render_rename_safe_terminal(report: &RenameSafeReport, links: &TerminalLinkCo
             Some(report.target.start_line),
             format!(
                 "{}:{}-{}",
-                report.target.path.display(),
+                normalize_path(&report.target.path),
                 report.target.start_line,
                 report.target.end_line
             )
@@ -1952,7 +1952,7 @@ fn render_rename_safe_terminal(report: &RenameSafeReport, links: &TerminalLinkCo
                     Some(caller.start_line),
                     format!(
                         "{}:{}-{}",
-                        caller.path.display(),
+                        normalize_path(&caller.path),
                         caller.start_line,
                         caller.end_line
                     )
@@ -2004,7 +2004,7 @@ fn render_ghost_terminal(
                 Some(finding.start_line),
                 format!(
                     "{}:{}-{}",
-                    finding.path.display(),
+                    normalize_path(&finding.path),
                     finding.start_line,
                     finding.end_line
                 )
@@ -2049,7 +2049,7 @@ fn render_onboard_terminal(
                 Some(finding.start_line),
                 format!(
                     "{}:{}-{}",
-                    finding.path.display(),
+                    normalize_path(&finding.path),
                     finding.start_line,
                     finding.end_line
                 )
@@ -2471,7 +2471,7 @@ fn synthesize_report_query(
     let github = build_github_enrichment(repo, config, &result.commits);
     let evidence_pack = why_evidence::build(
         &EvidenceTarget {
-            file: result.target.path.display().to_string(),
+            file: normalize_path(&result.target.path),
             symbol: request.target.symbol.clone(),
             lines: (
                 result.target.start_line as usize,
@@ -2657,7 +2657,7 @@ fn evidence_pack_from_result(
 ) -> EvidencePack {
     why_evidence::build(
         &EvidenceTarget {
-            file: result.target.path.display().to_string(),
+            file: normalize_path(&result.target.path),
             symbol: target.symbol.clone(),
             lines: (
                 result.target.start_line as usize,
@@ -2691,7 +2691,7 @@ fn evidence_pack_from_result(
 fn heuristic_diff_review_finding(entry: &DiffReviewCollectedTarget) -> DiffReviewFinding {
     DiffReviewFinding {
         target: format_target_label(&entry.target.target),
-        path: entry.target.target.path.display().to_string(),
+        path: normalize_path(&entry.target.target.path),
         symbol: entry.target.symbol.clone(),
         risk_level: parse_synth_risk(entry.result.risk_level.as_str()),
         confidence: ConfidenceLevel::Low,
@@ -2736,7 +2736,7 @@ fn diff_review_target_label(plan: &DiffReviewPlan) -> String {
         .staged_files
         .iter()
         .take(3)
-        .map(|file| file.path.display().to_string())
+        .map(|file| normalize_path(&file.path))
         .collect::<Vec<_>>()
         .join(", ");
     if preview.is_empty() {
@@ -2789,6 +2789,10 @@ fn infer_language(path: &std::path::Path) -> String {
     .to_string()
 }
 
+fn normalize_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
 fn format_target_label(target: &why_locator::QueryTarget) -> String {
     match target.query_kind {
         QueryKind::Line => format!(
@@ -2835,7 +2839,7 @@ fn path_url(links: Option<&TerminalLinkContext>, path: &Path, line: Option<u32>)
         repo.owner,
         repo.name,
         rev,
-        path.to_string_lossy()
+        normalize_path(path)
     );
     if let Some(line) = line {
         url.push_str(&format!("#L{line}"));
@@ -2931,7 +2935,7 @@ fn format_output_target_heading(
             ),
         ),
         QueryKind::Symbol | QueryKind::QualifiedSymbol => {
-            linked_path_label(links, &target.path, None, target.path.display().to_string())
+            linked_path_label(links, &target.path, None, normalize_path(&target.path))
         }
     }
 }

@@ -24,6 +24,7 @@ pub struct OutageFinding {
     pub risk_summary: String,
     pub change_guidance: String,
     pub blast_radius_files: usize,
+    #[serde(serialize_with = "crate::serialize_paths")]
     pub changed_paths: Vec<PathBuf>,
     pub issue_refs: Vec<String>,
     pub score: f32,

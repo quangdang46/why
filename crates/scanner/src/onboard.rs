@@ -11,6 +11,7 @@ use crate::{is_tracked_source_file, should_skip_dir};
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct OnboardFinding {
+    #[serde(serialize_with = "crate::serialize_path")]
     pub path: PathBuf,
     pub symbol: String,
     pub start_line: u32,
