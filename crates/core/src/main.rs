@@ -1420,12 +1420,7 @@ fn render_coupling_terminal(report: &CouplingReport, links: Option<&TerminalLink
             "  {:.2}  {} shared  {}",
             finding.coupling_ratio,
             finding.shared_commits,
-            linked_path_label(
-                links,
-                &finding.path,
-                None,
-                normalize_path(&finding.path)
-            )
+            linked_path_label(links, &finding.path, None, normalize_path(&finding.path))
         );
     }
 }
@@ -1564,12 +1559,7 @@ fn render_hotspots_terminal(
         println!(
             "  {:>2}. {:<30} churn {:>3}  risk {:<6}  score {:.2}",
             index + 1,
-            linked_path_label(
-                links,
-                &finding.path,
-                None,
-                normalize_path(&finding.path)
-            ),
+            linked_path_label(links, &finding.path, None, normalize_path(&finding.path)),
             finding.churn_commits,
             finding.risk_level.as_str(),
             finding.hotspot_score
