@@ -55,10 +55,15 @@ pub struct Cache {
     data: CacheFile,
 }
 
+pub fn runtime_dir(repo_root: &Path) -> Result<PathBuf> {
+    let dir = repo_root.join(CACHE_DIR_NAME);
+    ensure_cache_dir(&dir)?;
+    Ok(dir)
+}
+
 impl Cache {
     pub fn open(repo_root: &Path, max_entries: usize) -> Result<Self> {
-        let dir = repo_root.join(CACHE_DIR_NAME);
-        ensure_cache_dir(&dir)?;
+        let dir = runtime_dir(repo_root)?;
 
         let path = dir.join(CACHE_FILE_NAME);
         let data = read_cache_file(&path)?;

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use clap::CommandFactory;
 use clap::Parser;
 use clap_complete::{Generator, Shell, generate};
@@ -350,6 +350,17 @@ struct ConfigInitValues {
     timeout: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct RuntimeLogEntry {
+    timestamp: i64,
+    event: &'static str,
+    mode: &'static str,
+    provider: String,
+    model: Option<String>,
+    target: Option<String>,
+    error: String,
+}
+
 fn run_config_init(args: ConfigInitArgs) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let current = load_config(&cwd)?;
@@ -388,41 +399,48 @@ fn resolve_config_init_values(
         let provider = prompt_provider(current_provider)?;
         let resolved_current = current.resolved_llm_config();
         let keep_provider_defaults = provider != current_provider;
+        let model_default = if keep_provider_defaults {
+            provider.default_model().map(str::to_string)
+        } else {
+            resolved_current
+                .model
+                .clone()
+                .or_else(|| provider.default_model().map(str::to_string))
+        };
         let model = prompt_optional_text(
             "Model (blank to keep current/default)",
-            if keep_provider_defaults {
-                provider.default_model()
-            } else {
-                resolved_current
-                    .model
-                    .as_deref()
-                    .or_else(|| provider.default_model())
-            },
-        )?;
+            model_default.as_deref(),
+        )?
+        .or(model_default.clone());
+        let base_url_default = if keep_provider_defaults {
+            provider.default_base_url().map(str::to_string)
+        } else {
+            resolved_current
+                .base_url
+                .clone()
+                .or_else(|| provider.default_base_url().map(str::to_string))
+        };
         let base_url = prompt_optional_text(
             "Base URL (blank to keep current/default)",
-            if keep_provider_defaults {
-                provider.default_base_url()
-            } else {
-                resolved_current
-                    .base_url
-                    .as_deref()
-                    .or_else(|| provider.default_base_url())
-            },
-        )?;
+            base_url_default.as_deref(),
+        )?
+        .or(base_url_default.clone());
         let auth_token = prompt_optional_text("Auth token (blank to keep current/skip)", None)?;
         let retries = prompt_optional_u32(
             "Retries (blank to keep current/default)",
             Some(resolved_current.retries),
-        )?;
+        )?
+        .or(Some(resolved_current.retries));
         let max_tokens = prompt_optional_u32(
             "Max tokens (blank to keep current/default)",
             Some(resolved_current.max_tokens),
-        )?;
+        )?
+        .or(Some(resolved_current.max_tokens));
         let timeout = prompt_optional_u64(
             "Timeout seconds (blank to keep current/default)",
             Some(resolved_current.timeout),
-        )?;
+        )?
+        .or(Some(resolved_current.timeout));
 
         return Ok(ConfigInitValues {
             provider,
@@ -902,7 +920,7 @@ fn run_diff_review(
     let config = load_config(&cwd)?;
     let plan = why_scanner::scan_diff_review(&cwd)?;
     let collected = collect_diff_review(&plan, &cwd, &repo, &config)?;
-    let mut report = synthesize_diff_review_request(&config, &plan, &collected, no_llm)?;
+    let mut report = synthesize_diff_review_request(&config, &plan, &collected, no_llm, &repo)?;
 
     let markdown = render_diff_review_markdown(&report);
     if post_github_comment {
@@ -2452,6 +2470,62 @@ fn current_unix_timestamp() -> i64 {
         .as_secs() as i64
 }
 
+fn runtime_log_path(repo: &Repository) -> Result<PathBuf> {
+    let repo_root = repo
+        .workdir()
+        .ok_or_else(|| anyhow!("repository does not have a working directory"))?;
+    Ok(why_cache::runtime_dir(repo_root)?.join("runtime.log"))
+}
+
+fn append_runtime_log(repo: &Repository, entry: &RuntimeLogEntry) -> Result<()> {
+    let path = runtime_log_path(repo)?;
+    let payload = format!("{}\n", serde_json::to_string(entry)?);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(&path)
+            .with_context(|| format!("failed to open runtime log {}", path.display()))?;
+        file.write_all(payload.as_bytes())
+            .with_context(|| format!("failed to write runtime log {}", path.display()))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("failed to open runtime log {}", path.display()))?;
+        file.write_all(payload.as_bytes())
+            .with_context(|| format!("failed to write runtime log {}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn log_llm_fallback(
+    repo: &Repository,
+    mode: &'static str,
+    provider: LlmProvider,
+    model: Option<String>,
+    target: Option<String>,
+    error: &anyhow::Error,
+) {
+    let entry = RuntimeLogEntry {
+        timestamp: current_unix_timestamp(),
+        event: "llm_fallback",
+        mode,
+        provider: provider.to_string(),
+        model,
+        target,
+        error: error.to_string(),
+    };
+
+    let _ = append_runtime_log(repo, &entry);
+}
+
 fn synthesize_report_query(
     request: &QueryRequest,
     result: &ArchaeologyResult,
@@ -2491,9 +2565,12 @@ fn synthesize_report_query(
         &github,
     );
 
-    let fallback = || {
+    let fallback = |extra_note: Option<String>| {
         let mut notes = result.notes.clone();
         notes.extend(github.notes.iter().cloned());
+        if let Some(extra_note) = extra_note {
+            notes.push(extra_note);
+        }
         heuristic_report(
             format!(
                 "Heuristic analysis of {} based on {} relevant commit(s).",
@@ -2511,12 +2588,24 @@ fn synthesize_report_query(
     };
 
     if request.no_llm {
-        return Ok(fallback());
+        return Ok(fallback(None));
     }
 
-    let client = match client_from_config(&config.resolved_llm_config()) {
+    let resolved_llm = config.resolved_llm_config();
+    let fallback_note = "LLM synthesis failed; fell back to heuristic mode. See .why/runtime.log.";
+    let client = match client_from_config(&resolved_llm) {
         Ok(client) => client,
-        Err(_) => return Ok(fallback()),
+        Err(error) => {
+            log_llm_fallback(
+                repo,
+                "query",
+                resolved_llm.provider,
+                resolved_llm.model.clone(),
+                Some(format_target_label(&request.target)),
+                &error,
+            );
+            return Ok(fallback(Some(fallback_note.to_string())));
+        }
     };
 
     let contract = prompt_contract();
@@ -2525,7 +2614,17 @@ fn synthesize_report_query(
 
     match llm_synthesize_report(&*client, &system_prompt, &user_prompt) {
         Ok(report) => Ok(report),
-        Err(_) => Ok(fallback()),
+        Err(error) => {
+            log_llm_fallback(
+                repo,
+                "query",
+                resolved_llm.provider,
+                resolved_llm.model.clone(),
+                Some(format_target_label(&request.target)),
+                &error,
+            );
+            Ok(fallback(Some(fallback_note.to_string())))
+        }
     }
 }
 
@@ -2549,8 +2648,13 @@ fn synthesize_diff_review_request(
     plan: &DiffReviewPlan,
     collected: &DiffReviewCollected,
     no_llm: bool,
+    repo: &Repository,
 ) -> Result<DiffReviewReport> {
-    let fallback = || {
+    let fallback = |extra_note: Option<String>| {
+        let mut notes = collected.notes.clone();
+        if let Some(extra_note) = extra_note {
+            notes.push(extra_note);
+        }
         heuristic_diff_review_report(
             format!(
                 "Heuristic diff review of {} staged target(s).",
@@ -2562,17 +2666,29 @@ fn synthesize_diff_review_request(
                 .map(heuristic_diff_review_finding)
                 .collect(),
             heuristic_diff_review_focus(collected),
-            collected.notes.clone(),
+            notes,
         )
     };
 
     if no_llm {
-        return Ok(fallback());
+        return Ok(fallback(None));
     }
 
-    let client = match client_from_config(&config.resolved_llm_config()) {
+    let resolved_llm = config.resolved_llm_config();
+    let fallback_note = "LLM synthesis failed; fell back to heuristic mode. See .why/runtime.log.";
+    let client = match client_from_config(&resolved_llm) {
         Ok(client) => client,
-        Err(_) => return Ok(fallback()),
+        Err(error) => {
+            log_llm_fallback(
+                repo,
+                "diff-review",
+                resolved_llm.provider,
+                resolved_llm.model.clone(),
+                Some(diff_review_target_label(plan)),
+                &error,
+            );
+            return Ok(fallback(Some(fallback_note.to_string())));
+        }
     };
 
     let target_label = diff_review_target_label(plan);
@@ -2599,7 +2715,17 @@ fn synthesize_diff_review_request(
             }
             Ok(report)
         }
-        Err(_) => Ok(fallback()),
+        Err(error) => {
+            log_llm_fallback(
+                repo,
+                "diff-review",
+                resolved_llm.provider,
+                resolved_llm.model.clone(),
+                Some(diff_review_target_label(plan)),
+                &error,
+            );
+            Ok(fallback(Some(fallback_note.to_string())))
+        }
     }
 }
 

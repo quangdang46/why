@@ -61,6 +61,7 @@ max_entries = 500
 # model = "claude-haiku-4-5-20251001"
 
 # Base URL for the provider API. Built-in providers use a default when omitted.
+# Anthropic-compatible providers should use the full `/v1/messages` endpoint.
 # Custom providers should set this explicitly.
 # base_url = "https://api.anthropic.com/v1/messages"
 

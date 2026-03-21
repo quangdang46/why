@@ -1636,6 +1636,57 @@ fn config_init_writes_local_config_when_requested() -> Result<()> {
 }
 
 #[test]
+fn config_get_reports_zai_default_messages_endpoint() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let env = setup_config_env(&repo)?;
+    let env_refs = env_pairs(&env);
+
+    fs::create_dir_all(
+        repo.global_config_path()
+            .parent()
+            .expect("global config parent"),
+    )?;
+    fs::write(repo.global_config_path(), "[llm]\nprovider = \"zai\"\n")?;
+
+    let output = repo.run_why_with_env(&["config", "get", "--json"], &env_refs)?;
+    ensure_success(&output)?;
+
+    let parsed: Value = serde_json::from_str(&repo.stdout(&output))?;
+    assert_eq!(parsed["llm"]["provider"], "zai");
+    assert_eq!(parsed["llm"]["model"], "glm-5");
+    assert_eq!(
+        parsed["llm"]["base_url"],
+        "https://api.z.ai/api/anthropic/v1/messages"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn missing_credentials_logs_runtime_fallback_reason() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let env = setup_config_env(&repo)?;
+    let env_refs = env_pairs(&env);
+
+    let output = repo.run_why_with_env(&["src/payment.rs:6", "--json"], &env_refs)?;
+    ensure_success(&output)?;
+
+    let parsed: Value = serde_json::from_str(&repo.stdout(&output))?;
+    assert_eq!(parsed["mode"], "heuristic");
+    assert!(parsed["notes"].as_array().is_some_and(|notes| notes.iter().any(|note| note
+        .as_str()
+        .is_some_and(|text| text.contains(".why/runtime.log")))));
+
+    let runtime_log = repo.path.join(".why").join("runtime.log");
+    assert!(runtime_log.exists());
+    let log_contents = fs::read_to_string(runtime_log)?;
+    assert!(log_contents.contains("llm_fallback"));
+    assert!(log_contents.contains("ANTHROPIC_API_KEY is not set"));
+
+    Ok(())
+}
+
+#[test]
 fn config_get_reports_effective_provider_and_paths_as_json() -> Result<()> {
     let repo = setup_hotfix_repo()?;
     let env = setup_config_env(&repo)?;

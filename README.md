@@ -451,7 +451,7 @@ Current built-in defaults:
 
 - `anthropic` → model `claude-haiku-4-5-20251001`, base URL `https://api.anthropic.com/v1/messages`
 - `openai` → model `gpt-5.4`, base URL `https://api.openai.com/v1/chat/completions`
-- `zai` → model `glm-5`, base URL `https://api.z.ai/api/paas/v4/chat/completions`
+- `zai` → model `glm-5`, base URL `https://api.z.ai/api/anthropic/v1/messages`
 - `custom` → no built-in model or base URL
 
 `why config get` hides secrets and reports whether auth is configured via `llm.auth_configured`.
@@ -532,6 +532,7 @@ Operator expectations:
 - `.why/` should be ignored by git for normal development workflows
 - on Unix, the cache directory and file are written with owner-only permissions (`0700` for `.why/`, `0600` for `cache.json`)
 - deleting `.why/cache.json` is safe if you want to clear local cached results; `why` will recreate it on the next cached run
+- LLM fallback reasons are appended to `.why/runtime.log` when synthesis fails and `why` falls back to heuristic mode
 
 ## Index Location
 

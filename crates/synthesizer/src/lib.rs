@@ -247,6 +247,7 @@ struct AnthropicAdapter {
     retries: usize,
     http: Client,
     endpoint: String,
+    provider: LlmProvider,
 }
 
 impl core::fmt::Debug for AnthropicAdapter {
@@ -278,7 +279,8 @@ impl AnthropicAdapter {
             max_tokens,
             retries: retries.max(1) as usize,
             http,
-            endpoint,
+            endpoint: normalize_anthropic_endpoint(&endpoint),
+            provider: LlmProvider::Anthropic,
         })
     }
 
@@ -297,14 +299,16 @@ impl AnthropicAdapter {
             .base_url
             .clone()
             .ok_or_else(|| anyhow!("anthropic provider requires 'base_url' to be configured"))?;
-        Self::new(
+        let mut adapter = Self::new(
             api_key,
             model,
             config.max_tokens,
             config.retries,
             config.timeout,
             endpoint,
-        )
+        )?;
+        adapter.provider = config.provider;
+        Ok(adapter)
     }
 
     fn request_body<'a>(&'a self, request: &'a LlmRequest) -> MessageRequest<'a> {
@@ -373,7 +377,7 @@ impl LlmClient for AnthropicAdapter {
     }
 
     fn provider(&self) -> LlmProvider {
-        LlmProvider::Anthropic
+        self.provider
     }
 }
 
@@ -412,6 +416,15 @@ struct AnthropicUsage {
     input_tokens: u64,
     #[serde(default)]
     output_tokens: u64,
+}
+
+fn normalize_anthropic_endpoint(endpoint: &str) -> String {
+    let trimmed = endpoint.trim_end_matches('/');
+    if trimmed.ends_with("/v1/messages") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}/v1/messages")
+    }
 }
 
 fn parse_anthropic_response(body: &str) -> Result<LlmResponse> {
@@ -1231,7 +1244,7 @@ mod tests {
                 "https://api.anthropic.com/v1/messages",
             ),
             LlmProvider::Openai => ("gpt-5.4", "https://api.openai.com/v1/chat/completions"),
-            LlmProvider::Zai => ("glm-5", "https://api.z.ai/api/paas/v4/chat/completions"),
+            LlmProvider::Zai => ("glm-5", "https://api.z.ai/api/anthropic/v1/messages"),
             LlmProvider::Custom => (
                 "custom-model",
                 "https://api.example.com/v1/chat/completions",
