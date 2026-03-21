@@ -26,6 +26,7 @@ pub enum Severity {
 pub struct TimeBombFinding {
     pub kind: TimeBombKind,
     pub severity: Severity,
+    #[serde(serialize_with = "crate::serialize_path")]
     pub path: PathBuf,
     pub line: u32,
     pub marker: String,
