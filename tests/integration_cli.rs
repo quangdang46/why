@@ -1673,9 +1673,13 @@ fn missing_credentials_logs_runtime_fallback_reason() -> Result<()> {
 
     let parsed: Value = serde_json::from_str(&repo.stdout(&output))?;
     assert_eq!(parsed["mode"], "heuristic");
-    assert!(parsed["notes"].as_array().is_some_and(|notes| notes.iter().any(|note| note
-        .as_str()
-        .is_some_and(|text| text.contains(".why/runtime.log")))));
+    assert!(
+        parsed["notes"]
+            .as_array()
+            .is_some_and(|notes| notes.iter().any(|note| note
+                .as_str()
+                .is_some_and(|text| text.contains(".why/runtime.log"))))
+    );
 
     let runtime_log = repo.path.join(".why").join("runtime.log");
     assert!(runtime_log.exists());
