@@ -55,14 +55,14 @@ pub(crate) fn normalized_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-pub(crate) fn serialize_path<S>(path: &PathBuf, serializer: S) -> Result<S::Ok, S::Error>
+pub(crate) fn serialize_path<S>(path: &Path, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
     serializer.serialize_str(&normalized_path(path))
 }
 
-pub(crate) fn serialize_paths<S>(paths: &Vec<PathBuf>, serializer: S) -> Result<S::Ok, S::Error>
+pub(crate) fn serialize_paths<S>(paths: &[PathBuf], serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
