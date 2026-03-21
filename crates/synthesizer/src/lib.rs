@@ -327,6 +327,7 @@ impl AnthropicAdapter {
         self.http
             .post(&self.endpoint)
             .header("x-api-key", &self.api_key)
+            .header("Authorization", format!("Bearer {}", self.api_key))
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header(CONTENT_TYPE, "application/json")
             .json(&self.request_body(request))
@@ -559,6 +560,7 @@ impl OpenAICompatibleAdapter {
         self.http
             .post(&self.endpoint)
             .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("x-api-key", &self.api_key)
             .header(CONTENT_TYPE, "application/json")
             .json(&self.request_body(request))
     }
