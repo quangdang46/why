@@ -516,7 +516,6 @@ fn run_config_get(json: bool) -> Result<()> {
 
 fn run_doctor(json: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
-    let repo = Repository::discover(&cwd)?;
     let config = load_config(&cwd)?;
     let config_report = build_config_report(&cwd)?;
     let resolved_llm = config.resolved_llm_config();
@@ -586,24 +585,14 @@ fn run_doctor(json: bool) -> Result<()> {
             cost_usd: response.cost_usd,
             error_chain: Vec::new(),
         },
-        Err(error) => {
-            log_llm_fallback(
-                &repo,
-                "doctor",
-                resolved_llm.provider,
-                resolved_llm.model.clone(),
-                Some("doctor".into()),
-                &error,
-            );
-            DoctorLlmReport {
-                ok: false,
-                response_preview: None,
-                input_tokens: None,
-                output_tokens: None,
-                cost_usd: None,
-                error_chain: error_chain(&error),
-            }
-        }
+        Err(error) => DoctorLlmReport {
+            ok: false,
+            response_preview: None,
+            input_tokens: None,
+            output_tokens: None,
+            cost_usd: None,
+            error_chain: error_chain(&error),
+        },
     };
 
     checks.push(DoctorCheck {
