@@ -475,5 +475,5 @@ Reasoning:
 2. Tree-sitter integration to locate exact function byte ranges for `git blame`
 3. GitHub API integration to fetch full PR descriptions (not just commit messages)
 4. Jira/Linear issue resolution from `fixes #123` patterns in commits
-5. Cache recent queries in `.why/cache.json` to avoid repeated LLM calls
+5. Cache recent queries in `.why/cache.jsonl` to avoid repeated LLM calls
 6. `why --since 30d` to focus on recent changes only

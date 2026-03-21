@@ -48,7 +48,7 @@ coupling_scan_commits = 500
 coupling_ratio_threshold = 0.30
 
 [cache]
-# Maximum number of cached why reports retained in `.why/cache.json` before the
+# Maximum number of cached why reports retained in `.why/cache.jsonl` before the
 # oldest entries are evicted. Set to 0 to disable query-result retention.
 max_entries = 500
 

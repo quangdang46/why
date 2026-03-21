@@ -23,8 +23,9 @@ use why_archaeologist::{
 };
 use why_cache::{Cache, HealthSnapshot};
 use why_context::{
-    LlmConfigLayer, LlmProvider, WhyConfig, WhyConfigLayer, global_config_path, load_config,
-    load_config_layer_from_path, local_config_target_path, write_config_layer_to_path,
+    CacheConfigLayer, GitConfigLayer, GitHubConfigLayer, LlmConfigLayer, LlmProvider,
+    RiskConfigLayer, RiskKeywordsLayer, WhyConfig, WhyConfigLayer, global_config_path,
+    load_config, load_config_from_path, local_config_target_path, write_config_layer_to_path,
 };
 use why_evidence::{
     EvidenceCommit, EvidenceContext, EvidencePack, EvidenceTarget, GitHubClient, GitHubComment,
@@ -98,6 +99,10 @@ fn run() -> Result<ExitStatus> {
         }
         Mode::ConfigGet { json } => {
             run_config_get(json)?;
+            Ok(ExitStatus::Success)
+        }
+        Mode::Doctor { json } => {
+            run_doctor(json)?;
             Ok(ExitStatus::Success)
         }
         Mode::Shell => {
@@ -361,6 +366,31 @@ struct RuntimeLogEntry {
     error: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct DoctorCheck {
+    name: String,
+    ok: bool,
+    detail: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DoctorLlmReport {
+    ok: bool,
+    response_preview: Option<String>,
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+    cost_usd: Option<f64>,
+    error_chain: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DoctorReport {
+    config: ConfigReport,
+    checks: Vec<DoctorCheck>,
+    llm_test: DoctorLlmReport,
+    ok: bool,
+}
+
 fn run_config_init(args: ConfigInitArgs) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let current = load_config(&cwd)?;
@@ -368,7 +398,12 @@ fn run_config_init(args: ConfigInitArgs) -> Result<()> {
     let values = resolve_config_init_values(&current, args)?;
 
     let target_path = config_target_path(&cwd, values.local)?;
-    let mut layer = load_existing_config_layer(&target_path)?;
+    let base_config = if target_path.is_file() {
+        load_config_from_path(&target_path)?
+    } else {
+        current.clone()
+    };
+    let mut layer = config_layer_from_config(&base_config);
     apply_config_init_to_layer(&mut layer, &values, values.provider != current_provider);
     write_config_layer_to_path(&target_path, &layer)?;
 
@@ -477,6 +512,128 @@ fn run_config_get(json: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn run_doctor(json: bool) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let repo = Repository::discover(&cwd)?;
+    let config = load_config(&cwd)?;
+    let config_report = build_config_report(&cwd)?;
+    let resolved_llm = config.resolved_llm_config();
+
+    let mut checks = vec![DoctorCheck {
+        name: "auth_configured".into(),
+        ok: config_report.llm.auth_configured,
+        detail: if config_report.llm.auth_configured {
+            "LLM auth token is configured.".into()
+        } else {
+            "LLM auth token is missing.".into()
+        },
+    }];
+
+    let client = match client_from_config(&resolved_llm) {
+        Ok(client) => {
+            checks.push(DoctorCheck {
+                name: "client_init".into(),
+                ok: true,
+                detail: "LLM client initialized successfully.".into(),
+            });
+            client
+        }
+        Err(error) => {
+            let error_chain = error_chain(&error);
+            let report = DoctorReport {
+                config: config_report,
+                checks: {
+                    let mut checks = checks;
+                    checks.push(DoctorCheck {
+                        name: "client_init".into(),
+                        ok: false,
+                        detail: error_chain.join(" | "),
+                    });
+                    checks
+                },
+                llm_test: DoctorLlmReport {
+                    ok: false,
+                    response_preview: None,
+                    input_tokens: None,
+                    output_tokens: None,
+                    cost_usd: None,
+                    error_chain,
+                },
+                ok: false,
+            };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                render_doctor_report(&report);
+            }
+            anyhow::bail!("doctor failed")
+        }
+    };
+
+    let request = why_synthesizer::LlmRequest {
+        system_prompt: "Reply with plain text only.".into(),
+        user_prompt: "Reply with exactly WHY_DOCTOR_OK".into(),
+    };
+
+    let llm_test = match client.send(&request) {
+        Ok(response) => DoctorLlmReport {
+            ok: true,
+            response_preview: Some(response.text.chars().take(120).collect()),
+            input_tokens: response.input_tokens,
+            output_tokens: response.output_tokens,
+            cost_usd: response.cost_usd,
+            error_chain: Vec::new(),
+        },
+        Err(error) => {
+            log_llm_fallback(
+                &repo,
+                "doctor",
+                resolved_llm.provider,
+                resolved_llm.model.clone(),
+                Some("doctor".into()),
+                &error,
+            );
+            DoctorLlmReport {
+                ok: false,
+                response_preview: None,
+                input_tokens: None,
+                output_tokens: None,
+                cost_usd: None,
+                error_chain: error_chain(&error),
+            }
+        }
+    };
+
+    checks.push(DoctorCheck {
+        name: "llm_call".into(),
+        ok: llm_test.ok,
+        detail: if llm_test.ok {
+            "Live LLM test call succeeded.".into()
+        } else {
+            llm_test.error_chain.join(" | ")
+        },
+    });
+
+    let report = DoctorReport {
+        config: config_report,
+        checks,
+        ok: llm_test.ok,
+        llm_test,
+    };
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        render_doctor_report(&report);
+    }
+
+    if report.ok {
+        Ok(())
+    } else {
+        anyhow::bail!("doctor failed")
+    }
 }
 
 fn build_config_report(cwd: &Path) -> Result<ConfigReport> {
@@ -601,6 +758,47 @@ fn render_config_path_line(label: &str, entry: Option<&ConfigPathEntry>) {
     }
 }
 
+fn render_doctor_report(report: &DoctorReport) {
+    println!("why doctor");
+    println!();
+    render_config_report(&report.config);
+    println!();
+    println!("Checks");
+    for check in &report.checks {
+        println!(
+            "  [{}] {} — {}",
+            if check.ok { "ok" } else { "fail" },
+            check.name,
+            check.detail
+        );
+    }
+    println!();
+    println!("LLM test");
+    println!("  status: {}", if report.llm_test.ok { "ok" } else { "fail" });
+    if let Some(preview) = &report.llm_test.response_preview {
+        println!("  response: {preview}");
+    }
+    if let Some(input_tokens) = report.llm_test.input_tokens {
+        println!("  input_tokens: {input_tokens}");
+    }
+    if let Some(output_tokens) = report.llm_test.output_tokens {
+        println!("  output_tokens: {output_tokens}");
+    }
+    if let Some(cost_usd) = report.llm_test.cost_usd {
+        println!("  cost_usd: {cost_usd:.6}");
+    }
+    if !report.llm_test.error_chain.is_empty() {
+        println!("  error_chain:");
+        for error in &report.llm_test.error_chain {
+            println!("    - {error}");
+        }
+    }
+}
+
+fn error_chain(error: &anyhow::Error) -> Vec<String> {
+    error.chain().map(|cause| cause.to_string()).collect()
+}
+
 fn comma_or_none(values: &[String]) -> String {
     if values.is_empty() {
         "<none>".to_string()
@@ -631,11 +829,38 @@ fn config_target_path(cwd: &Path, local: bool) -> Result<PathBuf> {
     }
 }
 
-fn load_existing_config_layer(path: &Path) -> Result<WhyConfigLayer> {
-    if path.is_file() {
-        load_config_layer_from_path(path)
-    } else {
-        Ok(WhyConfigLayer::default())
+fn config_layer_from_config(config: &WhyConfig) -> WhyConfigLayer {
+    WhyConfigLayer {
+        risk: Some(RiskConfigLayer {
+            default_level: Some(config.risk.default_level.clone()),
+            keywords: Some(RiskKeywordsLayer {
+                high: Some(config.risk.keywords.high.clone()),
+                medium: Some(config.risk.keywords.medium.clone()),
+            }),
+        }),
+        git: Some(GitConfigLayer {
+            max_commits: Some(config.git.max_commits),
+            recency_window_days: Some(config.git.recency_window_days),
+            mechanical_threshold_files: Some(config.git.mechanical_threshold_files),
+            coupling_scan_commits: Some(config.git.coupling_scan_commits),
+            coupling_ratio_threshold: Some(config.git.coupling_ratio_threshold),
+        }),
+        cache: Some(CacheConfigLayer {
+            max_entries: Some(config.cache.max_entries),
+        }),
+        github: Some(GitHubConfigLayer {
+            remote: Some(config.github.remote.clone()),
+            token: config.github.token.clone(),
+        }),
+        llm: Some(LlmConfigLayer {
+            provider: Some(config.llm.provider),
+            model: config.llm.model.clone(),
+            base_url: config.llm.base_url.clone(),
+            auth_token: config.llm.auth_token.clone(),
+            retries: Some(config.llm.retries),
+            max_tokens: Some(config.llm.max_tokens),
+            timeout: Some(config.llm.timeout),
+        }),
     }
 }
 

@@ -251,7 +251,7 @@ fn repeated_query_uses_cache_and_writes_cache_file() -> Result<()> {
     ensure_success(&first)?;
     assert!(!repo.stdout(&first).contains("[cached]"));
 
-    let cache_path = repo.path.join(".why").join("cache.json");
+    let cache_path = repo.path.join(".why").join("cache.jsonl");
     assert!(cache_path.is_file());
 
     let second = repo.run_why(&["src/payment.rs:6", "--no-llm"])?;
@@ -713,12 +713,9 @@ fn health_subcommand_returns_json_report_and_persists_snapshot() -> Result<()> {
             .is_some_and(|items| !items.is_empty())
     );
 
-    let cache_path = repo.path.join(".why").join("cache.json");
-    let cache_value: Value = serde_json::from_str(&std::fs::read_to_string(cache_path)?)?;
-    assert_eq!(
-        cache_value["health_snapshots"].as_array().map(|v| v.len()),
-        Some(1)
-    );
+    let health_path = repo.path.join(".why").join("health.json");
+    let health_value: Value = serde_json::from_str(&std::fs::read_to_string(health_path)?)?;
+    assert_eq!(health_value.as_array().map(|v| v.len()), Some(1));
 
     Ok(())
 }
@@ -1595,6 +1592,11 @@ fn config_init_writes_global_config_with_selected_provider() -> Result<()> {
     assert!(stdout.contains("Provider: openai"));
 
     let config = fs::read_to_string(repo.global_config_path())?;
+    assert!(config.contains("[risk]"));
+    assert!(config.contains("[git]"));
+    assert!(config.contains("[cache]"));
+    assert!(config.contains("[github]"));
+    assert!(config.contains("[llm]"));
     assert!(config.contains("provider = \"openai\""));
     assert!(config.contains("model = \"gpt-5.4\""));
     assert!(config.contains("base_url = \"https://api.openai.com/v1/chat/completions\""));
@@ -1629,6 +1631,11 @@ fn config_init_writes_local_config_when_requested() -> Result<()> {
     let stdout = repo.stdout(&output);
     assert!(stdout.contains("Wrote local config"));
     let config = fs::read_to_string(repo.local_config_path())?;
+    assert!(config.contains("[risk]"));
+    assert!(config.contains("[git]"));
+    assert!(config.contains("[cache]"));
+    assert!(config.contains("[github]"));
+    assert!(config.contains("[llm]"));
     assert!(config.contains("provider = \"anthropic\""));
     assert!(config.contains("model = \"claude-sonnet-4-6\""));
 
@@ -1658,6 +1665,28 @@ fn config_get_reports_zai_default_messages_endpoint() -> Result<()> {
         parsed["llm"]["base_url"],
         "https://api.z.ai/api/anthropic/v1/messages"
     );
+
+    Ok(())
+}
+
+#[test]
+fn doctor_reports_missing_credentials_as_json() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let env = setup_config_env(&repo)?;
+    let env_refs = env_pairs(&env);
+
+    let output = repo.run_why_with_env(&["doctor", "--json"], &env_refs)?;
+    assert!(!output.status.success());
+
+    let parsed: Value = serde_json::from_str(&repo.stdout(&output))?;
+    assert_eq!(parsed["ok"], false);
+    assert_eq!(parsed["llm_test"]["ok"], false);
+    assert!(parsed["checks"].as_array().is_some_and(|checks| checks.iter().any(|check| {
+        check["name"] == "client_init" && check["ok"] == false
+    })));
+    assert!(parsed["llm_test"]["error_chain"]
+        .as_array()
+        .is_some_and(|errors| !errors.is_empty()));
 
     Ok(())
 }
@@ -1934,8 +1963,10 @@ fn real_repo_health_and_hotspots_work_when_enabled() -> Result<()> {
             .is_some_and(|items| !items.is_empty())
     );
 
-    let cache_path = repo.path.join(".why").join("cache.json");
+    let cache_path = repo.path.join(".why").join("cache.jsonl");
+    let health_path = repo.path.join(".why").join("health.json");
     assert!(cache_path.exists());
+    assert!(health_path.exists());
 
     let hotspots_output = repo.run_why(&["hotspots", "--limit", "5", "--json"])?;
     ensure_success(&hotspots_output)?;

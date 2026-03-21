@@ -16,7 +16,8 @@ use serde_json::Value;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 const CACHE_DIR_NAME: &str = ".why";
-const CACHE_FILE_NAME: &str = "cache.json";
+const CACHE_ENTRIES_FILE_NAME: &str = "cache.jsonl";
+const HEALTH_SNAPSHOTS_FILE_NAME: &str = "health.json";
 const HEALTH_SNAPSHOT_LIMIT: usize = 52;
 const MAX_CACHE_FILE_BYTES: u64 = 5 * 1024 * 1024;
 
@@ -50,7 +51,8 @@ struct CacheFile {
 
 #[derive(Debug, Clone)]
 pub struct Cache {
-    path: PathBuf,
+    entries_path: PathBuf,
+    health_path: PathBuf,
     max_entries: usize,
     data: CacheFile,
 }
@@ -65,11 +67,13 @@ impl Cache {
     pub fn open(repo_root: &Path, max_entries: usize) -> Result<Self> {
         let dir = runtime_dir(repo_root)?;
 
-        let path = dir.join(CACHE_FILE_NAME);
-        let data = read_cache_file(&path)?;
+        let entries_path = dir.join(CACHE_ENTRIES_FILE_NAME);
+        let health_path = dir.join(HEALTH_SNAPSHOTS_FILE_NAME);
+        let data = read_cache_state(&entries_path, &health_path)?;
 
         Ok(Self {
-            path,
+            entries_path,
+            health_path,
             max_entries,
             data,
         })
@@ -145,23 +149,19 @@ impl Cache {
     }
 
     fn persist(&self) -> Result<()> {
-        let parent = self
-            .path
+        let entries_parent = self
+            .entries_path
             .parent()
-            .context("cache path has no parent directory")?;
-        ensure_cache_dir(parent)?;
+            .context("entries path has no parent directory")?;
+        ensure_cache_dir(entries_parent)?;
+        let health_parent = self
+            .health_path
+            .parent()
+            .context("health path has no parent directory")?;
+        ensure_cache_dir(health_parent)?;
 
-        let tmp_path = self.path.with_extension("json.tmp");
-        let payload =
-            serde_json::to_vec_pretty(&self.data).context("failed to encode cache file")?;
-        write_cache_file(&tmp_path, &payload)?;
-        fs::rename(&tmp_path, &self.path).with_context(|| {
-            format!(
-                "failed to replace cache file {} with {}",
-                self.path.display(),
-                tmp_path.display()
-            )
-        })?;
+        persist_cache_entries(&self.entries_path, &self.data.entries)?;
+        persist_health_snapshots(&self.health_path, &self.data.health_snapshots)?;
         Ok(())
     }
 }
@@ -173,27 +173,68 @@ fn now_ts() -> i64 {
         .as_secs() as i64
 }
 
-fn read_cache_file(path: &Path) -> Result<CacheFile> {
-    match safe_cache_file_metadata(path)? {
-        Some(metadata) => {
-            if metadata.len() == 0 {
-                return Ok(CacheFile::default());
-            }
-            if metadata.len() > MAX_CACHE_FILE_BYTES {
-                bail!(
-                    "cache file {} exceeds the {} byte safety limit",
-                    path.display(),
-                    MAX_CACHE_FILE_BYTES
-                );
-            }
+fn read_cache_state(entries_path: &Path, health_path: &Path) -> Result<CacheFile> {
+    let entries_metadata = safe_cache_file_metadata(entries_path)?;
+    let health_metadata = safe_cache_file_metadata(health_path)?;
+    let entries = match entries_metadata.as_ref() {
+        Some(metadata) => read_cache_entries(entries_path, metadata.len())?,
+        None => Vec::new(),
+    };
+    let health_snapshots = match health_metadata.as_ref() {
+        Some(metadata) => read_health_snapshots(health_path, metadata.len())?,
+        None => Vec::new(),
+    };
 
-            let bytes = fs::read(path)
-                .with_context(|| format!("failed to read cache file {}", path.display()))?;
-            serde_json::from_slice(&bytes)
-                .with_context(|| format!("failed to parse cache file {}", path.display()))
-        }
-        None => Ok(CacheFile::default()),
+    Ok(CacheFile {
+        entries,
+        health_snapshots,
+    })
+}
+
+fn read_cache_entries(path: &Path, file_len: u64) -> Result<Vec<CacheEntry>> {
+    if file_len == 0 {
+        return Ok(Vec::new());
     }
+    if file_len > MAX_CACHE_FILE_BYTES {
+        bail!(
+            "cache file {} exceeds the {} byte safety limit",
+            path.display(),
+            MAX_CACHE_FILE_BYTES
+        );
+    }
+
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("failed to read cache file {}", path.display()))?;
+    let mut entries = Vec::new();
+    for (index, line) in contents.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let entry = serde_json::from_str::<CacheEntry>(trimmed).with_context(|| {
+            format!("failed to parse cache entry {} in {}", index + 1, path.display())
+        })?;
+        entries.push(entry);
+    }
+    Ok(entries)
+}
+
+fn read_health_snapshots(path: &Path, file_len: u64) -> Result<Vec<HealthSnapshot>> {
+    if file_len == 0 {
+        return Ok(Vec::new());
+    }
+    if file_len > MAX_CACHE_FILE_BYTES {
+        bail!(
+            "cache file {} exceeds the {} byte safety limit",
+            path.display(),
+            MAX_CACHE_FILE_BYTES
+        );
+    }
+
+    let bytes = fs::read(path)
+        .with_context(|| format!("failed to read cache file {}", path.display()))?;
+    serde_json::from_slice(&bytes)
+        .with_context(|| format!("failed to parse cache file {}", path.display()))
 }
 
 fn ensure_cache_dir(path: &Path) -> Result<()> {
@@ -235,6 +276,40 @@ fn safe_cache_file_metadata(path: &Path) -> Result<Option<fs::Metadata>> {
             Err(error).with_context(|| format!("failed to inspect cache file {}", path.display()))
         }
     }
+}
+
+fn persist_cache_entries(path: &Path, entries: &[CacheEntry]) -> Result<()> {
+    let tmp_path = path.with_extension("jsonl.tmp");
+    let mut payload = String::new();
+    for entry in entries {
+        payload.push_str(
+            &serde_json::to_string(entry).context("failed to encode cache entry")?,
+        );
+        payload.push('\n');
+    }
+    write_cache_file(&tmp_path, payload.as_bytes())?;
+    fs::rename(&tmp_path, path).with_context(|| {
+        format!(
+            "failed to replace cache file {} with {}",
+            path.display(),
+            tmp_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn persist_health_snapshots(path: &Path, snapshots: &[HealthSnapshot]) -> Result<()> {
+    let tmp_path = path.with_extension("json.tmp");
+    let payload = serde_json::to_vec_pretty(snapshots).context("failed to encode health snapshots")?;
+    write_cache_file(&tmp_path, &payload)?;
+    fs::rename(&tmp_path, path).with_context(|| {
+        format!(
+            "failed to replace health snapshot file {} with {}",
+            path.display(),
+            tmp_path.display()
+        )
+    })?;
+    Ok(())
 }
 
 fn write_cache_file(path: &Path, payload: &[u8]) -> Result<()> {
@@ -432,10 +507,15 @@ mod tests {
         )?;
 
         let cache_dir = dir.path().join(".why");
-        let cache_file = cache_dir.join("cache.json");
+        let cache_file = cache_dir.join("cache.jsonl");
+        let health_file = cache_dir.join("health.json");
         assert_eq!(fs::metadata(cache_dir)?.permissions().mode() & 0o777, 0o700);
         assert_eq!(
             fs::metadata(cache_file)?.permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(health_file)?.permissions().mode() & 0o777,
             0o600
         );
         Ok(())
@@ -462,7 +542,7 @@ mod tests {
         fs::create_dir_all(&cache_dir)?;
         let target = dir.path().join("elsewhere.json");
         fs::write(&target, b"{}")?;
-        symlink(&target, cache_dir.join("cache.json"))?;
+        symlink(&target, cache_dir.join("cache.jsonl"))?;
 
         let error = Cache::open(dir.path(), 10).expect_err("symlinked cache file should fail");
         assert!(error.to_string().contains("must not be a symlink"));
@@ -474,7 +554,7 @@ mod tests {
         let dir = tempdir()?;
         let cache_dir = dir.path().join(".why");
         fs::create_dir_all(&cache_dir)?;
-        let cache_path = cache_dir.join("cache.json");
+        let cache_path = cache_dir.join("cache.jsonl");
         fs::write(&cache_path, vec![b'x'; (MAX_CACHE_FILE_BYTES as usize) + 1])?;
 
         let error = Cache::open(dir.path(), 10).expect_err("oversized cache file should fail");

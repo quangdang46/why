@@ -224,7 +224,7 @@ why src/auth.rs:verify_token --rename-safe
 |---|---|---|
 | `--json` | Emit machine-readable output | Works for the main query flow and many subcommands |
 | `--no-llm` | Skip LLM synthesis | Useful in CI, local validation, or no-key environments |
-| `--no-cache` | Bypass cached results | Forces a fresh query instead of reusing `.why/cache.json` |
+| `--no-cache` | Bypass cached results | Forces a fresh query instead of reusing `.why/cache.jsonl` |
 | `--since <days>` | Restrict history to recent commits | Applies to query-style archaeology/report modes |
 | `--coupled` | Show file-level co-change coupling | Good before a larger refactor |
 | `--team` | Show ownership and bus-factor signals | Good before picking reviewers |
@@ -517,12 +517,12 @@ See `.why.toml.example` for a fully documented example of the current config sur
 
 Current behavior:
 
-- query results are cached in `.why/cache.json` at the repository root
+- query results are cached in `.why/cache.jsonl` at the repository root, one JSON object per line
 - cache keys include the target identity plus the current `HEAD` hash prefix, so changing history invalidates prior entries naturally
 - terminal output shows `[cached]` when a stored `WhyReport` is reused
 - `--no-cache` bypasses cache reads and forces a fresh query
-- `[cache].max_entries` controls retained query reports in `.why/cache.json`
-- the cache file also stores rolling health snapshots for future trend-oriented reporting
+- `[cache].max_entries` controls retained query reports in `.why/cache.jsonl`
+- rolling health snapshots are stored separately in `.why/health.json`
 - up to 52 health snapshots are retained
 - CI can enforce health regression budgets with `.github/health-baseline.json`
 
@@ -530,9 +530,27 @@ Operator expectations:
 
 - treat `.why/` as local runtime state, not source-controlled project state
 - `.why/` should be ignored by git for normal development workflows
-- on Unix, the cache directory and file are written with owner-only permissions (`0700` for `.why/`, `0600` for `cache.json`)
-- deleting `.why/cache.json` is safe if you want to clear local cached results; `why` will recreate it on the next cached run
+- on Unix, the cache directory and runtime files are written with owner-only permissions (`0700` for `.why/`, `0600` for `cache.jsonl`, `health.json`, and `runtime.log`)
+- deleting `.why/cache.jsonl` is safe if you want to clear local cached results; `why` will recreate it on the next cached run
+- deleting `.why/health.json` is safe if you want to reset local health trend history
 - LLM fallback reasons are appended to `.why/runtime.log` when synthesis fails and `why` falls back to heuristic mode
+
+## `why doctor`
+
+Use `why doctor` to validate the current effective settings and perform a small live LLM test call.
+
+```bash
+why doctor
+why doctor --json
+```
+
+It reports:
+- the effective config paths and resolved LLM settings,
+- whether auth is configured,
+- whether the LLM client can be initialized,
+- whether a live LLM call succeeds.
+
+If the live call fails, `why doctor` reports the error directly and the runtime log remains available at `.why/runtime.log`.
 
 ## Index Location
 

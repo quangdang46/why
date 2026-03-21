@@ -184,8 +184,10 @@ fn health_and_hotspots_work_when_enabled() -> Result<()> {
             .is_some_and(|items| !items.is_empty())
     );
 
-    let cache_path = repo.path.join(".why").join("cache.json");
+    let cache_path = repo.path.join(".why").join("cache.jsonl");
+    let health_path = repo.path.join(".why").join("health.json");
     assert!(cache_path.exists());
+    assert!(health_path.exists());
 
     let hotspots_output = run_why(&repo, &["hotspots", "--limit", "5", "--json"])?;
     ensure_success(&hotspots_output)?;

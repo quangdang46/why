@@ -10,7 +10,7 @@ use why_locator::{QueryTarget, parse_target};
 #[command(name = "why")]
 #[command(
     about = "Ask your codebase why a line, range, symbol, or repo hotspot exists",
-    after_help = "Examples:\n  why src/auth.rs:42\n  why src/auth.rs --lines 40:45 --no-llm\n  why src/auth.rs:verify_token --json\n  why src/auth.rs:verify_token --annotate\n  why src/auth.rs:verify_token --rename-safe\n  why src/auth.rs:verify_token --watch --no-llm\n  why src/auth.rs:AuthService::login --team\n  why src/auth.rs:verify_token --blame-chain\n  why src/auth.rs:verify_token --evolution\n  why hotspots --limit 10\n  why health\n  why health --ci 80\n  why pr-template\n  why diff-review --no-llm\n  why explain-outage --from 2025-11-03T14:00 --to 2025-11-03T16:30\n  why coverage-gap --coverage lcov.info\n  why ghost --limit 10\n  why onboard --limit 10\n  why time-bombs --age-days 180\n  why config init --provider anthropic --model claude-haiku-4-5-20251001 --auth-token sk-ant-...\n  why config init --local --provider custom --model local-model --base-url https://api.example.com/v1/chat/completions\n  why config get --json\n  eval \"$(why context-inject)\""
+    after_help = "Examples:\n  why src/auth.rs:42\n  why src/auth.rs --lines 40:45 --no-llm\n  why src/auth.rs:verify_token --json\n  why src/auth.rs:verify_token --annotate\n  why src/auth.rs:verify_token --rename-safe\n  why src/auth.rs:verify_token --watch --no-llm\n  why src/auth.rs:AuthService::login --team\n  why src/auth.rs:verify_token --blame-chain\n  why src/auth.rs:verify_token --evolution\n  why hotspots --limit 10\n  why health\n  why health --ci 80\n  why doctor\n  why doctor --json\n  why pr-template\n  why diff-review --no-llm\n  why explain-outage --from 2025-11-03T14:00 --to 2025-11-03T16:30\n  why coverage-gap --coverage lcov.info\n  why ghost --limit 10\n  why onboard --limit 10\n  why time-bombs --age-days 180\n  why config init --provider anthropic --model claude-haiku-4-5-20251001 --auth-token sk-ant-...\n  why config init --local --provider custom --model local-model --base-url https://api.example.com/v1/chat/completions\n  why config get --json\n  eval \"$(why context-inject)\""
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -201,6 +201,12 @@ pub enum Command {
         #[arg(long)]
         require_baseline: bool,
     },
+    /// Validate current settings and perform a live LLM test call.
+    Doctor {
+        /// Emit machine-readable output.
+        #[arg(long)]
+        json: bool,
+    },
     /// Generate a reviewer-friendly PR template from the staged diff.
     PrTemplate {
         /// Emit machine-readable output.
@@ -359,6 +365,9 @@ pub enum Mode {
         max_regression: Option<u32>,
         max_signal_regression: Vec<String>,
         require_baseline: bool,
+    },
+    Doctor {
+        json: bool,
     },
     PrTemplate {
         json: bool,
@@ -626,6 +635,25 @@ impl Cli {
                     max_signal_regression,
                     require_baseline,
                 })
+            }
+            Some(Command::Doctor { json }) => {
+                if self.target.is_some()
+                    || self.lines.is_some()
+                    || self.no_llm
+                    || self.no_cache
+                    || self.split
+                    || self.coupled
+                    || self.since.is_some()
+                    || self.team
+                    || self.blame_chain
+                    || self.evolution
+                    || self.annotate
+                    || self.watch
+                    || self.rename_safe
+                {
+                    bail!("the doctor subcommand does not accept query flags or a target");
+                }
+                Ok(Mode::Doctor { json })
             }
             Some(Command::PrTemplate { json }) => {
                 if self.target.is_some()
@@ -1413,6 +1441,15 @@ mod tests {
                 max_signal_regression: vec!["time_bombs=0".into(), "stale_hacks=1".into()],
                 require_baseline: true,
             }
+        );
+    }
+
+    #[test]
+    fn parses_doctor_subcommand() {
+        let cli = Cli::parse_from(["why", "doctor", "--json"]);
+        assert_eq!(
+            cli.parse_mode().expect("doctor should parse"),
+            Mode::Doctor { json: true }
         );
     }
 
