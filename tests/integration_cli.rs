@@ -718,7 +718,7 @@ fn health_subcommand_returns_json_report_and_persists_snapshot() -> Result<()> {
     let health_lines: Vec<Value> = health_contents
         .lines()
         .filter(|line| !line.trim().is_empty())
-        .map(|line| serde_json::from_str(line))
+        .map(serde_json::from_str)
         .collect::<Result<Vec<_>, _>>()?;
     assert_eq!(health_lines.len(), 1);
 
