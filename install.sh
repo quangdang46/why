@@ -301,7 +301,11 @@ build_from_source() {
 
     command -v cargo >/dev/null || die "Rust/cargo not found. Install: https://rustup.rs"
     command -v git >/dev/null || die "git not found"
-    git clone --depth 1 "https://github.com/${OWNER}/${REPO}.git" "$TMP/src"
+    if [ -n "$VERSION" ]; then
+        git clone --depth 1 --branch "$VERSION" "https://github.com/${OWNER}/${REPO}.git" "$TMP/src"
+    else
+        git clone --depth 1 "https://github.com/${OWNER}/${REPO}.git" "$TMP/src"
+    fi
     (
         cd "$TMP/src"
         CARGO_TARGET_DIR="$TMP/target" cargo build --release --locked --package why-core --bin "$BINARY_NAME"

@@ -71,6 +71,7 @@ jobs:
 
       - name: Build binary natively
         if: ${{ !matrix.use-cross }}
+        shell: bash
         run: cargo build --release --locked --package "$PACKAGE_NAME" --bin "$BIN_NAME" --target "${{ matrix.target }}"
 
       - name: Package Unix archive
