@@ -1681,12 +1681,16 @@ fn doctor_reports_missing_credentials_as_json() -> Result<()> {
     let parsed: Value = serde_json::from_str(&repo.stdout(&output))?;
     assert_eq!(parsed["ok"], false);
     assert_eq!(parsed["llm_test"]["ok"], false);
-    assert!(parsed["checks"].as_array().is_some_and(|checks| checks.iter().any(|check| {
-        check["name"] == "client_init" && check["ok"] == false
-    })));
-    assert!(parsed["llm_test"]["error_chain"]
-        .as_array()
-        .is_some_and(|errors| !errors.is_empty()));
+    assert!(parsed["checks"].as_array().is_some_and(|checks| {
+        checks
+            .iter()
+            .any(|check| check["name"] == "client_init" && check["ok"] == false)
+    }));
+    assert!(
+        parsed["llm_test"]["error_chain"]
+            .as_array()
+            .is_some_and(|errors| !errors.is_empty())
+    );
 
     Ok(())
 }

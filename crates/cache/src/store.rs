@@ -212,7 +212,11 @@ fn read_cache_entries(path: &Path, file_len: u64) -> Result<Vec<CacheEntry>> {
             continue;
         }
         let entry = serde_json::from_str::<CacheEntry>(trimmed).with_context(|| {
-            format!("failed to parse cache entry {} in {}", index + 1, path.display())
+            format!(
+                "failed to parse cache entry {} in {}",
+                index + 1,
+                path.display()
+            )
         })?;
         entries.push(entry);
     }
@@ -231,8 +235,8 @@ fn read_health_snapshots(path: &Path, file_len: u64) -> Result<Vec<HealthSnapsho
         );
     }
 
-    let bytes = fs::read(path)
-        .with_context(|| format!("failed to read cache file {}", path.display()))?;
+    let bytes =
+        fs::read(path).with_context(|| format!("failed to read cache file {}", path.display()))?;
     serde_json::from_slice(&bytes)
         .with_context(|| format!("failed to parse cache file {}", path.display()))
 }
@@ -282,9 +286,7 @@ fn persist_cache_entries(path: &Path, entries: &[CacheEntry]) -> Result<()> {
     let tmp_path = path.with_extension("jsonl.tmp");
     let mut payload = String::new();
     for entry in entries {
-        payload.push_str(
-            &serde_json::to_string(entry).context("failed to encode cache entry")?,
-        );
+        payload.push_str(&serde_json::to_string(entry).context("failed to encode cache entry")?);
         payload.push('\n');
     }
     write_cache_file(&tmp_path, payload.as_bytes())?;
@@ -300,7 +302,8 @@ fn persist_cache_entries(path: &Path, entries: &[CacheEntry]) -> Result<()> {
 
 fn persist_health_snapshots(path: &Path, snapshots: &[HealthSnapshot]) -> Result<()> {
     let tmp_path = path.with_extension("json.tmp");
-    let payload = serde_json::to_vec_pretty(snapshots).context("failed to encode health snapshots")?;
+    let payload =
+        serde_json::to_vec_pretty(snapshots).context("failed to encode health snapshots")?;
     write_cache_file(&tmp_path, &payload)?;
     fs::rename(&tmp_path, path).with_context(|| {
         format!(

@@ -24,8 +24,8 @@ use why_archaeologist::{
 use why_cache::{Cache, HealthSnapshot};
 use why_context::{
     CacheConfigLayer, GitConfigLayer, GitHubConfigLayer, LlmConfigLayer, LlmProvider,
-    RiskConfigLayer, RiskKeywordsLayer, WhyConfig, WhyConfigLayer, global_config_path,
-    load_config, load_config_from_path, local_config_target_path, write_config_layer_to_path,
+    RiskConfigLayer, RiskKeywordsLayer, WhyConfig, WhyConfigLayer, global_config_path, load_config,
+    load_config_from_path, local_config_target_path, write_config_layer_to_path,
 };
 use why_evidence::{
     EvidenceCommit, EvidenceContext, EvidencePack, EvidenceTarget, GitHubClient, GitHubComment,
@@ -774,7 +774,10 @@ fn render_doctor_report(report: &DoctorReport) {
     }
     println!();
     println!("LLM test");
-    println!("  status: {}", if report.llm_test.ok { "ok" } else { "fail" });
+    println!(
+        "  status: {}",
+        if report.llm_test.ok { "ok" } else { "fail" }
+    );
     if let Some(preview) = &report.llm_test.response_preview {
         println!("  response: {preview}");
     }
