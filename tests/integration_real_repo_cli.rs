@@ -185,7 +185,7 @@ fn health_and_hotspots_work_when_enabled() -> Result<()> {
     );
 
     let cache_path = repo.path.join(".why").join("cache.jsonl");
-    let health_path = repo.path.join(".why").join("health.json");
+    let health_path = repo.path.join(".why").join("health.jsonl");
     assert!(cache_path.exists());
     assert!(health_path.exists());
 

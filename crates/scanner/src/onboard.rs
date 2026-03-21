@@ -98,7 +98,8 @@ fn analyze_file_symbols(workdir: &Path, absolute_path: &Path) -> Result<Vec<Onbo
 
     let mut findings = Vec::new();
     for (symbol, start_line, end_line) in list_all_symbols(language, &source)? {
-        let result = analyze_target_with_options(
+        // Skip symbols that cannot be uniquely resolved (e.g., multiple `default` impls)
+        let result = match analyze_target_with_options(
             &QueryTarget {
                 path: relative_path.clone(),
                 start_line: None,
@@ -108,7 +109,10 @@ fn analyze_file_symbols(workdir: &Path, absolute_path: &Path) -> Result<Vec<Onbo
             },
             workdir,
             None,
-        )?;
+        ) {
+            Ok(result) => result,
+            Err(_) => continue, // Skip ambiguous or unresolvable symbols
+        };
         let commit_count = result.commits.len();
         if commit_count == 0 {
             continue;

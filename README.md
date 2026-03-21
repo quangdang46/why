@@ -22,60 +22,6 @@ why src/auth.rs:verify_token
 If you only remember one setup command, remember `why config init`.
 It is the main setup flow and lets you choose `anthropic`, `openai`, `zai`, or `custom`.
 
-## The Problem
-
-Claude Code has no access to git history. It sees the code as it is today — with no context of:
-- Why was this written this way?
-- Was this a hotfix for an incident?
-- Is this "temporary" code from 2019 that became permanent?
-- What breaks if I delete this?
-
-Developers delete "dead-looking" code that was actually a critical security fix.
-Claude Code does the same — because it can't read the past.
-
-## Why `why` Is Different
-
-| | Claude Code alone | why |
-|---|---|---|
-| Understands git history | ❌ | ✅ |
-| Reads PR descriptions | ❌ | ✅ |
-| Explains commit reasoning | ❌ | ✅ |
-| Risk assessment before deletion | ❌ | ✅ |
-| Links code to past incidents | ❌ | ✅ |
-
-**This is the only tool in this suite that Claude Code literally cannot replicate** — git history is not in any context window.
-
-## How It Works
-
-```
-1. Identify  (pure Rust, git2 crate)
-   └── tree-sitter locates exact byte range of target function/line
-   └── git2 runs git blame on that range
-   └── collect all unique commits that touched those lines
-
-2. Gather  (pure Rust, git2 crate)
-   └── for each commit: message, author, date, diff
-   └── check for PR refs (#123), issue refs (fixes #456)
-   └── extract comments and TODOs near the target code
-
-3. Synthesize  (LLM call — configured provider)
-   └── feed structured git data to the configured model
-   └── ask: "why does this exist? what risk if removed?"
-   └── returns human-readable explanation + risk level
-```
-
-Only **one LLM call per query**, with structured git data as input.
-
-## Tech Stack
-
-| Crate | Purpose |
-|---|---|
-| `git2` | Native git operations — no git binary required |
-| `tree-sitter` | Locate function boundaries precisely |
-| provider-aware HTTP clients | Synthesize git data into explanation via Anthropic or OpenAI-compatible providers |
-| `clap` | CLI |
-| `serde_json` | Structured output |
-
 ## Installation
 
 ### Install the released binary
@@ -142,6 +88,60 @@ cargo bench --package why-workspace --bench scanner_bench
 ```
 
 GitHub Actions also exposes the same Criterion run via `.github/workflows/bench.yml` and uploads `target/criterion/**` as artifacts.
+
+## The Problem
+
+Claude Code has no access to git history. It sees the code as it is today — with no context of:
+- Why was this written this way?
+- Was this a hotfix for an incident?
+- Is this "temporary" code from 2019 that became permanent?
+- What breaks if I delete this?
+
+Developers delete "dead-looking" code that was actually a critical security fix.
+Claude Code does the same — because it can't read the past.
+
+## Why `why` Is Different
+
+| | Claude Code alone | why |
+|---|---|---|
+| Understands git history | ❌ | ✅ |
+| Reads PR descriptions | ❌ | ✅ |
+| Explains commit reasoning | ❌ | ✅ |
+| Risk assessment before deletion | ❌ | ✅ |
+| Links code to past incidents | ❌ | ✅ |
+
+**This is the only tool in this suite that Claude Code literally cannot replicate** — git history is not in any context window.
+
+## How It Works
+
+```
+1. Identify  (pure Rust, git2 crate)
+   └── tree-sitter locates exact byte range of target function/line
+   └── git2 runs git blame on that range
+   └── collect all unique commits that touched those lines
+
+2. Gather  (pure Rust, git2 crate)
+   └── for each commit: message, author, date, diff
+   └── check for PR refs (#123), issue refs (fixes #456)
+   └── extract comments and TODOs near the target code
+
+3. Synthesize  (LLM call — configured provider)
+   └── feed structured git data to the configured model
+   └── ask: "why does this exist? what risk if removed?"
+   └── returns human-readable explanation + risk level
+```
+
+Only **one LLM call per query**, with structured git data as input.
+
+## Tech Stack
+
+| Crate | Purpose |
+|---|---|
+| `git2` | Native git operations — no git binary required |
+| `tree-sitter` | Locate function boundaries precisely |
+| provider-aware HTTP clients | Synthesize git data into explanation via Anthropic or OpenAI-compatible providers |
+| `clap` | CLI |
+| `serde_json` | Structured output |
 
 ## Usage
 
@@ -522,7 +522,7 @@ Current behavior:
 - terminal output shows `[cached]` when a stored `WhyReport` is reused
 - `--no-cache` bypasses cache reads and forces a fresh query
 - `[cache].max_entries` controls retained query reports in `.why/cache.jsonl`
-- rolling health snapshots are stored separately in `.why/health.json`
+- rolling health snapshots are stored separately in `.why/health.jsonl`, one JSON object per line
 - up to 52 health snapshots are retained
 - CI can enforce health regression budgets with `.github/health-baseline.json`
 
@@ -530,9 +530,9 @@ Operator expectations:
 
 - treat `.why/` as local runtime state, not source-controlled project state
 - `.why/` should be ignored by git for normal development workflows
-- on Unix, the cache directory and runtime files are written with owner-only permissions (`0700` for `.why/`, `0600` for `cache.jsonl`, `health.json`, and `runtime.log`)
+- on Unix, the cache directory and runtime files are written with owner-only permissions (`0700` for `.why/`, `0600` for `cache.jsonl`, `health.jsonl`, and `runtime.log`)
 - deleting `.why/cache.jsonl` is safe if you want to clear local cached results; `why` will recreate it on the next cached run
-- deleting `.why/health.json` is safe if you want to reset local health trend history
+- deleting `.why/health.jsonl` is safe if you want to reset local health trend history
 - LLM fallback reasons are appended to `.why/runtime.log` when synthesis fails and `why` falls back to heuristic mode
 
 ## `why doctor`

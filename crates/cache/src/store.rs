@@ -17,7 +17,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 const CACHE_DIR_NAME: &str = ".why";
 const CACHE_ENTRIES_FILE_NAME: &str = "cache.jsonl";
-const HEALTH_SNAPSHOTS_FILE_NAME: &str = "health.json";
+const HEALTH_SNAPSHOTS_FILE_NAME: &str = "health.jsonl";
 const HEALTH_SNAPSHOT_LIMIT: usize = 52;
 const MAX_CACHE_FILE_BYTES: u64 = 5 * 1024 * 1024;
 
@@ -235,10 +235,24 @@ fn read_health_snapshots(path: &Path, file_len: u64) -> Result<Vec<HealthSnapsho
         );
     }
 
-    let bytes =
-        fs::read(path).with_context(|| format!("failed to read cache file {}", path.display()))?;
-    serde_json::from_slice(&bytes)
-        .with_context(|| format!("failed to parse cache file {}", path.display()))
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("failed to read cache file {}", path.display()))?;
+    let mut snapshots = Vec::new();
+    for (index, line) in contents.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let snapshot = serde_json::from_str::<HealthSnapshot>(trimmed).with_context(|| {
+            format!(
+                "failed to parse health snapshot {} in {}",
+                index + 1,
+                path.display()
+            )
+        })?;
+        snapshots.push(snapshot);
+    }
+    Ok(snapshots)
 }
 
 fn ensure_cache_dir(path: &Path) -> Result<()> {
@@ -301,10 +315,15 @@ fn persist_cache_entries(path: &Path, entries: &[CacheEntry]) -> Result<()> {
 }
 
 fn persist_health_snapshots(path: &Path, snapshots: &[HealthSnapshot]) -> Result<()> {
-    let tmp_path = path.with_extension("json.tmp");
-    let payload =
-        serde_json::to_vec_pretty(snapshots).context("failed to encode health snapshots")?;
-    write_cache_file(&tmp_path, &payload)?;
+    let tmp_path = path.with_extension("jsonl.tmp");
+    let mut payload = String::new();
+    for snapshot in snapshots {
+        payload.push_str(
+            &serde_json::to_string(snapshot).context("failed to encode health snapshot")?,
+        );
+        payload.push('\n');
+    }
+    write_cache_file(&tmp_path, payload.as_bytes())?;
     fs::rename(&tmp_path, path).with_context(|| {
         format!(
             "failed to replace health snapshot file {} with {}",
@@ -511,7 +530,7 @@ mod tests {
 
         let cache_dir = dir.path().join(".why");
         let cache_file = cache_dir.join("cache.jsonl");
-        let health_file = cache_dir.join("health.json");
+        let health_file = cache_dir.join("health.jsonl");
         assert_eq!(fs::metadata(cache_dir)?.permissions().mode() & 0o777, 0o700);
         assert_eq!(
             fs::metadata(cache_file)?.permissions().mode() & 0o777,

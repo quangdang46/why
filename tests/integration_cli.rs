@@ -713,9 +713,14 @@ fn health_subcommand_returns_json_report_and_persists_snapshot() -> Result<()> {
             .is_some_and(|items| !items.is_empty())
     );
 
-    let health_path = repo.path.join(".why").join("health.json");
-    let health_value: Value = serde_json::from_str(&std::fs::read_to_string(health_path)?)?;
-    assert_eq!(health_value.as_array().map(|v| v.len()), Some(1));
+    let health_path = repo.path.join(".why").join("health.jsonl");
+    let health_contents = std::fs::read_to_string(health_path)?;
+    let health_lines: Vec<Value> = health_contents
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line))
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(health_lines.len(), 1);
 
     Ok(())
 }
@@ -1968,7 +1973,7 @@ fn real_repo_health_and_hotspots_work_when_enabled() -> Result<()> {
     );
 
     let cache_path = repo.path.join(".why").join("cache.jsonl");
-    let health_path = repo.path.join(".why").join("health.json");
+    let health_path = repo.path.join(".why").join("health.jsonl");
     assert!(cache_path.exists());
     assert!(health_path.exists());
 

@@ -1,29 +1,153 @@
-## why — Git History Archaeology
+## why — Git History Archaeology CLI
 
-`why` is the main repo tool for understanding why code exists before you change it.
+`why` is a code-archaeology CLI that answers "why does this code exist?" by analyzing git history and synthesizing explanations via LLM. It provides risk assessment, ownership signals, and change context before you modify unfamiliar code.
 
-### Quick commands
+### Why It's Useful
+
+- **Prevents accidental deletions:** Understand why code was written before removing "dead-looking" functions
+- **Risk-aware changes:** Get HIGH/MEDIUM/LOW risk signals based on commit history and keywords
+- **Ownership discovery:** Find who knows the code and bus-factor risks with `--team`
+- **Co-change awareness:** See coupled files before broad refactors with `--coupled`
+- **Incident context:** Link code to past hotfixes, security patches, and incidents
+- **LLM-powered synthesis:** One LLM call per query with structured git data as input
+
+### Quick Start
 
 ```bash
-why path/to/file.rs:123
-why path/to/file.rs:symbol_name
-why path/to/file.rs --lines 120:140
-why path/to/file.rs:symbol_name --blame-chain
-why path/to/file.rs:symbol_name --evolution
-why path/to/file.rs:symbol_name --coupled
-why path/to/file.rs:symbol_name --team
-why diff-review --no-llm
+# Setup (required first time)
 why config init
+
+# Basic query
+why src/auth.rs:verify_token
+
+# Validate config and test LLM connectivity
+why doctor
 ```
 
-### Rules
+### Query Syntax
 
-- Prefer `why` before deleting or heavily refactoring unfamiliar code.
-- Treat `HIGH` risk output as a stop-and-investigate signal.
-- Use `--blame-chain` to walk past mechanical edits.
-- Use `--evolution` for rename-aware history.
-- Use `--coupled` and `--team` before broader refactors.
-- Use `why config init` as the main setup flow.
+| Form | Example | Description |
+|------|---------|-------------|
+| `<file>:<line>` | `why src/auth.rs:42` | Query specific line |
+| `<file>:<symbol>` | `why src/auth.rs:verify_token` | Query function/method |
+| `<file>:<Type::method>` | `why src/auth.rs:AuthService::login` | Qualified Rust method |
+| `<file> --lines <start:end>` | `why src/auth.rs --lines 40:45` | Query line range |
+
+### Command Reference
+
+**Core Queries:**
+| Command | Purpose |
+|---------|---------|
+| `why <target>` | Basic archaeology query with LLM synthesis |
+| `why <target> --no-llm` | Heuristic-only mode (no LLM call) |
+| `why <target> --json` | Machine-readable output |
+| `why <target> --since 30` | Limit to recent 30 days |
+
+**Risk & History:**
+| Command | Purpose |
+|---------|---------|
+| `why <target> --blame-chain` | Walk past mechanical edits to true origin |
+| `why <target> --evolution` | Rename-aware target history timeline |
+| `why <target> --team` | Show ownership and bus-factor signals |
+| `why <target> --coupled` | Show file-level co-change coupling |
+
+**Code Actions:**
+| Command | Purpose |
+|---------|---------|
+| `why <target> --annotate` | Write evidence-backed doc annotation |
+| `why <target> --split` | Show archaeology-guided split suggestions |
+| `why <target> --rename-safe` | Assess whether Rust symbol rename is safe |
+| `why <target> --watch` | Refresh report when file changes |
+
+**Repo-Wide Commands:**
+| Command | Purpose |
+|---------|---------|
+| `why hotspots --limit 10` | Top churn × risk files |
+| `why health` | Repo health dashboard |
+| `why health --ci 80` | CI gate with threshold |
+| `why time-bombs` | Aged TODOs and expired markers |
+| `why ghost --limit 10` | Uncalled high-risk functions |
+| `why onboard --limit 10` | Top symbols for new engineers |
+| `why diff-review --no-llm` | Review staged diff |
+| `why pr-template` | Generate PR template from staged diff |
+
+**Config & Diagnostics:**
+| Command | Purpose |
+|---------|---------|
+| `why config init` | Interactive setup (main entry point) |
+| `why config init --local` | Create repo-local config |
+| `why config get` | Show current effective config |
+| `why doctor` | Validate config and test LLM |
+| `why doctor --json` | Machine-readable diagnostics |
+
+### Typical Agent Workflow
+
+1. **Before deleting or refactoring unfamiliar code:**
+   ```bash
+   why src/legacy.rs:old_function --no-llm
+   ```
+   Check risk level and history before touching.
+
+2. **For broader refactors:**
+   ```bash
+   why src/auth.rs:verify_token --coupled --team
+   ```
+   See coupled files and ownership before planning scope.
+
+3. **For rename operations:**
+   ```bash
+   why src/auth.rs:verify_token --rename-safe
+   ```
+   Check caller risk to assess rename safety.
+
+4. **Before PR:**
+   ```bash
+   why diff-review --no-llm
+   why pr-template
+   ```
+   Review staged changes and generate template.
+
+5. **Health check:**
+   ```bash
+   why health --json
+   why hotspots --limit 5
+   ```
+   Understand repo-wide debt signals.
+
+### Risk Levels
+
+| Level | Meaning |
+|-------|---------|
+| **HIGH** | Stop and investigate. Likely security, incident, or critical business logic. |
+| **MEDIUM** | Review carefully. Migration, integration, or compatibility-sensitive code. |
+| **LOW** | Routine code. Standard review practices apply. |
+
+### Supported Languages
+
+Symbol resolution works for: Rust (`.rs`), Go (`.go`), JavaScript (`.js`), TypeScript (`.ts`, `.tsx`), Java (`.java`), Python (`.py`)
+
+### Cache Behavior
+
+- Query results cached in `.why/cache.jsonl`
+- Health snapshots stored in `.why/health.jsonl`
+- Use `--no-cache` to bypass cache
+- Cache keys include `HEAD` hash prefix for natural invalidation
+
+### Common Pitfalls
+
+- **"could not find repository"**: Run from inside a git repo, or use repo-wide commands like `why doctor` from anywhere
+- **Ambiguous symbol**: Use qualified name like `Module::function` instead of just `function`
+- **No LLM synthesis**: Check `why doctor` for config/auth issues; fallback to `--no-llm` for heuristic-only
+- **Missing credentials**: Run `why config init` or set `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`ZAI_API_KEY`
+
+### Rules for Agents
+
+- **Always run `why` before deleting unfamiliar code** — it may be a security fix or incident response
+- Treat `HIGH` risk output as a stop-and-investigate signal
+- Use `--blame-chain` to find true origin, not just last mechanical edit
+- Use `--coupled` and `--team` before broader refactors
+- Use `--no-llm` in CI or when LLM is unavailable
+- Use `why doctor` to diagnose config/auth issues
 
 ---
 
