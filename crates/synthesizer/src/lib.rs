@@ -690,11 +690,11 @@ fn estimate_openai_cost(input_tokens: u64, output_tokens: u64) -> f64 {
 /// Create an LLM client from the merged configuration
 pub fn client_from_config(config: &ResolvedLlmConfig) -> Result<Box<dyn LlmClient>> {
     match config.provider {
-        LlmProvider::Anthropic | LlmProvider::Zai => {
+        LlmProvider::Anthropic | LlmProvider::Zai | LlmProvider::Custom => {
             let adapter = AnthropicAdapter::from_config(config)?;
             Ok(Box::new(adapter))
         }
-        LlmProvider::Openai | LlmProvider::Custom => {
+        LlmProvider::Openai => {
             let adapter = OpenAICompatibleAdapter::from_config(config)?;
             Ok(Box::new(adapter))
         }
