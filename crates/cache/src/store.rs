@@ -60,6 +60,7 @@ pub struct Cache {
 pub fn runtime_dir(repo_root: &Path) -> Result<PathBuf> {
     let dir = repo_root.join(CACHE_DIR_NAME);
     ensure_cache_dir(&dir)?;
+    ensure_gitignore_contains_cache_dir(repo_root)?;
     Ok(dir)
 }
 
@@ -278,6 +279,31 @@ fn ensure_cache_dir(path: &Path) -> Result<()> {
     set_owner_only_permissions(path, 0o700)
 }
 
+fn ensure_gitignore_contains_cache_dir(repo_root: &Path) -> Result<()> {
+    let gitignore_path = repo_root.join(".gitignore");
+    let contents = match fs::read_to_string(&gitignore_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to read gitignore {}", gitignore_path.display()));
+        }
+    };
+
+    if contents.lines().any(|line| line.trim() == CACHE_DIR_NAME) {
+        return Ok(());
+    }
+
+    let mut updated = contents;
+    if !updated.is_empty() && !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    updated.push_str(CACHE_DIR_NAME);
+    updated.push('\n');
+    fs::write(&gitignore_path, updated)
+        .with_context(|| format!("failed to update gitignore {}", gitignore_path.display()))
+}
+
 fn safe_cache_file_metadata(path: &Path) -> Result<Option<fs::Metadata>> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
@@ -370,7 +396,7 @@ fn set_owner_only_permissions(_path: &Path, _mode: u32) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cache, HealthSnapshot, MAX_CACHE_FILE_BYTES};
+    use super::{Cache, HealthSnapshot, MAX_CACHE_FILE_BYTES, runtime_dir};
     use std::collections::HashMap;
     use std::fs;
 
@@ -568,6 +594,52 @@ mod tests {
 
         let error = Cache::open(dir.path(), 10).expect_err("symlinked cache file should fail");
         assert!(error.to_string().contains("must not be a symlink"));
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_dir_appends_why_to_existing_gitignore() -> Result<()> {
+        let dir = tempdir()?;
+        fs::write(dir.path().join(".gitignore"), "target\n")?;
+
+        runtime_dir(dir.path())?;
+
+        let gitignore = fs::read_to_string(dir.path().join(".gitignore"))?;
+        assert_eq!(gitignore, "target\n.why\n");
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_dir_does_not_duplicate_existing_gitignore_entry() -> Result<()> {
+        let dir = tempdir()?;
+        fs::write(dir.path().join(".gitignore"), "target\n.why\n")?;
+
+        runtime_dir(dir.path())?;
+
+        let gitignore = fs::read_to_string(dir.path().join(".gitignore"))?;
+        assert_eq!(gitignore, "target\n.why\n");
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_dir_appends_why_after_line_without_trailing_newline() -> Result<()> {
+        let dir = tempdir()?;
+        fs::write(dir.path().join(".gitignore"), "target")?;
+
+        runtime_dir(dir.path())?;
+
+        let gitignore = fs::read_to_string(dir.path().join(".gitignore"))?;
+        assert_eq!(gitignore, "target\n.why\n");
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_dir_does_not_create_gitignore_when_missing() -> Result<()> {
+        let dir = tempdir()?;
+
+        runtime_dir(dir.path())?;
+
+        assert!(!dir.path().join(".gitignore").exists());
         Ok(())
     }
 
