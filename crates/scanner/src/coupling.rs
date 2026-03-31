@@ -59,11 +59,11 @@ pub fn scan_coupling(
             .with_context(|| format!("failed to load commit {oid}"))?;
         scan_commits += 1;
 
-        if commit_is_mechanical(&repo, &commit, &config)? {
+        if !commit_touches_path(&repo, &commit, &target_path)? {
             continue;
         }
 
-        if !commit_touches_path(&repo, &commit, &target_path)? {
+        if commit_is_mechanical(&repo, &commit, &config)? {
             continue;
         }
 

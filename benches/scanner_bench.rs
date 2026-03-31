@@ -2,7 +2,8 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
-use why_scanner::{scan_ghosts, scan_health, scan_hotspots};
+use why_locator::parse_target;
+use why_scanner::{scan_coupling, scan_ghosts, scan_health, scan_hotspots, scan_outage};
 
 const BENCH_HISTORY_COMMITS: &str = "250";
 const BENCH_EXTRA_FILES: &str = "40";
@@ -64,10 +65,41 @@ fn bench_scan_ghosts(c: &mut Criterion) {
     });
 }
 
+fn bench_scan_coupling(c: &mut Criterion) {
+    let fixture = setup_fixture("coupling_rich_repo");
+    let target = parse_target("src/schema.rs:1", None).expect("failed to parse coupling target");
+
+    c.bench_function("scanner/coupling_rich_repo", |b| {
+        b.iter(|| {
+            scan_coupling(
+                std::hint::black_box(fixture.path()),
+                std::hint::black_box(&target),
+                std::hint::black_box(10),
+            )
+        })
+    });
+}
+
+fn bench_scan_outage(c: &mut Criterion) {
+    let fixture = setup_fixture("outage_repo");
+
+    c.bench_function("scanner/outage_outage_repo", |b| {
+        b.iter(|| {
+            scan_outage(
+                std::hint::black_box(fixture.path()),
+                std::hint::black_box(1_000),
+                std::hint::black_box(10),
+            )
+        })
+    });
+}
+
 criterion_group!(
     benches,
     bench_scan_hotspots,
     bench_scan_health,
-    bench_scan_ghosts
+    bench_scan_ghosts,
+    bench_scan_coupling,
+    bench_scan_outage
 );
 criterion_main!(benches);
