@@ -6,7 +6,7 @@ use git2::{BlameOptions, Repository};
 use serde::Serialize;
 use time::{Date, Duration, Month, OffsetDateTime};
 
-use crate::{is_tracked_source_file, should_skip_dir};
+use crate::tracked_source_files;
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TimeBombKind {
@@ -46,7 +46,15 @@ pub fn scan_time_bombs(repo_root: &Path, time_bomb_age_days: i64) -> Result<Vec<
         .context("repository does not have a working directory")?;
 
     let mut findings = Vec::new();
-    scan_dir(&repo, workdir, workdir, time_bomb_age_days, &mut findings)?;
+    for tracked_file in tracked_source_files(&repo, workdir)? {
+        scan_file(
+            &repo,
+            workdir,
+            &tracked_file.absolute_path,
+            time_bomb_age_days,
+            &mut findings,
+        )?;
+    }
     findings.sort_by(|left, right| {
         left.path
             .cmp(&right.path)
@@ -54,38 +62,6 @@ pub fn scan_time_bombs(repo_root: &Path, time_bomb_age_days: i64) -> Result<Vec<
             .then(left.kind.cmp(&right.kind))
     });
     Ok(findings)
-}
-
-fn scan_dir(
-    repo: &Repository,
-    workdir: &Path,
-    dir: &Path,
-    time_bomb_age_days: i64,
-    findings: &mut Vec<TimeBombFinding>,
-) -> Result<()> {
-    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
-        let entry = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
-        let path = entry.path();
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("failed to inspect {}", path.display()))?;
-
-        if file_type.is_dir() {
-            if should_skip_dir(&path) {
-                continue;
-            }
-            scan_dir(repo, workdir, &path, time_bomb_age_days, findings)?;
-            continue;
-        }
-
-        if !file_type.is_file() || !is_tracked_source_file(repo, workdir, &path) {
-            continue;
-        }
-
-        scan_file(repo, workdir, &path, time_bomb_age_days, findings)?;
-    }
-
-    Ok(())
 }
 
 fn scan_file(

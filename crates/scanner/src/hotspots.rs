@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -10,7 +11,7 @@ use why_archaeologist::{
 };
 use why_context::load_config;
 
-use crate::{is_tracked_source_file, should_skip_dir};
+use crate::tracked_source_files;
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct HotspotFinding {
     #[serde(serialize_with = "crate::serialize_path")]
@@ -35,15 +36,29 @@ pub fn scan_hotspots(
         .context("repository does not have a working directory")?;
     let config = load_config(workdir)?;
 
+    let candidates = tracked_source_files(&repo, workdir)?;
+    let candidate_paths = candidates
+        .iter()
+        .map(|candidate| candidate.relative_path.clone())
+        .collect::<HashSet<_>>();
+    let churn_counts = collect_churn_counts(&repo, &candidate_paths)?;
     let mut findings = Vec::new();
-    collect_hotspots(
-        &repo,
-        workdir,
-        workdir,
-        &config,
-        owner_filter,
-        &mut findings,
-    )?;
+
+    for candidate in &candidates {
+        let Some(churn_commits) = churn_counts.get(&candidate.relative_path).copied() else {
+            continue;
+        };
+        if let Some(finding) = analyze_file_hotspot(
+            &repo,
+            &candidate.absolute_path,
+            &candidate.relative_path,
+            churn_commits,
+            &config,
+            owner_filter,
+        )? {
+            findings.push(finding);
+        }
+    }
     findings.sort_by(|left, right| {
         right
             .hotspot_score
@@ -56,59 +71,20 @@ pub fn scan_hotspots(
     Ok(findings)
 }
 
-fn collect_hotspots(
-    repo: &Repository,
-    workdir: &Path,
-    dir: &Path,
-    config: &why_context::WhyConfig,
-    owner_filter: Option<&str>,
-    findings: &mut Vec<HotspotFinding>,
-) -> Result<()> {
-    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
-        let entry = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
-        let path = entry.path();
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("failed to inspect {}", path.display()))?;
-
-        if file_type.is_dir() {
-            if should_skip_dir(&path) {
-                continue;
-            }
-            collect_hotspots(repo, workdir, &path, config, owner_filter, findings)?;
-            continue;
-        }
-
-        if !file_type.is_file() || !is_tracked_source_file(repo, workdir, &path) {
-            continue;
-        }
-
-        if let Some(finding) = analyze_file_hotspot(repo, workdir, &path, config, owner_filter)? {
-            findings.push(finding);
-        }
-    }
-
-    Ok(())
-}
-
 fn analyze_file_hotspot(
     repo: &Repository,
-    workdir: &Path,
     path: &Path,
+    relative_path: &Path,
+    churn_commits: usize,
     config: &why_context::WhyConfig,
     owner_filter: Option<&str>,
 ) -> Result<Option<HotspotFinding>> {
-    let relative_path = path
-        .strip_prefix(workdir)
-        .with_context(|| format!("{} is not inside {}", path.display(), workdir.display()))?;
     let source = fs::read_to_string(path)
         .with_context(|| format!("failed to read source file {}", path.display()))?;
     let line_count = source.lines().count() as u32;
     if line_count == 0 {
         return Ok(None);
     }
-
-    let churn_commits = count_touching_commits(repo, relative_path)?;
     if churn_commits == 0 {
         return Ok(None);
     }
@@ -148,32 +124,36 @@ fn analyze_file_hotspot(
     }))
 }
 
-fn count_touching_commits(repo: &Repository, relative_path: &Path) -> Result<usize> {
+fn collect_churn_counts(
+    repo: &Repository,
+    candidate_paths: &HashSet<PathBuf>,
+) -> Result<HashMap<PathBuf, usize>> {
     let mut revwalk = repo.revwalk().context("failed to create revwalk")?;
     revwalk.push_head().context("failed to walk HEAD")?;
     revwalk
         .set_sorting(Sort::TIME)
         .context("failed to set revwalk ordering")?;
 
-    let mut count = 0;
+    let mut churn_counts = HashMap::new();
     for oid in revwalk {
         let oid = oid.context("failed to read commit from revwalk")?;
         let commit = repo
             .find_commit(oid)
             .with_context(|| format!("failed to load commit {oid}"))?;
-        if commit_touches_path(repo, &commit, relative_path)? {
-            count += 1;
+        for path in commit_touched_source_paths(repo, &commit)? {
+            if candidate_paths.contains(&path) {
+                *churn_counts.entry(path).or_insert(0) += 1;
+            }
         }
     }
 
-    Ok(count)
+    Ok(churn_counts)
 }
 
-fn commit_touches_path(
+fn commit_touched_source_paths(
     repo: &Repository,
     commit: &git2::Commit<'_>,
-    relative_path: &Path,
-) -> Result<bool> {
+) -> Result<Vec<PathBuf>> {
     let tree = commit.tree().context("failed to load commit tree")?;
     let parent_tree = if commit.parent_count() > 0 {
         Some(
@@ -192,16 +172,19 @@ fn commit_touches_path(
         .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut options))
         .context("failed to inspect commit diff")?;
 
-    Ok(diff
-        .deltas()
-        .any(|delta| delta_matches_path(&delta, relative_path)))
-}
+    let mut paths = Vec::new();
+    for delta in diff.deltas() {
+        for path in [delta.new_file().path(), delta.old_file().path()]
+            .into_iter()
+            .flatten()
+        {
+            if !paths.iter().any(|existing| existing == path) {
+                paths.push(path.to_path_buf());
+            }
+        }
+    }
 
-fn delta_matches_path(delta: &git2::DiffDelta<'_>, relative_path: &Path) -> bool {
-    [delta.new_file().path(), delta.old_file().path()]
-        .into_iter()
-        .flatten()
-        .any(|path| path == relative_path)
+    Ok(paths)
 }
 
 fn risk_weight(risk_level: RiskLevel) -> f32 {

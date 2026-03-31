@@ -8,7 +8,7 @@ use serde::Serialize;
 use why_archaeologist::{RiskLevel, analyze_target_with_options, discover_repository};
 use why_locator::{QueryKind, SupportedLanguage, list_all_symbols};
 
-use crate::{is_tracked_source_file, should_skip_dir};
+use crate::tracked_source_files;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct CoverageGapFinding {
@@ -231,14 +231,15 @@ pub fn scan_coverage_gap(
     let coverage = CoverageData::from_file(&coverage_path)?;
 
     let mut findings = Vec::new();
-    collect_findings(
-        &repo,
-        workdir,
-        workdir,
-        &coverage,
-        max_coverage,
-        &mut findings,
-    )?;
+    for tracked_file in tracked_source_files(&repo, workdir)? {
+        findings.extend(analyze_file_symbols(
+            workdir,
+            &tracked_file.absolute_path,
+            &tracked_file.relative_path,
+            &coverage,
+            max_coverage,
+        )?);
+    }
     findings.sort_by(|left, right| {
         left.coverage_pct
             .partial_cmp(&right.coverage_pct)
@@ -265,47 +266,10 @@ pub fn scan_coverage_gap(
     })
 }
 
-fn collect_findings(
-    repo: &git2::Repository,
-    workdir: &Path,
-    dir: &Path,
-    coverage: &CoverageData,
-    max_coverage: f32,
-    findings: &mut Vec<CoverageGapFinding>,
-) -> Result<()> {
-    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
-        let entry = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
-        let path = entry.path();
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("failed to inspect {}", path.display()))?;
-
-        if file_type.is_dir() {
-            if should_skip_dir(&path) {
-                continue;
-            }
-            collect_findings(repo, workdir, &path, coverage, max_coverage, findings)?;
-            continue;
-        }
-
-        if !file_type.is_file() || !is_tracked_source_file(repo, workdir, &path) {
-            continue;
-        }
-
-        findings.extend(analyze_file_symbols(
-            workdir,
-            &path,
-            coverage,
-            max_coverage,
-        )?);
-    }
-
-    Ok(())
-}
-
 fn analyze_file_symbols(
     workdir: &Path,
     absolute_path: &Path,
+    relative_path: &Path,
     coverage: &CoverageData,
     max_coverage: f32,
 ) -> Result<Vec<CoverageGapFinding>> {
@@ -315,20 +279,10 @@ fn analyze_file_symbols(
     };
     let source = fs::read_to_string(absolute_path)
         .with_context(|| format!("failed to read source file {}", absolute_path.display()))?;
-    let relative_path = absolute_path
-        .strip_prefix(workdir)
-        .with_context(|| {
-            format!(
-                "{} is not inside {}",
-                absolute_path.display(),
-                workdir.display()
-            )
-        })?
-        .to_path_buf();
 
     let mut findings = Vec::new();
     for (symbol, start_line, end_line) in list_all_symbols(language, &source)? {
-        let coverage_summary = coverage.coverage_for_range(&relative_path, start_line, end_line);
+        let coverage_summary = coverage.coverage_for_range(relative_path, start_line, end_line);
         if coverage_summary.instrumented_lines == 0 {
             continue;
         }
@@ -339,7 +293,7 @@ fn analyze_file_symbols(
 
         let result = analyze_target_with_options(
             &why_locator::QueryTarget {
-                path: relative_path.clone(),
+                path: relative_path.to_path_buf(),
                 start_line: None,
                 end_line: None,
                 symbol: Some(symbol.clone()),
@@ -368,7 +322,7 @@ fn analyze_file_symbols(
             .collect();
 
         findings.push(CoverageGapFinding {
-            path: relative_path.clone(),
+            path: relative_path.to_path_buf(),
             symbol,
             start_line,
             end_line,

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -73,8 +74,11 @@ pub fn scan_outage_window(
             .find_commit(oid)
             .with_context(|| format!("failed to load commit {oid}"))?;
         let commit_ts = commit.time().seconds();
-        if commit_ts < window_start_ts || commit_ts > window_end_ts {
+        if commit_ts > window_end_ts {
             continue;
+        }
+        if commit_ts < window_start_ts {
+            break;
         }
 
         let changed_paths = changed_source_paths(&repo, &commit)?;
@@ -151,19 +155,19 @@ fn changed_source_paths(repo: &Repository, commit: &git2::Commit<'_>) -> Result<
         .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut options))
         .context("failed to inspect commit diff")?;
 
-    let mut paths = diff
-        .deltas()
-        .filter_map(|delta| {
-            delta
-                .new_file()
-                .path()
-                .or_else(|| delta.old_file().path())
-                .filter(|path| is_source_like_path(path))
-                .map(PathBuf::from)
-        })
-        .collect::<Vec<_>>();
+    let mut seen = HashSet::new();
+    let mut paths = Vec::new();
+    for delta in diff.deltas() {
+        for path in [delta.new_file().path(), delta.old_file().path()]
+            .into_iter()
+            .flatten()
+        {
+            if is_source_like_path(path) && seen.insert(path.to_path_buf()) {
+                paths.push(path.to_path_buf());
+            }
+        }
+    }
     paths.sort();
-    paths.dedup();
     Ok(paths)
 }
 

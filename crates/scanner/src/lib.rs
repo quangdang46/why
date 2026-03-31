@@ -1,8 +1,9 @@
 //! Repo-wide scanners.
 
+use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-use git2::{Repository, Status};
+use git2::Repository;
 use serde::{Serialize, Serializer};
 
 pub mod coupling;
@@ -51,6 +52,12 @@ pub use rename_safe::{
 };
 pub use time_bombs::{Severity, TimeBombFinding, TimeBombKind, scan_time_bombs};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TrackedSourceFile {
+    pub absolute_path: PathBuf,
+    pub relative_path: PathBuf,
+}
+
 pub(crate) fn normalized_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
@@ -80,6 +87,7 @@ pub(crate) fn is_source_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(test)]
 pub(crate) fn should_skip_dir(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -87,17 +95,41 @@ pub(crate) fn should_skip_dir(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-pub(crate) fn is_tracked_source_file(repo: &Repository, workdir: &Path, path: &Path) -> bool {
-    if !is_source_file(path) {
-        return false;
+pub(crate) fn tracked_source_files(
+    repo: &Repository,
+    workdir: &Path,
+) -> Result<Vec<TrackedSourceFile>> {
+    let index = repo.index().context("failed to open git index")?;
+    let mut files = Vec::new();
+
+    for entry in index.iter() {
+        let relative_path = PathBuf::from(String::from_utf8_lossy(&entry.path).into_owned());
+        if path_has_skipped_dir(&relative_path) || !is_source_file(&relative_path) {
+            continue;
+        }
+
+        let absolute_path = workdir.join(&relative_path);
+        if !absolute_path.is_file() {
+            continue;
+        }
+
+        files.push(TrackedSourceFile {
+            absolute_path,
+            relative_path,
+        });
     }
 
-    let Ok(relative_path) = path.strip_prefix(workdir) else {
-        return false;
-    };
+    files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    files.dedup_by(|left, right| left.relative_path == right.relative_path);
+    Ok(files)
+}
 
-    match repo.status_file(relative_path) {
-        Ok(status) => !status.intersects(Status::WT_NEW | Status::IGNORED),
-        Err(_) => false,
-    }
+fn path_has_skipped_dir(path: &Path) -> bool {
+    path.components().any(|component| match component {
+        std::path::Component::Normal(name) => name
+            .to_str()
+            .map(|name| SKIPPED_DIR_NAMES.contains(&name))
+            .unwrap_or(false),
+        _ => false,
+    })
 }

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -63,11 +63,11 @@ pub fn scan_coupling(
             continue;
         }
 
-        let touched_paths = commit_touched_source_paths(&repo, &commit)?;
-        if !touched_paths.iter().any(|path| path == &target_path) {
+        if !commit_touches_path(&repo, &commit, &target_path)? {
             continue;
         }
 
+        let touched_paths = commit_touched_source_paths(&repo, &commit)?;
         target_commit_count += 1;
         let summary = commit.summary().unwrap_or("(no summary)").to_string();
         for path in touched_paths {
@@ -133,6 +133,34 @@ fn commit_touched_source_paths(
     repo: &Repository,
     commit: &git2::Commit<'_>,
 ) -> Result<Vec<PathBuf>> {
+    let diff = commit_diff(repo, commit, None)?;
+    let mut seen = HashSet::new();
+    let mut paths = Vec::new();
+
+    for delta in diff.deltas() {
+        for path in [delta.new_file().path(), delta.old_file().path()]
+            .into_iter()
+            .flatten()
+        {
+            if is_source_file(path) && seen.insert(path.to_path_buf()) {
+                paths.push(path.to_path_buf());
+            }
+        }
+    }
+
+    Ok(paths)
+}
+
+fn commit_touches_path(repo: &Repository, commit: &git2::Commit<'_>, path: &Path) -> Result<bool> {
+    let diff = commit_diff(repo, commit, Some(path))?;
+    Ok(diff.deltas().len() > 0)
+}
+
+fn commit_diff<'repo>(
+    repo: &'repo Repository,
+    commit: &git2::Commit<'_>,
+    pathspec: Option<&Path>,
+) -> Result<git2::Diff<'repo>> {
     let tree = commit.tree().context("failed to load commit tree")?;
     let parent_tree = if commit.parent_count() > 0 {
         Some(
@@ -147,23 +175,12 @@ fn commit_touched_source_paths(
     };
 
     let mut options = DiffOptions::new();
-    let diff = repo
-        .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut options))
-        .context("failed to inspect commit diff")?;
-
-    let mut paths = Vec::new();
-    for delta in diff.deltas() {
-        for path in [delta.new_file().path(), delta.old_file().path()]
-            .into_iter()
-            .flatten()
-        {
-            if is_source_file(path) && !paths.iter().any(|existing| existing == path) {
-                paths.push(path.to_path_buf());
-            }
-        }
+    if let Some(pathspec) = pathspec {
+        options.pathspec(pathspec);
     }
 
-    Ok(paths)
+    repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut options))
+        .context("failed to inspect commit diff")
 }
 
 #[cfg(test)]

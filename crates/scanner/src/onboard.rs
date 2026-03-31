@@ -7,7 +7,7 @@ use time::OffsetDateTime;
 use why_archaeologist::{RiskLevel, analyze_target_with_options};
 use why_locator::{QueryKind, QueryTarget, SupportedLanguage, list_all_symbols};
 
-use crate::{is_tracked_source_file, should_skip_dir};
+use crate::tracked_source_files;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct OnboardFinding {
@@ -33,7 +33,13 @@ pub fn scan_onboard(repo_root: &Path, limit: usize) -> Result<Vec<OnboardFinding
         .context("repository does not have a working directory")?;
 
     let mut findings = Vec::new();
-    collect_onboard_candidates(&repo, workdir, workdir, &mut findings)?;
+    for tracked_file in tracked_source_files(&repo, workdir)? {
+        findings.extend(analyze_file_symbols(
+            workdir,
+            &tracked_file.absolute_path,
+            &tracked_file.relative_path,
+        )?);
+    }
     findings.sort_by(|left, right| {
         right
             .score
@@ -47,61 +53,24 @@ pub fn scan_onboard(repo_root: &Path, limit: usize) -> Result<Vec<OnboardFinding
     Ok(findings)
 }
 
-fn collect_onboard_candidates(
-    repo: &git2::Repository,
+fn analyze_file_symbols(
     workdir: &Path,
-    dir: &Path,
-    findings: &mut Vec<OnboardFinding>,
-) -> Result<()> {
-    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
-        let entry = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
-        let path = entry.path();
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("failed to inspect {}", path.display()))?;
-
-        if file_type.is_dir() {
-            if should_skip_dir(&path) {
-                continue;
-            }
-            collect_onboard_candidates(repo, workdir, &path, findings)?;
-            continue;
-        }
-
-        if !file_type.is_file() || !is_tracked_source_file(repo, workdir, &path) {
-            continue;
-        }
-
-        findings.extend(analyze_file_symbols(workdir, &path)?);
-    }
-
-    Ok(())
-}
-
-fn analyze_file_symbols(workdir: &Path, absolute_path: &Path) -> Result<Vec<OnboardFinding>> {
+    absolute_path: &Path,
+    relative_path: &Path,
+) -> Result<Vec<OnboardFinding>> {
     let language = match SupportedLanguage::detect(absolute_path) {
         Ok(language) => language,
         Err(_) => return Ok(Vec::new()),
     };
     let source = fs::read_to_string(absolute_path)
         .with_context(|| format!("failed to read source file {}", absolute_path.display()))?;
-    let relative_path = absolute_path
-        .strip_prefix(workdir)
-        .with_context(|| {
-            format!(
-                "{} is not inside {}",
-                absolute_path.display(),
-                workdir.display()
-            )
-        })?
-        .to_path_buf();
 
     let mut findings = Vec::new();
     for (symbol, start_line, end_line) in list_all_symbols(language, &source)? {
         // Skip symbols that cannot be uniquely resolved (e.g., multiple `default` impls)
         let result = match analyze_target_with_options(
             &QueryTarget {
-                path: relative_path.clone(),
+                path: relative_path.to_path_buf(),
                 start_line: None,
                 end_line: None,
                 symbol: Some(symbol.clone()),
@@ -135,7 +104,7 @@ fn analyze_file_symbols(workdir: &Path, absolute_path: &Path) -> Result<Vec<Onbo
             .collect();
 
         findings.push(OnboardFinding {
-            path: relative_path.clone(),
+            path: relative_path.to_path_buf(),
             symbol,
             start_line,
             end_line,

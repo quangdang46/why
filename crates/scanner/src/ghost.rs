@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -7,7 +6,7 @@ use serde::Serialize;
 use why_archaeologist::{RiskLevel, analyze_target_with_options, discover_repository};
 use why_locator::{QueryKind, QueryTarget, SupportedLanguage, list_all_symbols};
 
-use crate::{is_tracked_source_file, should_skip_dir};
+use crate::tracked_source_files;
 
 const STATIC_ANALYSIS_WARNING: &str = "WARNING: ghost detection uses static analysis. Verify these are truly uncalled before deletion.";
 
@@ -41,7 +40,7 @@ pub fn scan_ghosts(repo_root: &Path, limit: usize) -> Result<Vec<GhostFinding>> 
         .workdir()
         .context("repository does not have a working directory")?;
 
-    let files = collect_source_files(&repo, workdir, workdir)?;
+    let files = collect_source_files(&repo, workdir)?;
     let call_counts = aggregate_call_counts(&files);
     let mut findings = Vec::new();
 
@@ -61,60 +60,28 @@ pub fn scan_ghosts(repo_root: &Path, limit: usize) -> Result<Vec<GhostFinding>> 
     Ok(findings)
 }
 
-fn collect_source_files(
-    repo: &git2::Repository,
-    workdir: &Path,
-    dir: &Path,
-) -> Result<Vec<SourceFile>> {
+fn collect_source_files(repo: &git2::Repository, workdir: &Path) -> Result<Vec<SourceFile>> {
     let mut files = Vec::new();
-    collect_source_files_into(repo, workdir, dir, &mut files)?;
-    Ok(files)
-}
-
-fn collect_source_files_into(
-    repo: &git2::Repository,
-    workdir: &Path,
-    dir: &Path,
-    files: &mut Vec<SourceFile>,
-) -> Result<()> {
-    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
-        let entry = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
-        let path = entry.path();
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("failed to inspect {}", path.display()))?;
-
-        if file_type.is_dir() {
-            if should_skip_dir(&path) {
-                continue;
-            }
-            collect_source_files_into(repo, workdir, &path, files)?;
-            continue;
-        }
-
-        if !file_type.is_file() || !is_tracked_source_file(repo, workdir, &path) {
-            continue;
-        }
-
-        let language = match SupportedLanguage::detect(&path) {
+    for tracked_file in tracked_source_files(repo, workdir)? {
+        let language = match SupportedLanguage::detect(&tracked_file.absolute_path) {
             Ok(language) => language,
             Err(_) => continue,
         };
-        let source = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read source file {}", path.display()))?;
-        let relative_path = path
-            .strip_prefix(workdir)
-            .with_context(|| format!("{} is not inside {}", path.display(), workdir.display()))?
-            .to_path_buf();
+        let source = std::fs::read_to_string(&tracked_file.absolute_path).with_context(|| {
+            format!(
+                "failed to read source file {}",
+                tracked_file.absolute_path.display()
+            )
+        })?;
 
         files.push(SourceFile {
-            relative_path,
+            relative_path: tracked_file.relative_path,
             source,
             language,
         });
     }
 
-    Ok(())
+    Ok(files)
 }
 
 fn analyze_file_ghosts(

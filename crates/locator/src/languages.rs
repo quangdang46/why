@@ -1,8 +1,13 @@
 use anyhow::{Result, anyhow, bail};
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{LazyLock, Mutex};
 use tree_sitter::{Language, Query};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+static SYMBOL_QUERY_CACHE: LazyLock<Mutex<HashMap<SupportedLanguage, Query>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SupportedLanguage {
     Rust,
     Go,
@@ -180,8 +185,18 @@ impl SupportedLanguage {
         }
     }
 
-    pub fn load_symbol_query(self) -> Result<Query> {
-        Query::new(&self.tree_sitter_language(), self.symbol_query()).map_err(Into::into)
+    pub fn with_symbol_query<R>(self, f: impl FnOnce(&Query) -> R) -> Result<R> {
+        let mut cache = SYMBOL_QUERY_CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let std::collections::hash_map::Entry::Vacant(entry) = cache.entry(self) {
+            let query = Query::new(&self.tree_sitter_language(), self.symbol_query())?;
+            entry.insert(query);
+        }
+        let query = cache
+            .get(&self)
+            .ok_or_else(|| anyhow!("symbol query cache miss for {}", self.grammar_name()))?;
+        Ok(f(query))
     }
 }
 
@@ -254,9 +269,12 @@ mod tests {
             SupportedLanguage::Java,
             SupportedLanguage::Python,
         ] {
-            let query = language.load_symbol_query().expect("query should compile");
-            assert!(query.capture_names().contains(&"symbol.name"));
-            assert!(query.capture_names().contains(&"symbol.definition"));
+            language
+                .with_symbol_query(|query| {
+                    assert!(query.capture_names().contains(&"symbol.name"));
+                    assert!(query.capture_names().contains(&"symbol.definition"));
+                })
+                .expect("query should compile");
         }
     }
 }

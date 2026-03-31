@@ -12,7 +12,7 @@ use why_locator::{
     resolve_target,
 };
 
-use crate::{is_tracked_source_file, should_skip_dir};
+use crate::tracked_source_files;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct RenameSafeTarget {
@@ -136,8 +136,7 @@ pub fn scan_rename_safe(
         .context("repository does not have a working directory")?;
 
     let mut caller_map = BTreeMap::new();
-    let scan_summary =
-        collect_callers_in_dir(&repo, workdir, workdir, &caller_target, &mut caller_map)?;
+    let scan_summary = collect_callers_in_dir(&repo, workdir, &caller_target, &mut caller_map)?;
 
     let target_result = analyze_target_with_options(target, repo_root, since_days)?;
     let mut callers = caller_map
@@ -244,43 +243,26 @@ fn build_caller_finding(
 fn collect_callers_in_dir(
     repo: &git2::Repository,
     workdir: &Path,
-    dir: &Path,
     target: &CallerTarget,
     callers: &mut BTreeMap<CallerKey, CallerAccumulator>,
 ) -> Result<SourceScanSummary> {
     let mut summary = SourceScanSummary::default();
 
-    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
-        let entry = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
-        let path = entry.path();
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("failed to inspect {}", path.display()))?;
-
-        if file_type.is_dir() {
-            if should_skip_dir(&path) {
-                continue;
-            }
-            let child = collect_callers_in_dir(repo, workdir, &path, target, callers)?;
-            summary.skipped_top_level_occurrences += child.skipped_top_level_occurrences;
-            summary.same_name_alternatives += child.same_name_alternatives;
+    for tracked_file in tracked_source_files(repo, workdir)? {
+        if SupportedLanguage::detect(&tracked_file.absolute_path).ok()
+            != Some(SupportedLanguage::Rust)
+        {
             continue;
         }
 
-        if !file_type.is_file() || !is_tracked_source_file(repo, workdir, &path) {
-            continue;
-        }
-
-        if SupportedLanguage::detect(&path).ok() != Some(SupportedLanguage::Rust) {
-            continue;
-        }
-
-        let source = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read source file {}", path.display()))?;
-        let relative_path = path
-            .strip_prefix(workdir)
-            .with_context(|| format!("{} is not inside {}", path.display(), workdir.display()))?;
-        let file_summary = collect_callers_from_source(relative_path, &source, target, callers)?;
+        let source = fs::read_to_string(&tracked_file.absolute_path).with_context(|| {
+            format!(
+                "failed to read source file {}",
+                tracked_file.absolute_path.display()
+            )
+        })?;
+        let file_summary =
+            collect_callers_from_source(&tracked_file.relative_path, &source, target, callers)?;
         summary.skipped_top_level_occurrences += file_summary.skipped_top_level_occurrences;
         summary.same_name_alternatives += file_summary.same_name_alternatives;
     }

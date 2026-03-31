@@ -1,9 +1,16 @@
 use crate::{QueryKind, QueryTarget, SupportedLanguage};
 use anyhow::{Context, Result, anyhow, bail};
 use serde::Serialize;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tree_sitter::{Parser, QueryCursor};
+
+thread_local! {
+    static SYMBOL_PARSER_CACHE: RefCell<HashMap<SupportedLanguage, Parser>> =
+        RefCell::new(HashMap::new());
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ResolvedTarget {
@@ -170,19 +177,46 @@ fn resolve_ambiguous_symbol<'a>(
 }
 
 fn collect_symbol_matches(language: SupportedLanguage, source: &str) -> Result<Vec<SymbolMatch>> {
-    let mut parser = Parser::new();
-    parser
-        .set_language(&language.tree_sitter_language())
-        .map_err(|error| anyhow!(error.to_string()))?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| anyhow!("tree-sitter failed to parse source text"))?;
-    let query = language.load_symbol_query()?;
+    with_symbol_parser(language, |parser| {
+        let tree = parser
+            .parse(source, None)
+            .ok_or_else(|| anyhow!("tree-sitter failed to parse source text"))?;
+        language
+            .with_symbol_query(|query| collect_symbol_matches_with_query(query, &tree, source))?
+    })
+}
+
+fn with_symbol_parser<R>(
+    language: SupportedLanguage,
+    f: impl FnOnce(&mut Parser) -> Result<R>,
+) -> Result<R> {
+    SYMBOL_PARSER_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let std::collections::hash_map::Entry::Vacant(entry) = cache.entry(language) {
+            let mut parser = Parser::new();
+            parser
+                .set_language(&language.tree_sitter_language())
+                .map_err(|error| anyhow!(error.to_string()))?;
+            entry.insert(parser);
+        }
+
+        let parser = cache
+            .get_mut(&language)
+            .ok_or_else(|| anyhow!("parser cache miss for {}", language.grammar_name()))?;
+        f(parser)
+    })
+}
+
+fn collect_symbol_matches_with_query(
+    query: &tree_sitter::Query,
+    tree: &tree_sitter::Tree,
+    source: &str,
+) -> Result<Vec<SymbolMatch>> {
     let capture_names = query.capture_names();
     let mut cursor = QueryCursor::new();
     let mut matches: Vec<SymbolMatch> = Vec::new();
 
-    for query_match in cursor.matches(&query, tree.root_node(), source.as_bytes()) {
+    for query_match in cursor.matches(query, tree.root_node(), source.as_bytes()) {
         let mut name = None;
         let mut start_line = None;
         let mut end_line = None;
