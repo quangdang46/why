@@ -155,18 +155,18 @@ pub fn format_target_label(target: &QueryTarget) -> String {
     match target.query_kind {
         QueryKind::Line => format!(
             "{}:{}",
-            target.path.display(),
+            normalize_path(&target.path),
             target.start_line.unwrap_or_default()
         ),
         QueryKind::Range => format!(
             "{}:{}-{}",
-            target.path.display(),
+            normalize_path(&target.path),
             target.start_line.unwrap_or_default(),
             target.end_line.unwrap_or_default()
         ),
         QueryKind::Symbol | QueryKind::QualifiedSymbol => format!(
             "{}:{}",
-            target.path.display(),
+            normalize_path(&target.path),
             target.symbol.as_deref().unwrap_or("symbol")
         ),
     }
