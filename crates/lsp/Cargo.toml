@@ -19,3 +19,4 @@ why-question-engine = { path = "../question-engine" }
 [dev-dependencies]
 tempfile = "3"
 why-evidence = { path = "../evidence" }
+why-synthesizer = { path = "../synthesizer" }

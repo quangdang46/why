@@ -577,15 +577,17 @@ mod tests {
     fn policy_marks_commit_budget_truncation() -> Result<()> {
         let fixture = setup_repo_with_rewrites(6, 32)?;
         let repo = Repository::discover(fixture.path())?;
-        let mut config = WhyConfig::default();
-        config.llm = LlmConfig {
-            provider: LlmProvider::Openai,
-            model: Some("gpt-4.1-mini".into()),
-            base_url: None,
-            auth_token: None,
-            retries: 1,
-            max_tokens: 500,
-            timeout: 30,
+        let config = WhyConfig {
+            llm: LlmConfig {
+                provider: LlmProvider::Openai,
+                model: Some("gpt-4.1-mini".into()),
+                base_url: None,
+                auth_token: None,
+                retries: 1,
+                max_tokens: 500,
+                timeout: 30,
+            },
+            ..WhyConfig::default()
         };
 
         let answer = answer_question(
@@ -632,15 +634,17 @@ mod tests {
     fn policy_gates_llm_when_output_budget_is_too_small() -> Result<()> {
         let fixture = setup_repo_with_rewrites(2, 16)?;
         let repo = Repository::discover(fixture.path())?;
-        let mut config = WhyConfig::default();
-        config.llm = LlmConfig {
-            provider: LlmProvider::Openai,
-            model: Some("gpt-4.1-mini".into()),
-            base_url: None,
-            auth_token: Some("test-token".into()),
-            retries: 1,
-            max_tokens: 64,
-            timeout: 30,
+        let config = WhyConfig {
+            llm: LlmConfig {
+                provider: LlmProvider::Openai,
+                model: Some("gpt-4.1-mini".into()),
+                base_url: None,
+                auth_token: Some("test-token".into()),
+                retries: 1,
+                max_tokens: 64,
+                timeout: 30,
+            },
+            ..WhyConfig::default()
         };
 
         let answer = answer_question(
