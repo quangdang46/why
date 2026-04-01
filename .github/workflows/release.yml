@@ -17,6 +17,8 @@ jobs:
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    env:
+      CARGO_TARGET_DIR: target/build/${{ matrix.target }}
     strategy:
       fail-fast: false
       matrix:
@@ -82,7 +84,7 @@ jobs:
           VERSION="${GITHUB_REF_NAME}"
           STAGE_DIR="dist/${BIN_NAME}-${VERSION}-${{ matrix.archive-suffix }}"
           mkdir -p "$STAGE_DIR"
-          cp "target/${{ matrix.target }}/release/${{ matrix.binary-name }}" "$STAGE_DIR/${BIN_NAME}"
+          cp "$CARGO_TARGET_DIR/${{ matrix.target }}/release/${{ matrix.binary-name }}" "$STAGE_DIR/${BIN_NAME}"
           tar -C dist -czf "dist/${BIN_NAME}-${VERSION}-${{ matrix.archive-suffix }}.tar.gz" "${BIN_NAME}-${VERSION}-${{ matrix.archive-suffix }}"
           shasum -a 256 "dist/${BIN_NAME}-${VERSION}-${{ matrix.archive-suffix }}.tar.gz" | awk '{print $1}' > "dist/${BIN_NAME}-${VERSION}-${{ matrix.archive-suffix }}.tar.gz.sha256"
 
@@ -94,7 +96,7 @@ jobs:
           $version = "$env:GITHUB_REF_NAME"
           $stageDir = "dist/${env:BIN_NAME}-$version-${{ matrix.archive-suffix }}"
           New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary-name }}" "$stageDir/${{ matrix.binary-name }}"
+          Copy-Item "$env:CARGO_TARGET_DIR/${{ matrix.target }}/release/${{ matrix.binary-name }}" "$stageDir/${{ matrix.binary-name }}"
           Compress-Archive -Path "$stageDir/*" -DestinationPath "dist/${env:BIN_NAME}-$version-${{ matrix.archive-suffix }}.zip" -Force
           $hash = (Get-FileHash "dist/${env:BIN_NAME}-$version-${{ matrix.archive-suffix }}.zip" -Algorithm SHA256).Hash.ToLower()
           Set-Content -Path "dist/${env:BIN_NAME}-$version-${{ matrix.archive-suffix }}.zip.sha256" -Value $hash
