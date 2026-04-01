@@ -3257,6 +3257,14 @@ fn format_why_report(
         lines.push(String::new());
     }
 
+    if !report.policy.is_empty() {
+        lines.push("Policy".to_string());
+        for item in &report.policy {
+            lines.push(format!("  - [{}] {}", item.kind, item.message));
+        }
+        lines.push(String::new());
+    }
+
     if let Some(cost_usd) = report.cost_usd {
         lines.push(format!("Estimated cost: ~${cost_usd:.4}"));
     }
@@ -3303,6 +3311,7 @@ mod tests {
             confidence: ConfidenceLevel::MediumHigh,
             mode: ReportMode::Synthesized,
             notes: vec!["Keep evidence separate from inference.".into()],
+            policy: Vec::new(),
             cost_usd: Some(0.0008),
         }
     }
@@ -3346,6 +3355,7 @@ mod tests {
             inference: Vec::new(),
             unknowns: Vec::new(),
             notes: Vec::new(),
+            policy: Vec::new(),
             cost_usd: None,
             ..sample_report()
         };

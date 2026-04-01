@@ -254,6 +254,7 @@ mod tests {
             confidence: ConfidenceLevel::Low,
             mode: ReportMode::Heuristic,
             notes: Vec::new(),
+            policy: Vec::new(),
             cost_usd: None,
         };
 
@@ -287,6 +288,13 @@ mod tests {
             report,
             github: why_evidence::GitHubEnrichment::default(),
             target_label: "src/auth.rs:4".into(),
+            policy: why_question_engine::QuestionPolicyOutcome {
+                evidence_payload_chars: 512,
+                evidence_commit_limit: 4,
+                llm_input_char_limit: 2048,
+                llm_allowed: false,
+                reasons: Vec::new(),
+            },
         }
     }
 

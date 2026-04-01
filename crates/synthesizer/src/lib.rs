@@ -123,6 +123,13 @@ pub enum ReportMode {
     Synthesized,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PolicyNote {
+    pub code: String,
+    pub kind: String,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WhyReport {
     pub summary: String,
@@ -135,6 +142,8 @@ pub struct WhyReport {
     pub confidence: ConfidenceLevel,
     pub mode: ReportMode,
     pub notes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub policy: Vec<PolicyNote>,
     pub cost_usd: Option<f64>,
 }
 
@@ -813,6 +822,7 @@ pub fn parse_response(raw: &str) -> Result<WhyReport> {
         confidence,
         mode: ReportMode::Synthesized,
         notes: parsed.notes,
+        policy: Vec::new(),
         cost_usd: None,
     })
 }
@@ -866,6 +876,7 @@ pub fn heuristic_report(
         confidence: ConfidenceLevel::Low,
         mode: ReportMode::Heuristic,
         notes,
+        policy: Vec::new(),
         cost_usd: None,
     }
 }

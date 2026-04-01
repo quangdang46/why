@@ -5,15 +5,15 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use why_archaeologist::{ArchaeologyResult, CommitEvidence, analyze_target_with_options};
 use why_cache::runtime_dir;
-use why_context::{LlmProvider, WhyConfig};
+use why_context::{LlmProvider, ResolvedLlmConfig, WhyConfig};
 use why_evidence::{
     EvidenceCommit, EvidenceContext, EvidencePack, EvidenceTarget, GitHubClient, GitHubEnrichment,
     enrich_github_refs,
 };
 use why_locator::{QueryKind, QueryTarget};
 use why_synthesizer::{
-    WhyReport, build_query_prompt, build_system_prompt, client_from_config, heuristic_report,
-    prompt_contract, synthesize_report,
+    PolicyNote, WhyReport, build_query_prompt, build_system_prompt, client_from_config,
+    heuristic_report, prompt_contract, synthesize_report,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,6 +31,23 @@ pub struct QuestionAnswer {
     pub report: WhyReport,
     pub github: GitHubEnrichment,
     pub target_label: String,
+    pub policy: QuestionPolicyOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuestionPolicyOutcome {
+    pub evidence_payload_chars: usize,
+    pub evidence_commit_limit: usize,
+    pub llm_input_char_limit: usize,
+    pub llm_allowed: bool,
+    pub reasons: Vec<PolicyNote>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProviderBudget {
+    max_commits: usize,
+    max_input_chars: usize,
+    min_output_tokens: u32,
 }
 
 pub fn answer_question(
@@ -40,14 +57,35 @@ pub fn answer_question(
     config: &WhyConfig,
 ) -> Result<QuestionAnswer> {
     let archaeology = analyze_target_with_options(&request.target, cwd, request.since_days)?;
+    let resolved_llm = config.resolved_llm_config();
+    let provider_budget = provider_budget(&resolved_llm);
     let github = if request.include_github {
         build_github_enrichment(repo, config, &archaeology.commits)
     } else {
         GitHubEnrichment::default()
     };
-    let evidence_pack = build_evidence_pack(&request.target, &archaeology, &github);
-    let report =
-        synthesize_question_report(request, &archaeology, &evidence_pack, &github, repo, config)?;
+    let evidence_pack = build_evidence_pack(
+        &request.target,
+        &archaeology,
+        &github,
+        provider_budget.max_commits,
+    );
+    let policy = evaluate_policy(
+        request,
+        &archaeology,
+        &evidence_pack,
+        &resolved_llm,
+        &provider_budget,
+    )?;
+    let report = synthesize_question_report(
+        request,
+        &archaeology,
+        &evidence_pack,
+        &github,
+        repo,
+        config,
+        &policy,
+    )?;
 
     Ok(QuestionAnswer {
         archaeology,
@@ -55,6 +93,7 @@ pub fn answer_question(
         report,
         github,
         target_label: format_target_label(&request.target),
+        policy,
     })
 }
 
@@ -137,7 +176,9 @@ fn build_evidence_pack(
     target: &QueryTarget,
     archaeology: &ArchaeologyResult,
     github: &GitHubEnrichment,
+    max_commits: usize,
 ) -> EvidencePack {
+    let commit_slice_len = archaeology.commits.len().min(max_commits.max(1));
     why_evidence::build(
         &EvidenceTarget {
             file: normalize_path(&archaeology.target.path),
@@ -151,6 +192,7 @@ fn build_evidence_pack(
         &archaeology
             .commits
             .iter()
+            .take(commit_slice_len)
             .map(|commit| EvidenceCommit {
                 oid: commit.oid.clone(),
                 date: commit.date.clone(),
@@ -178,6 +220,7 @@ fn synthesize_question_report(
     github: &GitHubEnrichment,
     repo: &Repository,
     config: &WhyConfig,
+    policy: &QuestionPolicyOutcome,
 ) -> Result<WhyReport> {
     let fallback = |extra_note: Option<String>| {
         let mut notes = archaeology.notes.clone();
@@ -202,10 +245,18 @@ fn synthesize_question_report(
     };
 
     if request.no_llm {
-        return Ok(fallback(None));
+        let mut report = fallback(None);
+        report.policy = policy.reasons.clone();
+        return Ok(report);
     }
 
     let resolved_llm = config.resolved_llm_config();
+    if !policy.llm_allowed {
+        let mut report = fallback(None);
+        report.policy = policy.reasons.clone();
+        return Ok(report);
+    }
+
     let fallback_note = "LLM synthesis failed; fell back to heuristic mode. See .why/runtime.log.";
     let client = match client_from_config(&resolved_llm) {
         Ok(client) => client,
@@ -218,7 +269,9 @@ fn synthesize_question_report(
                 Some(format_target_label(&request.target)),
                 &error,
             );
-            return Ok(fallback(Some(fallback_note.to_string())));
+            let mut report = fallback(Some(fallback_note.to_string()));
+            report.policy = policy.reasons.clone();
+            return Ok(report);
         }
     };
 
@@ -226,7 +279,10 @@ fn synthesize_question_report(
     let user_prompt = build_query_prompt(evidence_pack);
 
     match synthesize_report(&*client, &system_prompt, &user_prompt) {
-        Ok(report) => Ok(report),
+        Ok(mut report) => {
+            report.policy = policy.reasons.clone();
+            Ok(report)
+        }
         Err(error) => {
             log_llm_fallback(
                 repo,
@@ -236,8 +292,124 @@ fn synthesize_question_report(
                 Some(format_target_label(&request.target)),
                 &error,
             );
-            Ok(fallback(Some(fallback_note.to_string())))
+            let mut report = fallback(Some(fallback_note.to_string()));
+            report.policy = policy.reasons.clone();
+            Ok(report)
         }
+    }
+}
+
+fn evaluate_policy(
+    request: &QuestionRequest,
+    archaeology: &ArchaeologyResult,
+    evidence_pack: &EvidencePack,
+    resolved_llm: &ResolvedLlmConfig,
+    provider_budget: &ProviderBudget,
+) -> Result<QuestionPolicyOutcome> {
+    let evidence_payload_chars = serde_json::to_string(evidence_pack)?.len();
+    let mut reasons = Vec::new();
+
+    if archaeology.commits.len() > evidence_pack.history.commits_shown {
+        reasons.push(PolicyNote {
+            code: "evidence-commit-budget".into(),
+            kind: "truncation".into(),
+            message: format!(
+                "Evidence budget kept {} of {} commits for {}.",
+                evidence_pack.history.commits_shown,
+                archaeology.commits.len(),
+                format_target_label(&request.target)
+            ),
+        });
+    }
+
+    let diff_excerpts_elided = archaeology
+        .commits
+        .iter()
+        .take(evidence_pack.history.commits_shown)
+        .any(|commit| !commit.diff_excerpt.trim().is_empty())
+        && evidence_pack
+            .history
+            .top_commits
+            .iter()
+            .all(|commit| commit.diff_excerpt.trim().is_empty());
+    if diff_excerpts_elided {
+        reasons.push(PolicyNote {
+            code: "evidence-diff-elision".into(),
+            kind: "truncation".into(),
+            message: format!(
+                "Diff excerpts were elided for {} to stay within the evidence payload budget.",
+                format_target_label(&request.target)
+            ),
+        });
+    }
+
+    let mut llm_allowed = !request.no_llm;
+    if !request.no_llm && resolved_llm.max_tokens < provider_budget.min_output_tokens {
+        llm_allowed = false;
+        reasons.push(PolicyNote {
+            code: "llm-output-budget".into(),
+            kind: "gate".into(),
+            message: format!(
+                "LLM synthesis was skipped because provider {} only had {} output tokens configured; policy requires at least {}.",
+                resolved_llm.provider,
+                resolved_llm.max_tokens,
+                provider_budget.min_output_tokens
+            ),
+        });
+    }
+
+    if !request.no_llm && resolved_llm.auth_token.is_none() {
+        reasons.push(PolicyNote {
+            code: "llm-auth-missing".into(),
+            kind: "gate".into(),
+            message: format!(
+                "LLM synthesis was skipped because provider {} has no resolved auth token.",
+                resolved_llm.provider
+            ),
+        });
+    }
+
+    if !request.no_llm && evidence_payload_chars > provider_budget.max_input_chars {
+        llm_allowed = false;
+        reasons.push(PolicyNote {
+            code: "llm-input-budget".into(),
+            kind: "gate".into(),
+            message: format!(
+                "LLM synthesis was skipped because the evidence payload for {} was {} chars, above the {} char budget for provider {}.",
+                format_target_label(&request.target),
+                evidence_payload_chars,
+                provider_budget.max_input_chars,
+                resolved_llm.provider
+            ),
+        });
+    }
+
+    Ok(QuestionPolicyOutcome {
+        evidence_payload_chars,
+        evidence_commit_limit: provider_budget.max_commits,
+        llm_input_char_limit: provider_budget.max_input_chars,
+        llm_allowed,
+        reasons,
+    })
+}
+
+fn provider_budget(resolved_llm: &ResolvedLlmConfig) -> ProviderBudget {
+    match resolved_llm.provider {
+        LlmProvider::Anthropic => ProviderBudget {
+            max_commits: ((resolved_llm.max_tokens / 100).clamp(4, 16)) as usize,
+            max_input_chars: ((resolved_llm.max_tokens as usize) * 18).clamp(1_024, 12_000),
+            min_output_tokens: 192,
+        },
+        LlmProvider::Openai => ProviderBudget {
+            max_commits: ((resolved_llm.max_tokens / 125).clamp(4, 12)) as usize,
+            max_input_chars: ((resolved_llm.max_tokens as usize) * 14).clamp(1_024, 10_000),
+            min_output_tokens: 128,
+        },
+        LlmProvider::Zai | LlmProvider::Custom => ProviderBudget {
+            max_commits: ((resolved_llm.max_tokens / 125).clamp(4, 12)) as usize,
+            max_input_chars: ((resolved_llm.max_tokens as usize) * 14).clamp(1_024, 10_000),
+            min_output_tokens: 128,
+        },
     }
 }
 
@@ -340,9 +512,10 @@ mod tests {
     use anyhow::{Context, Result};
     use git2::Repository;
     use std::fs;
+    use std::path::Path;
     use std::process::Command;
     use tempfile::TempDir;
-    use why_context::WhyConfig;
+    use why_context::{LlmConfig, LlmProvider, WhyConfig};
     use why_locator::{QueryKind, QueryTarget};
     use why_synthesizer::ReportMode;
 
@@ -380,6 +553,7 @@ mod tests {
                 .any(|item| item.contains("hotfix: keep legacy auth guard"))
         );
         assert!(answer.github.notes.is_empty());
+        assert!(answer.report.policy.is_empty());
         Ok(())
     }
 
@@ -397,6 +571,113 @@ mod tests {
             format_target_label(&target),
             "src/auth.rs:AuthService::login"
         );
+    }
+
+    #[test]
+    fn policy_marks_commit_budget_truncation() -> Result<()> {
+        let fixture = setup_repo_with_rewrites(6, 32)?;
+        let repo = Repository::discover(fixture.path())?;
+        let mut config = WhyConfig::default();
+        config.llm = LlmConfig {
+            provider: LlmProvider::Openai,
+            model: Some("gpt-4.1-mini".into()),
+            base_url: None,
+            auth_token: None,
+            retries: 1,
+            max_tokens: 500,
+            timeout: 30,
+        };
+
+        let answer = answer_question(
+            &QuestionRequest {
+                target: QueryTarget {
+                    path: "src/auth.rs".into(),
+                    start_line: Some(1),
+                    end_line: Some(8),
+                    symbol: None,
+                    query_kind: QueryKind::Range,
+                },
+                since_days: None,
+                no_llm: true,
+                include_github: false,
+            },
+            fixture.path(),
+            &repo,
+            &config,
+        )?;
+
+        assert!(
+            answer
+                .policy
+                .reasons
+                .iter()
+                .any(|note| { note.code == "evidence-commit-budget" && note.kind == "truncation" })
+        );
+        assert!(
+            answer.evidence_pack.history.commits_shown < answer.archaeology.commits.len(),
+            "evidence budget should trim commits before packaging"
+        );
+        assert!(
+            answer
+                .report
+                .policy
+                .iter()
+                .any(|note| note.code == "evidence-commit-budget"),
+            "policy notes should flow into structured report output"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn policy_gates_llm_when_output_budget_is_too_small() -> Result<()> {
+        let fixture = setup_repo_with_rewrites(2, 16)?;
+        let repo = Repository::discover(fixture.path())?;
+        let mut config = WhyConfig::default();
+        config.llm = LlmConfig {
+            provider: LlmProvider::Openai,
+            model: Some("gpt-4.1-mini".into()),
+            base_url: None,
+            auth_token: Some("test-token".into()),
+            retries: 1,
+            max_tokens: 64,
+            timeout: 30,
+        };
+
+        let answer = answer_question(
+            &QuestionRequest {
+                target: QueryTarget {
+                    path: "src/auth.rs".into(),
+                    start_line: Some(2),
+                    end_line: Some(2),
+                    symbol: None,
+                    query_kind: QueryKind::Line,
+                },
+                since_days: None,
+                no_llm: false,
+                include_github: false,
+            },
+            fixture.path(),
+            &repo,
+            &config,
+        )?;
+
+        assert_eq!(answer.report.mode, ReportMode::Heuristic);
+        assert!(!answer.policy.llm_allowed);
+        assert!(
+            answer
+                .policy
+                .reasons
+                .iter()
+                .any(|note| { note.code == "llm-output-budget" && note.kind == "gate" })
+        );
+        assert!(
+            answer
+                .report
+                .policy
+                .iter()
+                .any(|note| note.code == "llm-output-budget")
+        );
+        Ok(())
     }
 
     fn setup_repo() -> Result<TempDir> {
@@ -417,6 +698,31 @@ mod tests {
             dir.path(),
             &["commit", "-m", "hotfix: keep legacy auth guard"],
         )?;
+        Ok(dir)
+    }
+
+    fn setup_repo_with_rewrites(commit_count: usize, line_width: usize) -> Result<TempDir> {
+        let dir = setup_repo()?;
+        let file_path = dir.path().join("src").join("auth.rs");
+
+        for iteration in 0..commit_count {
+            let body = format!(
+                "pub fn verify_token() {{\n    legacy_auth_guard();\n{}\n}}\n",
+                (0..=iteration)
+                    .map(|line| format!(
+                        "    audit_guard_{}(\"{}\");",
+                        line,
+                        "x".repeat(line_width + line)
+                    ))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+            fs::write(&file_path, body)?;
+            git(dir.path(), &["add", "src/auth.rs"])?;
+            let message = format!("chore: reshape auth guard {iteration}");
+            git(dir.path(), &["commit", "-m", &message])?;
+        }
+
         Ok(dir)
     }
 
