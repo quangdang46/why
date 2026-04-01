@@ -313,6 +313,265 @@ build_from_source() {
     install_binary_atomic "$TMP/target/release/$installed_name" "$DEST/$installed_name"
 }
 
+find_python3_tool() {
+    if command -v python3 >/dev/null 2>&1; then
+        echo "python3"
+        return 0
+    fi
+
+    if command -v python >/dev/null 2>&1 && \
+        python -c 'import sys; raise SystemExit(0 if sys.version_info[0] >= 3 else 1)' \
+            >/dev/null 2>&1; then
+        echo "python"
+        return 0
+    fi
+
+    return 1
+}
+
+append_unique_host() {
+    local host="$1"
+    local existing
+    for existing in "${MCP_HOSTS[@]:-}"; do
+        [ "$existing" = "$host" ] && return 0
+    done
+    MCP_HOSTS+=("$host")
+}
+
+detect_mcp_hosts() {
+    MCP_HOSTS=()
+
+    if [ -n "${WHY_MCP_HOST:-}" ]; then
+        local raw host
+        IFS=',' read -r -a raw <<< "${WHY_MCP_HOST}"
+        for host in "${raw[@]}"; do
+            host="$(printf '%s' "$host" | xargs)"
+            [ -n "$host" ] || continue
+            case "$host" in
+                claude-code|cursor|windsurf|vscode|gemini|opencode|codex|amp|droid)
+                    append_unique_host "$host"
+                    ;;
+                *)
+                    log_warn "Ignoring unknown MCP host override: $host"
+                    ;;
+            esac
+        done
+    else
+        [ -d "$HOME/.codex" ] && append_unique_host "codex"
+        [ -f "$HOME/.claude.json" ] && append_unique_host "claude-code"
+        [ -d "$HOME/.cursor" ] && append_unique_host "cursor"
+        [ -d "$HOME/.codeium/windsurf" ] && append_unique_host "windsurf"
+        [ -d "$PWD/.vscode" ] && append_unique_host "vscode"
+        [ -d "$HOME/.gemini" ] && append_unique_host "gemini"
+        [ -f "$HOME/.opencode.json" ] && append_unique_host "opencode"
+        [ -d "$HOME/.config/amp" ] && append_unique_host "amp"
+        [ -d "$HOME/.factory" ] && append_unique_host "droid"
+    fi
+
+    return 0
+}
+
+upsert_json_mcp_server() {
+    local python_cmd="$1"
+    local path="$2"
+    local servers_key="$3"
+    local command_path="$4"
+
+    "$python_cmd" - "$path" "$servers_key" "$BINARY_NAME" "$command_path" "mcp" <<'PY'
+import json
+import os
+import sys
+
+path, servers_key, server_name, command, *args = sys.argv[1:]
+entry = {"command": command, "args": args}
+
+if os.path.exists(path):
+    with open(path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+else:
+    data = {}
+
+if not isinstance(data, dict):
+    raise SystemExit(f"config root is not a JSON object: {path}")
+
+servers = data.setdefault(servers_key, {})
+if not isinstance(servers, dict):
+    raise SystemExit(f"{servers_key} is not a JSON object: {path}")
+
+existing = servers.get(server_name)
+if existing is None:
+    status = "installed"
+elif existing == entry:
+    status = "unchanged"
+else:
+    status = "updated"
+
+servers[server_name] = entry
+
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(data, fh, indent=2)
+    fh.write("\n")
+
+print(status)
+PY
+}
+
+upsert_toml_mcp_server() {
+    local python_cmd="$1"
+    local path="$2"
+    local command_path="$3"
+
+    "$python_cmd" - "$path" "$BINARY_NAME" "$command_path" "mcp" <<'PY'
+import os
+import sys
+
+path, server_name, command, *args = sys.argv[1:]
+header = f"[mcp_servers.{server_name}]"
+args_rendered = ", ".join(f'"{arg.replace("\\\\", "\\\\\\\\").replace("\"", "\\\\\"")}"' for arg in args)
+command_rendered = command.replace("\\", "\\\\").replace('"', '\\"')
+section = f'{header}\ncommand = "{command_rendered}"\nargs = [{args_rendered}]\n'
+
+existing = ""
+if os.path.exists(path):
+    with open(path, "r", encoding="utf-8") as fh:
+        existing = fh.read()
+
+status = "installed"
+if header in existing:
+    start = existing.index(header)
+    rest = existing[start + len(header):]
+    next_section = rest.find("\n[")
+    end = len(existing) if next_section == -1 else start + len(header) + next_section + 1
+    current = existing[start:end]
+    if current.strip() == section.strip():
+        print("unchanged")
+        raise SystemExit(0)
+    updated = existing[:start] + section + existing[end:]
+    status = "updated"
+else:
+    separator = ""
+    if existing and not existing.endswith("\n"):
+        separator = "\n"
+    if existing:
+        separator += "\n"
+    updated = existing + separator + section
+
+with open(path, "w", encoding="utf-8") as fh:
+    fh.write(updated)
+
+print(status)
+PY
+}
+
+install_mcp_host() {
+    local python_cmd="$1"
+    local host="$2"
+    local installed_path="$3"
+    local path format servers_key note status
+
+    case "$host" in
+        claude-code)
+            path="$HOME/.claude.json"
+            format="json"
+            servers_key="mcpServers"
+            note="User scope."
+            ;;
+        cursor)
+            path="$HOME/.cursor/mcp.json"
+            format="json"
+            servers_key="mcpServers"
+            note="Global scope."
+            ;;
+        windsurf)
+            path="$HOME/.codeium/windsurf/mcp_config.json"
+            format="json"
+            servers_key="mcpServers"
+            note="Global scope."
+            ;;
+        vscode)
+            path="$PWD/.vscode/mcp.json"
+            format="json"
+            servers_key="servers"
+            note="Project scope."
+            ;;
+        gemini)
+            path="$HOME/.gemini/settings.json"
+            format="json"
+            servers_key="mcpServers"
+            note="User scope."
+            ;;
+        opencode)
+            path="$HOME/.opencode.json"
+            format="json"
+            servers_key="mcpServers"
+            note="User scope."
+            ;;
+        codex)
+            path="$HOME/.codex/config.toml"
+            format="toml"
+            servers_key=""
+            note="User scope."
+            ;;
+        amp)
+            path="$HOME/.config/amp/settings.json"
+            format="json"
+            servers_key="amp.mcpServers"
+            note="User scope."
+            ;;
+        droid)
+            path="$HOME/.factory/mcp.json"
+            format="json"
+            servers_key="mcpServers"
+            note="User scope."
+            ;;
+        *)
+            log_warn "Skipping unsupported MCP host: $host"
+            return 1
+            ;;
+    esac
+
+    mkdir -p "$(dirname "$path")"
+    if [ "$format" = "json" ]; then
+        status=$(upsert_json_mcp_server "$python_cmd" "$path" "$servers_key" "$installed_path") || {
+            log_warn "Failed to update ${host} MCP config at ${path}"
+            return 1
+        }
+    else
+        status=$(upsert_toml_mcp_server "$python_cmd" "$path" "$installed_path") || {
+            log_warn "Failed to update ${host} MCP config at ${path}"
+            return 1
+        }
+    fi
+
+    log_info "MCP ${status} for ${host}: ${path}"
+    [ -n "$note" ] && log_info "  ${note}"
+}
+
+run_mcp_auto_install() {
+    local installed_path="$1"
+    local python_cmd
+    local host
+    local failed=0
+
+    detect_mcp_hosts
+    if [ "${#MCP_HOSTS[@]}" -eq 0 ]; then
+        log_info "No supported MCP providers detected. Skipped auto-install."
+        return 0
+    fi
+
+    if ! python_cmd=$(find_python3_tool); then
+        log_warn "Skipping MCP auto-install: python3 is required to update provider configs"
+        return 1
+    fi
+
+    log_info "Auto-installing MCP provider configs..."
+    for host in "${MCP_HOSTS[@]}"; do
+        install_mcp_host "$python_cmd" "$host" "$installed_path" || failed=1
+    done
+
+    [ "$failed" -eq 0 ]
+}
+
 print_summary() {
     local installed_path="$1"
 
@@ -380,6 +639,7 @@ main() {
         "$installed_path" --version
     fi
 
+    run_mcp_auto_install "$installed_path" || true
     print_summary "$installed_path"
 }
 
