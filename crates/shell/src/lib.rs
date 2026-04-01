@@ -10,6 +10,7 @@ use rustyline::validate::Validator;
 use rustyline::{Config, Editor, Helper};
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
+use std::io::{self, BufRead, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use walkdir::WalkDir;
@@ -19,6 +20,10 @@ pub fn run() -> Result<()> {
     let cwd = std::env::current_dir()?;
     let mut index = CompletionIndex::build(&cwd)?;
     print_startup(&index);
+
+    if !io::stdin().is_terminal() {
+        return run_non_interactive(&cwd, &mut index);
+    }
 
     let config = Config::builder().auto_add_history(true).build();
     let mut editor = Editor::<ShellHelper, DefaultHistory>::with_config(config)?;
@@ -70,6 +75,38 @@ pub fn run() -> Result<()> {
     }
 
     let _ = editor.save_history(&history_path);
+    Ok(())
+}
+
+fn run_non_interactive(cwd: &Path, index: &mut CompletionIndex) -> Result<()> {
+    let stdin = io::stdin();
+    for line in stdin.lock().lines() {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed == "exit" || trimmed == "quit" {
+            break;
+        }
+        if trimmed == "help" {
+            print_help();
+            continue;
+        }
+        if trimmed == "reload" {
+            *index = CompletionIndex::build(cwd)?;
+            println!(
+                "reloaded {} symbols across {} files.",
+                index.symbol_count, index.file_count
+            );
+            continue;
+        }
+
+        if let Err(error) = run_shell_command(cwd, trimmed) {
+            eprintln!("why shell: {error}");
+        }
+    }
+
     Ok(())
 }
 

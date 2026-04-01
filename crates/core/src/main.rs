@@ -29,10 +29,12 @@ use why_context::{
 };
 use why_evidence::{
     EvidenceCommit, EvidenceContext, EvidencePack, EvidenceTarget, GitHubClient, GitHubComment,
-    GitHubEnrichment, enrich_github_refs, parse_github_ref, parse_github_remote,
-    select_single_github_ref,
+    GitHubEnrichment, parse_github_ref, parse_github_remote, select_single_github_ref,
 };
 use why_locator::QueryKind;
+use why_question_engine::{
+    QuestionRequest, answer_question, build_github_enrichment, format_target_label, normalize_path,
+};
 use why_scanner::{
     CouplingReport, CoverageGapReport, DiffReviewPlan, DiffReviewTarget, GhostFinding,
     HealthBaselineReference, HealthComparison, HealthDelta, HealthGateSummary, HealthReport,
@@ -42,10 +44,9 @@ use why_scanner::{
 use why_splitter::SplitSuggestion;
 use why_synthesizer::{
     ConfidenceLevel, DiffReviewFinding, DiffReviewReport, ReportMode, WhyReport,
-    build_diff_review_prompt, build_query_prompt, build_system_prompt, client_from_config,
-    heuristic_diff_review_report, heuristic_report, prompt_contract,
+    build_diff_review_prompt, build_system_prompt, client_from_config,
+    heuristic_diff_review_report, prompt_contract,
     synthesize_diff_review as llm_synthesize_diff_review,
-    synthesize_report as llm_synthesize_report,
 };
 
 fn main() {
@@ -1415,8 +1416,18 @@ fn render_default_query_output(
         }
     }
 
-    let result = analyze_target_with_options(&request.target, cwd, request.since_days)?;
-    let report = synthesize_report_query(request, &result, repo, config)?;
+    let answer = answer_question(
+        &QuestionRequest {
+            target: request.target.clone(),
+            since_days: request.since_days,
+            no_llm: request.no_llm,
+            include_github: true,
+        },
+        cwd,
+        repo,
+        config,
+    )?;
+    let report = answer.report;
     let mut rendered = if request.json {
         serde_json::to_string_pretty(&report)?
     } else {
@@ -1428,11 +1439,11 @@ fn render_default_query_output(
     }
 
     if request.annotate {
-        let source_path = repo_root.join(&result.target.path);
+        let source_path = repo_root.join(&answer.archaeology.target.path);
         annotate_file(
             &source_path,
-            result.target.start_line,
-            &result,
+            answer.archaeology.target.start_line,
+            &answer.archaeology,
             &head_hash,
             &format_target_label(&request.target),
         )?;
@@ -2450,56 +2461,6 @@ fn sorted_signal_entries(signals: &std::collections::HashMap<String, u32>) -> Ve
     entries
 }
 
-fn build_github_enrichment(
-    repo: &Repository,
-    config: &why_context::WhyConfig,
-    commits: &[why_archaeologist::CommitEvidence],
-) -> GitHubEnrichment {
-    let Some(remote_name) =
-        (!config.github.remote.trim().is_empty()).then(|| config.github.remote.trim())
-    else {
-        return GitHubEnrichment::default();
-    };
-
-    let remote_url = match repo.find_remote(remote_name) {
-        Ok(remote) => match remote.url() {
-            Some(url) if !url.trim().is_empty() => url.to_string(),
-            _ => {
-                return GitHubEnrichment {
-                    items: Vec::new(),
-                    notes: vec![format!(
-                        "GitHub enrichment skipped because remote '{remote_name}' has no URL"
-                    )],
-                };
-            }
-        },
-        Err(error) => {
-            return GitHubEnrichment {
-                items: Vec::new(),
-                notes: vec![format!(
-                    "GitHub enrichment skipped because remote '{remote_name}' could not be read: {error}"
-                )],
-            };
-        }
-    };
-
-    let client = match GitHubClient::from_config(config, &remote_url) {
-        Ok(client) => client,
-        Err(error) => {
-            return GitHubEnrichment {
-                items: Vec::new(),
-                notes: vec![format!("GitHub enrichment unavailable: {error}")],
-            };
-        }
-    };
-
-    let issue_refs = commits
-        .iter()
-        .flat_map(|commit| commit.issue_refs.iter().cloned())
-        .collect::<Vec<_>>();
-    enrich_github_refs(&client, &issue_refs)
-}
-
 fn compute_health_delta(current_score: u32, previous: &HealthSnapshot) -> HealthDelta {
     let amount = current_score as i64 - previous.debt_score as i64;
     let direction = if amount > 0 {
@@ -2741,108 +2702,6 @@ fn log_llm_fallback(
     };
 
     let _ = append_runtime_log(repo, &entry);
-}
-
-fn synthesize_report_query(
-    request: &QueryRequest,
-    result: &ArchaeologyResult,
-    repo: &Repository,
-    config: &why_context::WhyConfig,
-) -> Result<WhyReport> {
-    let github = build_github_enrichment(repo, config, &result.commits);
-    let evidence_pack = why_evidence::build(
-        &EvidenceTarget {
-            file: normalize_path(&result.target.path),
-            symbol: request.target.symbol.clone(),
-            lines: (
-                result.target.start_line as usize,
-                result.target.end_line as usize,
-            ),
-            language: infer_language(&result.target.path),
-        },
-        &result
-            .commits
-            .iter()
-            .map(|commit| EvidenceCommit {
-                oid: commit.oid.clone(),
-                date: commit.date.clone(),
-                author: commit.author.clone(),
-                summary: commit.summary.clone(),
-                diff_excerpt: commit.diff_excerpt.clone(),
-                coverage_score: commit.coverage_score,
-                issue_refs: commit.issue_refs.clone(),
-            })
-            .collect::<Vec<_>>(),
-        &EvidenceContext {
-            comments: result.local_context.comments.clone(),
-            markers: result.local_context.markers.clone(),
-            risk_flags: result.local_context.risk_flags.clone(),
-            heuristic_risk: result.risk_level.as_str().to_string(),
-        },
-        &github,
-    );
-
-    let fallback = |extra_note: Option<String>| {
-        let mut notes = result.notes.clone();
-        notes.extend(github.notes.iter().cloned());
-        if let Some(extra_note) = extra_note {
-            notes.push(extra_note);
-        }
-        heuristic_report(
-            format!(
-                "Heuristic analysis of {} based on {} relevant commit(s).",
-                format_target_label(&request.target),
-                result.commits.len()
-            ),
-            parse_synth_risk(result.risk_level.as_str()),
-            result
-                .commits
-                .iter()
-                .map(|commit| format!("{} ({})", commit.summary, commit.date))
-                .collect(),
-            notes,
-        )
-    };
-
-    if request.no_llm {
-        return Ok(fallback(None));
-    }
-
-    let resolved_llm = config.resolved_llm_config();
-    let fallback_note = "LLM synthesis failed; fell back to heuristic mode. See .why/runtime.log.";
-    let client = match client_from_config(&resolved_llm) {
-        Ok(client) => client,
-        Err(error) => {
-            log_llm_fallback(
-                repo,
-                "query",
-                resolved_llm.provider,
-                resolved_llm.model.clone(),
-                Some(format_target_label(&request.target)),
-                &error,
-            );
-            return Ok(fallback(Some(fallback_note.to_string())));
-        }
-    };
-
-    let contract = prompt_contract();
-    let system_prompt = build_system_prompt(&contract);
-    let user_prompt = build_query_prompt(&evidence_pack);
-
-    match llm_synthesize_report(&*client, &system_prompt, &user_prompt) {
-        Ok(report) => Ok(report),
-        Err(error) => {
-            log_llm_fallback(
-                repo,
-                "query",
-                resolved_llm.provider,
-                resolved_llm.model.clone(),
-                Some(format_target_label(&request.target)),
-                &error,
-            );
-            Ok(fallback(Some(fallback_note.to_string())))
-        }
-    }
 }
 
 fn parse_synth_risk(value: &str) -> why_synthesizer::RiskLevel {
@@ -3120,31 +2979,6 @@ fn infer_language(path: &std::path::Path) -> String {
         _ => "unknown",
     }
     .to_string()
-}
-
-fn normalize_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
-}
-
-fn format_target_label(target: &why_locator::QueryTarget) -> String {
-    match target.query_kind {
-        QueryKind::Line => format!(
-            "{}:{}",
-            target.path.display(),
-            target.start_line.unwrap_or_default()
-        ),
-        QueryKind::Range => format!(
-            "{}:{}-{}",
-            target.path.display(),
-            target.start_line.unwrap_or_default(),
-            target.end_line.unwrap_or_default()
-        ),
-        QueryKind::Symbol | QueryKind::QualifiedSymbol => format!(
-            "{}:{}",
-            target.path.display(),
-            target.symbol.as_deref().unwrap_or("symbol")
-        ),
-    }
 }
 
 #[derive(Debug, Clone, Default)]

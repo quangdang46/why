@@ -2349,6 +2349,7 @@ dependencies = [
  "why-locator",
  "why-lsp",
  "why-mcp",
+ "why-question-engine",
  "why-scanner",
  "why-shell",
  "why-splitter",
@@ -2398,7 +2399,10 @@ dependencies = [
  "tokio",
  "tower-lsp",
  "why-archaeologist",
+ "why-context",
+ "why-evidence",
  "why-locator",
+ "why-question-engine",
 ]
 
 [[package]]
@@ -2412,6 +2416,23 @@ dependencies = [
  "why-locator",
  "why-scanner",
  "why-splitter",
+]
+
+[[package]]
+name = "why-question-engine"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "git2",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "why-archaeologist",
+ "why-cache",
+ "why-context",
+ "why-evidence",
+ "why-locator",
+ "why-synthesizer",
 ]
 
 [[package]]

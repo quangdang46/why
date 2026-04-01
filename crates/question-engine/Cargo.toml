@@ -1,5 +1,5 @@
 [package]
-name = "why-lsp"
+name = "why-question-engine"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -9,13 +9,15 @@ publish = false
 
 [dependencies]
 anyhow.workspace = true
-tokio.workspace = true
-tower-lsp.workspace = true
+git2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 why-archaeologist = { path = "../archaeologist" }
+why-cache = { path = "../cache" }
 why-context = { path = "../context" }
+why-evidence = { path = "../evidence" }
 why-locator = { path = "../locator" }
-why-question-engine = { path = "../question-engine" }
+why-synthesizer = { path = "../synthesizer" }
 
 [dev-dependencies]
 tempfile = "3"
-why-evidence = { path = "../evidence" }

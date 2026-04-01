@@ -32,6 +32,7 @@ why-cache = { path = "../cache" }
 why-context = { path = "../context" }
 why-locator = { path = "../locator" }
 why-mcp = { path = "../mcp" }
+why-question-engine = { path = "../question-engine" }
 why-scanner = { path = "../scanner" }
 why-splitter = { path = "../splitter" }
 why-synthesizer = { path = "../synthesizer" }
