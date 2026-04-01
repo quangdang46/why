@@ -2416,6 +2416,7 @@ dependencies = [
  "why-locator",
  "why-scanner",
  "why-splitter",
+ "why-workflows",
 ]
 
 [[package]]
@@ -2490,6 +2491,15 @@ dependencies = [
 name = "why-test-support"
 version = "0.1.0"
 dependencies = [
+ "tempfile",
+]
+
+[[package]]
+name = "why-workflows"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
  "tempfile",
 ]
 

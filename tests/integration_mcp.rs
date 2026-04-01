@@ -162,13 +162,59 @@ fn mcp_initialize_and_tools_list_work_over_stdio() -> Result<()> {
     let tools = responses[1]["result"]["tools"]
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("tools/list should return tool array"))?;
-    assert_eq!(tools.len(), 6);
+    assert_eq!(tools.len(), 8);
     assert_eq!(tools[0]["name"], "why_symbol");
     assert_eq!(tools[1]["name"], "why_split");
     assert_eq!(tools[2]["name"], "why_time_bombs");
     assert_eq!(tools[3]["name"], "why_hotspots");
     assert_eq!(tools[4]["name"], "why_coupling");
     assert_eq!(tools[5]["name"], "why_rename_safe");
+    assert_eq!(tools[6]["name"], "why_list_workflows");
+    assert_eq!(tools[7]["name"], "why_get_workflow");
+
+    Ok(())
+}
+
+#[test]
+fn mcp_workflow_tools_return_builtin_workflows() -> Result<()> {
+    let repo = setup_hotfix_repo()?;
+    let output = repo.run_why_with_stdin(
+        &["mcp"],
+        concat!(
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{",
+            "\"name\":\"why_list_workflows\",",
+            "\"arguments\":{}",
+            "}}\n",
+            "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{",
+            "\"name\":\"why_get_workflow\",",
+            "\"arguments\":{\"id\":\"root-cause-archaeology\"}",
+            "}}\n"
+        ),
+    )?;
+    ensure_success(&output)?;
+
+    let responses = response_lines(&output)?;
+    let workflows = responses[0]["result"]["content"][0]["json"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("workflow list should be array"))?;
+    assert!(
+        workflows
+            .iter()
+            .any(|workflow| workflow["id"] == "root-cause-archaeology")
+    );
+
+    let workflow = &responses[1]["result"]["content"][0]["json"];
+    assert_eq!(workflow["id"], "root-cause-archaeology");
+    assert!(
+        workflow["summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("commit-backed narrative"))
+    );
+    assert!(
+        workflow["body"]
+            .as_str()
+            .is_some_and(|body| body.contains("Run the default `why` report first"))
+    );
 
     Ok(())
 }

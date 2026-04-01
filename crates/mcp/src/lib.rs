@@ -6,6 +6,7 @@ use why_archaeologist::analyze_target;
 use why_locator::parse_target;
 use why_scanner::{scan_coupling, scan_hotspots, scan_rename_safe, scan_time_bombs};
 use why_splitter::suggest_split;
+use why_workflows::{load_builtin_workflow, load_builtin_workflows};
 
 const JSONRPC_VERSION: &str = "2.0";
 const DEFAULT_TIME_BOMB_AGE_DAYS: i64 = 30;
@@ -156,6 +157,27 @@ fn tools_list_result() -> Value {
                     "required": ["target"],
                     "additionalProperties": false
                 })
+            ),
+            tool_definition(
+                "why_list_workflows",
+                "List builtin why investigation workflows loaded from markdown on disk.",
+                json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                })
+            ),
+            tool_definition(
+                "why_get_workflow",
+                "Load a named builtin why investigation workflow from markdown on disk.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" }
+                    },
+                    "required": ["id"],
+                    "additionalProperties": false
+                })
             )
         ]
     })
@@ -294,6 +316,32 @@ fn call_tool(params: Option<Value>) -> std::result::Result<Value, McpError> {
                 )
             })?
         }
+        "why_list_workflows" => serde_json::to_value(
+            load_builtin_workflows().map_err(|error| McpError::tool_error(error.to_string()))?,
+        )
+        .map_err(|error| {
+            McpError::new(
+                ErrorCode::InternalError,
+                format!("failed to serialize why_list_workflows result: {error}"),
+            )
+        })?,
+        "why_get_workflow" => {
+            let args: WhyGetWorkflowArgs = deserialize_arguments(request.arguments)?;
+            let workflow = load_builtin_workflow(&args.id)
+                .map_err(|error| McpError::tool_error(error.to_string()))?
+                .ok_or_else(|| {
+                    McpError::new(
+                        ErrorCode::InvalidParams,
+                        format!("unknown workflow: {}", args.id),
+                    )
+                })?;
+            serde_json::to_value(workflow).map_err(|error| {
+                McpError::new(
+                    ErrorCode::InternalError,
+                    format!("failed to serialize why_get_workflow result: {error}"),
+                )
+            })?
+        }
         other => {
             return Err(McpError::new(
                 ErrorCode::InvalidParams,
@@ -358,6 +406,11 @@ struct WhyRenameSafeArgs {
     lines: Option<String>,
     #[serde(default)]
     since_days: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct WhyGetWorkflowArgs {
+    id: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -496,13 +549,15 @@ mod tests {
         assert!(result["tools"].is_array(), "tools should be array");
         let empty_tools = Vec::new();
         let tools = result["tools"].as_array().unwrap_or(&empty_tools);
-        assert_eq!(tools.len(), 6);
+        assert_eq!(tools.len(), 8);
         assert_eq!(tools[0]["name"], "why_symbol");
         assert_eq!(tools[1]["name"], "why_split");
         assert_eq!(tools[2]["name"], "why_time_bombs");
         assert_eq!(tools[3]["name"], "why_hotspots");
         assert_eq!(tools[4]["name"], "why_coupling");
         assert_eq!(tools[5]["name"], "why_rename_safe");
+        assert_eq!(tools[6]["name"], "why_list_workflows");
+        assert_eq!(tools[7]["name"], "why_get_workflow");
     }
 
     #[test]
@@ -595,5 +650,42 @@ mod tests {
         });
         assert_eq!(error.code, ErrorCode::InvalidParams.as_i32());
         assert!(error.message.contains("limit must be greater than zero"));
+    }
+
+    #[test]
+    fn workflow_tools_return_builtin_markdown_workflows() {
+        let list_response = handle_request(request(
+            "tools/call",
+            json!({
+                "name": "why_list_workflows",
+                "arguments": {}
+            }),
+        ));
+        assert!(list_response.error.is_none());
+        let list_payload = &list_response.result.unwrap_or(Value::Null)["content"][0]["json"];
+        let workflows = list_payload
+            .as_array()
+            .expect("workflow list should be array");
+        assert!(
+            workflows
+                .iter()
+                .any(|workflow| workflow["id"] == "root-cause-archaeology")
+        );
+
+        let get_response = handle_request(request(
+            "tools/call",
+            json!({
+                "name": "why_get_workflow",
+                "arguments": { "id": "root-cause-archaeology" }
+            }),
+        ));
+        assert!(get_response.error.is_none());
+        let workflow = &get_response.result.unwrap_or(Value::Null)["content"][0]["json"];
+        assert_eq!(workflow["id"], "root-cause-archaeology");
+        assert!(
+            workflow["body"]
+                .as_str()
+                .is_some_and(|body| body.contains("Run the default `why` report first"))
+        );
     }
 }

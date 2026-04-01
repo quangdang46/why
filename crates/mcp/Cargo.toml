@@ -15,3 +15,4 @@ why-archaeologist = { path = "../archaeologist" }
 why-locator = { path = "../locator" }
 why-scanner = { path = "../scanner" }
 why-splitter = { path = "../splitter" }
+why-workflows = { path = "../workflows" }

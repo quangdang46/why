@@ -16,6 +16,7 @@ members = [
     "crates/hooks",
     "crates/cache",
     "crates/question-engine",
+    "crates/workflows",
     "crates/test-support",
 ]
 resolver = "2"
