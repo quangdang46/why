@@ -31,20 +31,34 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          HELP_OUTPUT="$(cargo run -q -p why-core -- --help)"
-          if printf '%s' "$HELP_OUTPUT" | grep -q -- '--diff'; then
+          if cargo run -q -p why-core -- diff-review --help >/dev/null; then
             echo "supported=true" >> "$GITHUB_OUTPUT"
           else
             echo "supported=false" >> "$GITHUB_OUTPUT"
-            echo "Current why CLI does not support --diff yet; skipping PR risk review."
+            echo "Current why CLI does not support diff-review yet; skipping PR risk review."
+          fi
+
+      - name: Stage pull request diff
+        if: steps.support.outputs.supported == 'true'
+        id: stage-diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          git reset --mixed
+          git diff --binary "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}" | git apply --cached --allow-empty
+          if git diff --cached --quiet; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "No staged diff remained after applying the PR patch."
+          else
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Run PR risk review
-        if: steps.support.outputs.supported == 'true'
+        if: steps.support.outputs.supported == 'true' && steps.stage-diff.outputs.has_changes == 'true'
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
-          cargo run -q -p why-core -- \
-            --diff "${{ github.event.pull_request.base.sha }}..${{ github.sha }}" \
-            --github-comment
+          cargo run -q -p why-core -- diff-review --no-llm \
+            --post-github-comment \
+            --github-ref "#${{ github.event.pull_request.number }}"

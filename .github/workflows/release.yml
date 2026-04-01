@@ -34,13 +34,13 @@ jobs:
             archive-ext: tar.gz
             binary-name: why
           - target: x86_64-apple-darwin
-            os: macos-latest
+            os: macos-13
             use-cross: false
             archive-suffix: macos-x86_64
             archive-ext: tar.gz
             binary-name: why
           - target: aarch64-apple-darwin
-            os: macos-latest
+            os: macos-14
             use-cross: false
             archive-suffix: macos-aarch64
             archive-ext: tar.gz
@@ -63,7 +63,7 @@ jobs:
 
       - name: Install cross
         if: matrix.use-cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        uses: taiki-e/install-action@cross
 
       - name: Build binary with cross
         if: matrix.use-cross
