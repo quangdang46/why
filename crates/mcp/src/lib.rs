@@ -8,7 +8,10 @@ use why_scanner::{scan_coupling, scan_hotspots, scan_rename_safe, scan_time_bomb
 use why_splitter::suggest_split;
 use why_workflows::{load_builtin_workflow, load_builtin_workflows};
 
-const JSONRPC_VERSION: &str = "2.0";
+const JSON_RPC_VERSION: &str = "2.0";
+const LATEST_MCP_PROTOCOL_VERSION: &str = "2025-11-25";
+const SUPPORTED_MCP_PROTOCOL_VERSIONS: &[&str] =
+    &[LATEST_MCP_PROTOCOL_VERSION, "2025-03-26", "2024-11-05"];
 const DEFAULT_TIME_BOMB_AGE_DAYS: i64 = 30;
 const DEFAULT_HOTSPOT_LIMIT: usize = 10;
 
@@ -25,33 +28,41 @@ pub fn run_stdio() -> Result<()> {
 
         let response = match serde_json::from_str::<JsonRpcRequest>(&line) {
             Ok(request) => handle_request(request),
-            Err(error) => JsonRpcResponse::error(
+            Err(error) => Some(JsonRpcResponse::error(
                 None,
                 ErrorCode::ParseError,
                 format!("failed to parse JSON-RPC request: {error}"),
-            ),
+            )),
         };
 
-        serde_json::to_writer(&mut writer, &response).context("failed to serialize response")?;
-        writer.write_all(b"\n").context("failed to write newline")?;
-        writer.flush().context("failed to flush stdout")?;
+        if let Some(response) = response {
+            serde_json::to_writer(&mut writer, &response)
+                .context("failed to serialize response")?;
+            writer.write_all(b"\n").context("failed to write newline")?;
+            writer.flush().context("failed to flush stdout")?;
+        }
     }
 
     Ok(())
 }
 
-fn handle_request(request: JsonRpcRequest) -> JsonRpcResponse {
-    if request.jsonrpc != JSONRPC_VERSION {
-        return JsonRpcResponse::error(
+fn handle_request(request: JsonRpcRequest) -> Option<JsonRpcResponse> {
+    if request.jsonrpc != JSON_RPC_VERSION {
+        return Some(JsonRpcResponse::error(
             request.id,
             ErrorCode::InvalidRequest,
             format!("unsupported jsonrpc version: {}", request.jsonrpc),
-        );
+        ));
     }
 
-    let id = request.id;
+    if is_notification(&request) {
+        return None;
+    }
+
+    let id = request.id.clone();
     let result = match request.method.as_str() {
-        "initialize" => Ok(initialize_result()),
+        "initialize" => initialize_result(request.params),
+        "ping" => Ok(json!({})),
         "tools/list" => Ok(tools_list_result()),
         "tools/call" => call_tool(request.params),
         _ => Err(McpError::new(
@@ -61,14 +72,25 @@ fn handle_request(request: JsonRpcRequest) -> JsonRpcResponse {
     };
 
     match result {
-        Ok(value) => JsonRpcResponse::success(id, value),
-        Err(error) => JsonRpcResponse::error(id, error.code, error.message),
+        Ok(value) => Some(JsonRpcResponse::success(id, value)),
+        Err(error) => Some(JsonRpcResponse::error(id, error.code, error.message)),
     }
 }
 
-fn initialize_result() -> Value {
-    json!({
-        "protocolVersion": JSONRPC_VERSION,
+fn is_notification(request: &JsonRpcRequest) -> bool {
+    request.id.is_none()
+        && matches!(
+            request.method.as_str(),
+            "notifications/initialized" | "initialized" | "notifications/cancelled"
+        )
+}
+
+fn initialize_result(params: Option<Value>) -> std::result::Result<Value, McpError> {
+    let params: InitializeParams = deserialize_optional_params(params, "initialize params")?;
+    let protocol_version = negotiate_protocol_version(params.protocol_version.as_deref());
+
+    Ok(json!({
+        "protocolVersion": protocol_version,
         "serverInfo": {
             "name": "why",
             "version": env!("CARGO_PKG_VERSION")
@@ -76,7 +98,18 @@ fn initialize_result() -> Value {
         "capabilities": {
             "tools": {}
         }
-    })
+    }))
+}
+
+fn negotiate_protocol_version(requested: Option<&str>) -> &'static str {
+    requested
+        .and_then(|version| {
+            SUPPORTED_MCP_PROTOCOL_VERSIONS
+                .iter()
+                .copied()
+                .find(|supported| *supported == version)
+        })
+        .unwrap_or(LATEST_MCP_PROTOCOL_VERSION)
 }
 
 fn tools_list_result() -> Value {
@@ -364,6 +397,31 @@ fn deserialize_arguments<T: for<'de> Deserialize<'de>>(
     })
 }
 
+fn deserialize_optional_params<T>(
+    value: Option<Value>,
+    context: &str,
+) -> std::result::Result<T, McpError>
+where
+    T: for<'de> Deserialize<'de> + Default,
+{
+    match value {
+        None | Some(Value::Null) => Ok(T::default()),
+        Some(value) => serde_json::from_value(value).map_err(|error| {
+            McpError::new(
+                ErrorCode::InvalidParams,
+                format!("invalid {context}: {error}"),
+            )
+        }),
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct InitializeParams {
+    #[serde(rename = "protocolVersion")]
+    #[serde(default)]
+    protocol_version: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct WhySymbolArgs {
     target: String,
@@ -450,7 +508,7 @@ struct JsonRpcResponse {
 impl JsonRpcResponse {
     fn success(id: Option<RequestId>, result: Value) -> Self {
         Self {
-            jsonrpc: JSONRPC_VERSION,
+            jsonrpc: JSON_RPC_VERSION,
             id,
             result: Some(result),
             error: None,
@@ -459,7 +517,7 @@ impl JsonRpcResponse {
 
     fn error(id: Option<RequestId>, code: ErrorCode, message: impl Into<String>) -> Self {
         Self {
-            jsonrpc: JSONRPC_VERSION,
+            jsonrpc: JSON_RPC_VERSION,
             id,
             result: None,
             error: Some(JsonRpcError {
@@ -522,7 +580,7 @@ mod tests {
 
     fn request(method: &str, params: Value) -> JsonRpcRequest {
         JsonRpcRequest {
-            jsonrpc: JSONRPC_VERSION.to_string(),
+            jsonrpc: JSON_RPC_VERSION.to_string(),
             id: Some(RequestId::Number(1)),
             method: method.to_string(),
             params: Some(params),
@@ -531,18 +589,56 @@ mod tests {
 
     #[test]
     fn initialize_returns_server_metadata() {
-        let response = handle_request(request("initialize", json!({})));
+        let response = handle_request(request(
+            "initialize",
+            json!({ "protocolVersion": LATEST_MCP_PROTOCOL_VERSION }),
+        ))
+        .expect("initialize should return a response");
         assert!(response.error.is_none());
         assert!(response.result.is_some(), "initialize should return result");
         let result = response.result.unwrap_or(Value::Null);
-        assert_eq!(result["protocolVersion"], JSONRPC_VERSION);
+        assert_eq!(result["protocolVersion"], LATEST_MCP_PROTOCOL_VERSION);
         assert_eq!(result["serverInfo"]["name"], "why");
         assert!(result["capabilities"]["tools"].is_object());
     }
 
     #[test]
+    fn initialize_negotiates_requested_supported_protocol_version() {
+        let response = handle_request(request(
+            "initialize",
+            json!({ "protocolVersion": "2024-11-05" }),
+        ))
+        .expect("initialize should return a response");
+        let result = response.result.unwrap_or(Value::Null);
+        assert_eq!(result["protocolVersion"], "2024-11-05");
+    }
+
+    #[test]
+    fn initialize_falls_back_to_latest_supported_protocol_version() {
+        let response = handle_request(request("initialize", json!({ "protocolVersion": "2.0" })))
+            .expect("initialize should return a response");
+        let result = response.result.unwrap_or(Value::Null);
+        assert_eq!(result["protocolVersion"], LATEST_MCP_PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn initialized_notification_returns_no_response() {
+        let response = handle_request(JsonRpcRequest {
+            jsonrpc: JSON_RPC_VERSION.to_string(),
+            id: None,
+            method: "notifications/initialized".to_string(),
+            params: None,
+        });
+        assert!(
+            response.is_none(),
+            "initialized notification should not reply"
+        );
+    }
+
+    #[test]
     fn tools_list_returns_expected_tools() {
-        let response = handle_request(request("tools/list", json!({})));
+        let response = handle_request(request("tools/list", json!({})))
+            .expect("tools/list should return a response");
         assert!(response.error.is_none());
         assert!(response.result.is_some(), "tools/list should return result");
         let result = response.result.unwrap_or(Value::Null);
@@ -562,7 +658,8 @@ mod tests {
 
     #[test]
     fn rejects_unknown_method() {
-        let response = handle_request(request("wat", json!({})));
+        let response =
+            handle_request(request("wat", json!({}))).expect("unknown request should respond");
         assert!(response.result.is_none());
         assert!(response.error.is_some(), "unknown method should error");
         let error = response.error.unwrap_or(JsonRpcError {
@@ -580,7 +677,8 @@ mod tests {
             id: Some(RequestId::Number(1)),
             method: "initialize".to_string(),
             params: Some(json!({})),
-        });
+        })
+        .expect("invalid jsonrpc requests should respond");
         assert!(response.result.is_none());
         assert!(response.error.is_some(), "invalid version should error");
         let error = response.error.unwrap_or(JsonRpcError {
@@ -599,7 +697,8 @@ mod tests {
                 "name": "missing_tool",
                 "arguments": {}
             }),
-        ));
+        ))
+        .expect("tool call should return a response");
         assert!(response.result.is_none());
         assert!(response.error.is_some(), "unknown tool should error");
         let error = response.error.unwrap_or(JsonRpcError {
@@ -618,7 +717,8 @@ mod tests {
                 "name": "why_time_bombs",
                 "arguments": { "max_age_days": 0 }
             }),
-        ));
+        ))
+        .expect("tool call should return a response");
         assert!(response.result.is_none());
         assert!(response.error.is_some(), "invalid args should error");
         let error = response.error.unwrap_or(JsonRpcError {
@@ -641,7 +741,8 @@ mod tests {
                 "name": "why_hotspots",
                 "arguments": { "limit": 0 }
             }),
-        ));
+        ))
+        .expect("tool call should return a response");
         assert!(response.result.is_none());
         assert!(response.error.is_some(), "invalid args should error");
         let error = response.error.unwrap_or(JsonRpcError {
@@ -660,7 +761,8 @@ mod tests {
                 "name": "why_list_workflows",
                 "arguments": {}
             }),
-        ));
+        ))
+        .expect("workflow list should return a response");
         assert!(list_response.error.is_none());
         let list_payload = &list_response.result.unwrap_or(Value::Null)["content"][0]["json"];
         let workflows = list_payload
@@ -678,7 +780,8 @@ mod tests {
                 "name": "why_get_workflow",
                 "arguments": { "id": "root-cause-archaeology" }
             }),
-        ));
+        ))
+        .expect("workflow get should return a response");
         assert!(get_response.error.is_none());
         let workflow = &get_response.result.unwrap_or(Value::Null)["content"][0]["json"];
         assert_eq!(workflow["id"], "root-cause-archaeology");

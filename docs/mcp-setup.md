@@ -12,6 +12,9 @@ This guide documents the **currently implemented** `why` MCP server surface.
   - `why_time_bombs`
   - `why_hotspots`
   - `why_coupling`
+  - `why_rename_safe`
+  - `why_list_workflows`
+  - `why_get_workflow`
 
 ## Important current behavior
 
@@ -105,6 +108,7 @@ require('mcphub').setup({
 The server currently supports these JSON-RPC methods:
 
 - `initialize`
+- `ping`
 - `tools/list`
 - `tools/call`
 
@@ -113,7 +117,21 @@ Requests are newline-delimited JSON objects over stdin/stdout.
 Example `initialize` request:
 
 ```json
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"example-client","version":"1.0.0"}}}
+```
+
+The server currently negotiates these MCP protocol revisions:
+
+- `2025-11-25`
+- `2025-03-26`
+- `2024-11-05`
+
+If the client requests one of those versions, `why` echoes it back. Otherwise it falls back to `2025-11-25`.
+
+After `initialize`, the client should send:
+
+```json
+{"jsonrpc":"2.0","method":"notifications/initialized"}
 ```
 
 Example `tools/list` request:
@@ -194,12 +212,15 @@ Check that:
 
 ### Unknown tool errors
 
-The current server only exposes these 5 tools:
+The current server exposes these 8 tools:
 - `why_symbol`
 - `why_split`
 - `why_time_bombs`
 - `why_hotspots`
 - `why_coupling`
+- `why_rename_safe`
+- `why_list_workflows`
+- `why_get_workflow`
 
 ### JSON-RPC parse errors
 

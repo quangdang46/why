@@ -149,7 +149,8 @@ fn mcp_initialize_and_tools_list_work_over_stdio() -> Result<()> {
     let output = repo.run_why_with_stdin(
         &["mcp"],
         concat!(
-            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n",
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"clientInfo\":{\"name\":\"why-test\",\"version\":\"1.0.0\"}}}\n",
+            "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n",
             "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}\n"
         ),
     )?;
@@ -158,7 +159,7 @@ fn mcp_initialize_and_tools_list_work_over_stdio() -> Result<()> {
     let responses = response_lines(&output)?;
     assert_eq!(responses.len(), 2);
     assert_eq!(responses[0]["id"], 1);
-    assert_eq!(responses[0]["result"]["protocolVersion"], "2.0");
+    assert_eq!(responses[0]["result"]["protocolVersion"], "2025-11-25");
     let tools = responses[1]["result"]["tools"]
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("tools/list should return tool array"))?;
